@@ -45,15 +45,14 @@
 #define WICKED_SUBSET_BACKEND WICKED_SUBSET_BACKEND_VULKAN
 #endif
 #endif
-#ifndef WICKED_SUBSET_USE_DX12
+// Force helper macros to follow the selected subset backend for this TU,
+// even if EngineConfig defaults differ from CMake target definitions.
+#undef WICKED_SUBSET_USE_DX12
+#undef WICKED_SUBSET_USE_METAL
+#undef WICKED_SUBSET_USE_VULKAN
 #define WICKED_SUBSET_USE_DX12 (WICKED_SUBSET_BACKEND == WICKED_SUBSET_BACKEND_DX12)
-#endif
-#ifndef WICKED_SUBSET_USE_METAL
 #define WICKED_SUBSET_USE_METAL (WICKED_SUBSET_BACKEND == WICKED_SUBSET_BACKEND_METAL)
-#endif
-#ifndef WICKED_SUBSET_USE_VULKAN
 #define WICKED_SUBSET_USE_VULKAN (WICKED_SUBSET_BACKEND == WICKED_SUBSET_BACKEND_VULKAN)
-#endif
 
 #include "wiGraphicsDevice.h"
 #if WICKED_SUBSET_USE_METAL

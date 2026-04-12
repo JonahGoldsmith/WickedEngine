@@ -46,6 +46,10 @@ elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_METAL)
     set(WICKED_ENGINECONFIG_SUBSET_BACKEND_NAME "Metal")
 endif()
 message(STATUS "Wicked subset EngineConfig backend: ${WICKED_ENGINECONFIG_SUBSET_BACKEND} (${WICKED_ENGINECONFIG_SUBSET_BACKEND_NAME})")
+set(WICKED_ENGINECONFIG_SUBSET_USE_DX12_EFFECTIVE 0)
+if(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_DX12)
+    set(WICKED_ENGINECONFIG_SUBSET_USE_DX12_EFFECTIVE 1)
+endif()
 
 set(_subset_default_dx12 OFF)
 set(_subset_default_vulkan OFF)
@@ -104,6 +108,13 @@ function(wicked_subset_apply_common_flags target)
     target_include_directories(${target} PRIVATE
         "${WICKED_SUBSET_ENGINE_ROOT}"
         "${WICKED_SUBSET_ENGINE_ROOT}/Utility/metal"
+    )
+    # Keep EngineConfig-derived backend helpers aligned with CMake-selected backend
+    # even if WickedEngine/EngineConfig.h has different checked-in defaults.
+    target_compile_definitions(${target} PRIVATE
+        WI_ENGINECONFIG_SUBSET_BACKEND=${WICKED_ENGINECONFIG_SUBSET_BACKEND}
+        WI_ENGINECONFIG_SUBSET_USE_DX12=${WICKED_ENGINECONFIG_SUBSET_USE_DX12_EFFECTIVE}
+        WICKED_SUBSET_BACKEND=${WICKED_ENGINECONFIG_SUBSET_BACKEND}
     )
 
     if(DEFINED WICKED_VULKAN_PLATFORM_COMPILE_DEFINITIONS)

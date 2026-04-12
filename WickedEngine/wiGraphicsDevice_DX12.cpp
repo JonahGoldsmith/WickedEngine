@@ -3381,6 +3381,22 @@ std::mutex queue_locker;
 				);
 				return false;
 			}
+			const DWORD current_pid = GetCurrentProcessId();
+			const DWORD current_tid = GetCurrentThreadId();
+			DWORD hwnd_pid = 0;
+			const DWORD hwnd_tid = GetWindowThreadProcessId(window, &hwnd_pid);
+			if (hwnd_pid != current_pid)
+			{
+				WI_DX12_LOG_ERROR(
+					"DX12 CreateSwapChainForHwnd aborted: hwnd=%p belongs to another process (hwnd pid=%lu tid=%lu, current pid=%lu tid=%lu)",
+					(void*)window,
+					(unsigned long)hwnd_pid,
+					(unsigned long)hwnd_tid,
+					(unsigned long)current_pid,
+					(unsigned long)current_tid
+				);
+				return false;
+			}
 			if (IsWindow(window) == FALSE)
 			{
 				WI_DX12_LOG_ERROR(
@@ -3431,16 +3447,38 @@ std::mutex queue_locker;
 				const long client_height = has_rect ? (rect.bottom - rect.top) : -1;
 				DWORD hwnd_pid = 0;
 				DWORD hwnd_tid = GetWindowThreadProcessId(window, &hwnd_pid);
+				const DWORD current_pid = GetCurrentProcessId();
+				const DWORD current_tid = GetCurrentThreadId();
+				const LONG_PTR style = GetWindowLongPtr(window, GWL_STYLE);
+				const LONG_PTR exstyle = GetWindowLongPtr(window, GWL_EXSTYLE);
+				HWND root = GetAncestor(window, GA_ROOT);
+				DWORD root_pid = 0;
+				DWORD root_tid = 0;
+				if (root != nullptr)
+				{
+					root_tid = GetWindowThreadProcessId(root, &root_pid);
+				}
+				char class_name[128] = {};
+				class_name[0] = '\0';
+				GetClassNameA(window, class_name, static_cast<int>(SDL_arraysize(class_name)));
 				WI_DX12_LOG_ERROR(
-					"IDXGIFactory::CreateSwapChainForHwnd failed: hr=0x%08X (%s), hwnd=%p valid=%d tid=%lu pid=%lu client=%ldx%ld desc={w=%u h=%u buffers=%u format=%d vsync=%d fullscreen=%d} dxgi={usage=0x%X swapEffect=%d alphaMode=%d scaling=%d flags=0x%X}",
+					"IDXGIFactory::CreateSwapChainForHwnd failed: hr=0x%08X (%s), hwnd=%p valid=%d hwnd_tid=%lu hwnd_pid=%lu current_tid=%lu current_pid=%lu client=%ldx%ld class=%s style=0x%llX exstyle=0x%llX root=%p root_tid=%lu root_pid=%lu desc={w=%u h=%u buffers=%u format=%d vsync=%d fullscreen=%d} dxgi={usage=0x%X swapEffect=%d alphaMode=%d scaling=%d flags=0x%X}",
 					(unsigned int)hr,
 					dx12_internal::HrToString(hr),
 					(void*)window,
 					(int)(IsWindow(window) != FALSE),
 					(unsigned long)hwnd_tid,
 					(unsigned long)hwnd_pid,
+					(unsigned long)current_tid,
+					(unsigned long)current_pid,
 					client_width,
 					client_height,
+					class_name[0] != '\0' ? class_name : "<unknown>",
+					(unsigned long long)style,
+					(unsigned long long)exstyle,
+					(void*)root,
+					(unsigned long)root_tid,
+					(unsigned long)root_pid,
 					(unsigned int)desc->width,
 					(unsigned int)desc->height,
 					(unsigned int)desc->buffer_count,
