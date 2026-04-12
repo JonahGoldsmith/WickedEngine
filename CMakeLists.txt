@@ -22,6 +22,28 @@ project(WickedEngine)
 
 include(CheckIPOSupported)
 
+# MSVC preprocess-only flags make CMake's compiler detection/reload appear hung,
+# while emitting `#line ... yvals_core.h` output instead of real diagnostics.
+function(wicked_fail_on_msvc_preprocess_flags source_name source_value)
+    if(source_value)
+        string(REGEX MATCH "(^|[ \t])/(E|EP|P)([ \t]|$)" _preprocess_only_flag "${source_value}")
+        if(_preprocess_only_flag)
+            message(FATAL_ERROR
+                "Detected preprocess-only compiler flag in ${source_name}: '${_preprocess_only_flag}'.\n"
+                "This forces cl.exe into preprocess mode and breaks CMake configure/reload.\n"
+                "Remove /E, /EP, /P from ${source_name} and re-run configure."
+            )
+        endif()
+    endif()
+endfunction()
+
+if(MSVC)
+    wicked_fail_on_msvc_preprocess_flags("ENV{CL}" "$ENV{CL}")
+    wicked_fail_on_msvc_preprocess_flags("ENV{_CL_}" "$ENV{_CL_}")
+    wicked_fail_on_msvc_preprocess_flags("ENV{CFLAGS}" "$ENV{CFLAGS}")
+    wicked_fail_on_msvc_preprocess_flags("ENV{CXXFLAGS}" "$ENV{CXXFLAGS}")
+endif()
+
 if(MSVC)
     if(DEFINED CMAKE_CONFIGURATION_TYPES)
         # Keep parity with WickedEngine.sln configuration set.
