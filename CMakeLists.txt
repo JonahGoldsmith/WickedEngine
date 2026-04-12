@@ -143,6 +143,10 @@ endif()
 if(NOT WICKED_ENGINECONFIG_SUBSET_BACKEND MATCHES "^[012]$")
     message(FATAL_ERROR "EngineConfig value WI_ENGINECONFIG_SUBSET_BACKEND must be 0 (Vulkan), 1 (DX12), or 2 (Metal).")
 endif()
+set(WICKED_ENGINECONFIG_SUBSET_BACKEND "${WICKED_ENGINECONFIG_SUBSET_BACKEND}" CACHE STRING
+    "Subset backend selection: 0=Vulkan, 1=DX12, 2=Metal (overrides EngineConfig read during configure)"
+)
+set_property(CACHE WICKED_ENGINECONFIG_SUBSET_BACKEND PROPERTY STRINGS 0 1 2)
 set(WICKED_ENGINECONFIG_SUBSET_BACKEND_NAME "Vulkan")
 if(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL 1)
     set(WICKED_ENGINECONFIG_SUBSET_BACKEND_NAME "DX12")
@@ -153,10 +157,13 @@ endif()
 option(WICKED_DYNAMIC_LIBRARY "Build WickedEngine as a dynamic library" OFF)
 option(WICKED_PIC "Build WickedEngine as position-independent code" WICKED_DYNAMIC_LIBRARY)
 option(USE_LIBCXX "Link WickedEngine to llvm libc++ library - only available with the Clang compiler" OFF)
+option(WICKED_MATCH_VS_SOLUTION_DEFAULTS
+    "Use Windows defaults that mirror WickedEngine.sln (full engine ON, graphics subset OFF)"
+    OFF
+)
 set(WICKED_BUILD_FULL_ENGINE_DEFAULT OFF)
 set(WICKED_BUILD_GRAPHICS_SUBSET_DEFAULT ON)
-if(WIN32 AND MSVC)
-    # Align default CMake target set with WickedEngine.sln.
+if(WICKED_MATCH_VS_SOLUTION_DEFAULTS AND WIN32 AND MSVC)
     set(WICKED_BUILD_FULL_ENGINE_DEFAULT ON)
     set(WICKED_BUILD_GRAPHICS_SUBSET_DEFAULT OFF)
 endif()
@@ -182,6 +189,12 @@ if(UNIX)
 elseif(WIN32)
     option(WICKED_WINDOWS_TEMPLATE "Build WickedEngine Windows template" ON)
 endif()
+if(WICKED_MATCH_VS_SOLUTION_DEFAULTS AND WIN32 AND MSVC)
+    message(STATUS "CMake defaults profile: VS solution parity (full engine ON, graphics subset OFF).")
+else()
+    message(STATUS "CMake defaults profile: subset-first (full engine OFF, graphics subset ON).")
+endif()
+message(STATUS "Enabled build groups: full=${WICKED_BUILD_FULL_ENGINE}, subset=${WICKED_BUILD_GRAPHICS_SUBSET}")
 
 # Vulkan platform matrix compile definitions:
 # These feed wiGraphicsDevice_Vulkan.h policy macros and can be overridden for

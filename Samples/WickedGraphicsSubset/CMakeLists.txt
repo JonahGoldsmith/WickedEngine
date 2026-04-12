@@ -254,6 +254,7 @@ if(WICKED_SUBSET_NEEDS_SDL3)
     set(SDL_TESTS OFF CACHE BOOL "" FORCE)
     set(SDL_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
 
+    message(STATUS "Wicked subset: configuring local SDL3 from '${WICKED_SUBSET_SDL_SOURCE_DIR}'")
     add_subdirectory("${WICKED_SUBSET_SDL_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/_deps/wicked_subset_sdl3" EXCLUDE_FROM_ALL)
 
     if(NOT TARGET SDL3::SDL3)
@@ -267,6 +268,9 @@ if(WICKED_SUBSET_NEEDS_SDL3)
             message(FATAL_ERROR "Local SDL build did not expose SDL3::SDL3")
         endif()
     endif()
+endif()
+if(WICKED_SUBSET_NEEDS_SDL3)
+    message(STATUS "Wicked subset: SDL3 target available -> SDL3::SDL3")
 endif()
 
 if(WICKED_SUBSET_ENABLE_SHADERCOMPILER)
