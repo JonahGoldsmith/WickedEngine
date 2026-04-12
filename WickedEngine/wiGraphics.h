@@ -471,7 +471,9 @@ namespace wi
 		ALIASING_BUFFER = 1 << 8,			// memory allocation will be suitable for buffers
 		ALIASING_TEXTURE_NON_RT_DS = 1 << 9,// memory allocation will be suitable for textures that are non render targets nor depth stencils
 		ALIASING_TEXTURE_RT_DS = 1 << 10,	// memory allocation will be suitable for textures that are either render targets or depth stencils
-		ALIASING = ALIASING_BUFFER | ALIASING_TEXTURE_NON_RT_DS | ALIASING_TEXTURE_RT_DS, // memory allocation will be suitable for all kinds of resources. Requires GraphicsDeviceCapability::ALIASING_GENERIC to be supported
+		// Keep this as an integral constant expression so bitmask operator templates are not instantiated
+		// before enable_bitmask_operators<ResourceMiscFlag> specialization is declared.
+		ALIASING = (1 << 8) | (1 << 9) | (1 << 10), // memory allocation will be suitable for all kinds of resources. Requires GraphicsDeviceCapability::ALIASING_GENERIC to be supported
 		TYPED_FORMAT_CASTING = 1 << 11,	// enable casting formats between same type and different modifiers: eg. UNORM -> SRGB
 		TYPELESS_FORMAT_CASTING = 1 << 12,	// enable casting formats to other formats that have the same bit-width and channel layout: eg. R32_FLOAT -> R32_UINT
 		VIDEO_DECODE = 1 << 13,	// resource is usabe in video decoding operations (for buffers it is indicating a bitstream buffer, for textures it is a DPB and output texture if DPB_AND_OUTPUT_COINCIDE is supported)

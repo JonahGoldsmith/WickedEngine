@@ -362,16 +362,46 @@ void* GetNativeWindowHandle(SDL_Window* window)
 #if !defined(__APPLE__) && !defined(_WIN32)
     return window;
 #else
-    SDL_PropertiesID props = SDL_GetWindowProperties(window);
-    if (props == 0)
+    if (window == nullptr)
     {
         return nullptr;
     }
+
+    auto queryHandle = [window]() -> void*
+    {
+        if (!SDL_SyncWindow(window))
+        {
+            SDL_ClearError();
+        }
+
+        SDL_PropertiesID props = SDL_GetWindowProperties(window);
+        if (props == 0)
+        {
+            return nullptr;
+        }
+
 #if defined(__APPLE__)
-    return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
+        return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
 #elif defined(_WIN32)
-    return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+        return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
 #endif
+    };
+
+    void* nativeHandle = queryHandle();
+
+#if defined(_WIN32)
+    if (nativeHandle == nullptr || IsWindow(static_cast<HWND>(nativeHandle)) == FALSE)
+    {
+        SDL_PumpEvents();
+        nativeHandle = queryHandle();
+    }
+    if (nativeHandle == nullptr || IsWindow(static_cast<HWND>(nativeHandle)) == FALSE)
+    {
+        return nullptr;
+    }
+#endif
+
+    return nativeHandle;
 #endif
 }
 
@@ -425,6 +455,11 @@ public:
         {
             std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
             return false;
+        }
+
+        if (!SDL_SyncWindow(window_))
+        {
+            SDL_ClearError();
         }
 
 #if WICKED_SUBSET_USE_VULKAN && !defined(_WIN32)
@@ -1010,6 +1045,17 @@ private:
         desc.clear_color[1] = 0.08f;
         desc.clear_color[2] = 0.12f;
         desc.clear_color[3] = 1.0f;
+
+#if WICKED_SUBSET_USE_VULKAN && !defined(_WIN32)
+        nativeWindow_ = window_;
+#else
+        nativeWindow_ = GetNativeWindowHandle(window_);
+        if (nativeWindow_ == nullptr)
+        {
+            std::fprintf(stderr, "CreateSwapChain aborted: invalid native window handle\n");
+            return false;
+        }
+#endif
 
         if (!device_->CreateSwapChain(&desc, (wi::platform::window_type)nativeWindow_, &swapchain_))
         {
