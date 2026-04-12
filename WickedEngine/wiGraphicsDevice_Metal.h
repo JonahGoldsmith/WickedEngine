@@ -116,10 +116,13 @@ namespace wi
 			NS::SharedPtr<MTL::Library> library;
 			NS::SharedPtr<MTL::Function> draw_function;
 			NS::SharedPtr<MTL::Function> draw_indexed_function;
+			NS::SharedPtr<MTL::Function> draw_mesh_function;
 			NS::SharedPtr<MTL::ComputePipelineState> draw_pipeline;
 			NS::SharedPtr<MTL::ComputePipelineState> draw_indexed_pipeline;
+			NS::SharedPtr<MTL::ComputePipelineState> draw_mesh_pipeline;
 			uint32_t draw_icb_argument_buffer_size = 0;
 			uint32_t draw_indexed_icb_argument_buffer_size = 0;
+			uint32_t draw_mesh_icb_argument_buffer_size = 0;
 		} drawcount_icb_encoder;
 		
 		Semaphore* semaphore_pool = nullptr;
@@ -225,6 +228,7 @@ namespace wi
 			};
 			DrawCountICBState draw_count_icb;
 			DrawCountICBState draw_indexed_count_icb;
+			DrawCountICBState draw_mesh_count_icb;
 
 			GPUBarrier* barriers = nullptr;
 
@@ -305,6 +309,7 @@ namespace wi
 		void clear_flush(CommandList cmd);
 		bool EnsureDrawCountICBEncoder();
 		bool EnsureDrawCountICBResources(CommandList cmd, bool indexed, uint32_t max_count);
+		bool EnsureMeshCountICBResources(CommandList cmd, uint32_t max_count);
 		bool EndRenderPassForIndirectEncoding(CommandList cmd);
 		bool ResumeRenderPassAfterIndirectEncoding(CommandList cmd);
 

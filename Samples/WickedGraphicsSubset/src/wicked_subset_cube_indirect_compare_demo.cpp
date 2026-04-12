@@ -867,7 +867,6 @@ private:
                     1u,
                 };
                 device_->UpdateBuffer(&meshIndirectArgsBuffer_, &meshArgs, cmd, sizeof(meshArgs), 0);
-
                 MeshIndirectCountArgs meshCountArgs = {};
 #if WICKED_SUBSET_USE_DX12
                 meshCountArgs.DrawID = 0u;
@@ -876,6 +875,8 @@ private:
                 meshCountArgs = meshArgs;
 #endif
                 device_->UpdateBuffer(&meshIndirectCountArgsBuffer_, &meshCountArgs, cmd, sizeof(meshCountArgs), 0);
+                const uint32_t meshIndirectCommandCount = 1u;
+                device_->UpdateBuffer(&meshIndirectCommandCountBuffer_, &meshIndirectCommandCount, cmd, sizeof(meshIndirectCommandCount), 0);
             }
             indirectCountDirty_ = false;
         }
@@ -1107,11 +1108,7 @@ private:
             }
 
             supportsMeshShaders_ = true;
-#if WICKED_SUBSET_USE_METAL
-            supportsMeshIndirectCount_ = false;
-#else
             supportsMeshIndirectCount_ = true;
-#endif
         }
 
         return true;
