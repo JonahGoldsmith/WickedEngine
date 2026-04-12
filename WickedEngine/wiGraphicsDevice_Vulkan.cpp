@@ -2542,6 +2542,7 @@ using namespace vulkan_internal;
 
 			bool h264_decode_extension = false;
 			bool h265_decode_extension = false;
+			bool video_decode_queue_extension = false;
 			bool suitable = false;
 			bool conservativeRasterization = false;
 
@@ -2575,6 +2576,7 @@ using namespace vulkan_internal;
 
 				h264_decode_extension = false;
 				h265_decode_extension = false;
+				video_decode_queue_extension = false;
 
 				features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 				features_1_1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
@@ -2711,7 +2713,7 @@ using namespace vulkan_internal;
 				if (checkExtensionSupport(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME, available_deviceExtensions, extensionCount) &&
 					checkExtensionSupport(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME, available_deviceExtensions, extensionCount))
 				{
-					enable_device_extension(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME, false);
+					enable_device_extension(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME, false, &video_decode_queue_extension);
 					enable_device_extension(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME, false);
 					if (checkExtensionSupport(VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME, available_deviceExtensions, extensionCount))
 					{
@@ -3026,17 +3028,55 @@ using namespace vulkan_internal;
 
 			// Find queue families:
 			uint32_t queueFamilyCount = 0;
-			vkGetPhysicalDeviceQueueFamilyProperties2(physicalDevice, &queueFamilyCount, nullptr);
-
-			arrsetlen(queueFamilies, queueFamilyCount);
-			arrsetlen(queueFamiliesVideo, queueFamilyCount);
-			for (uint32_t i = 0; i < queueFamilyCount; ++i)
+			const bool has_queue_family_properties2 = vkGetPhysicalDeviceQueueFamilyProperties2 != nullptr;
+			const bool query_video_queue_properties = video_decode_queue_extension;
+			if (has_queue_family_properties2)
 			{
-				queueFamilies[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
-				queueFamilies[i].pNext = &queueFamiliesVideo[i];
-				queueFamiliesVideo[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_VIDEO_PROPERTIES_KHR;
+				vkGetPhysicalDeviceQueueFamilyProperties2(physicalDevice, &queueFamilyCount, nullptr);
+
+				arrsetlen(queueFamilies, queueFamilyCount);
+				arrsetlen(queueFamiliesVideo, queueFamilyCount);
+				for (uint32_t i = 0; i < queueFamilyCount; ++i)
+				{
+					queueFamilies[i] = {};
+					queueFamilies[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
+					if (query_video_queue_properties)
+					{
+						queueFamiliesVideo[i] = {};
+						queueFamiliesVideo[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_VIDEO_PROPERTIES_KHR;
+						queueFamilies[i].pNext = &queueFamiliesVideo[i];
+					}
+					else
+					{
+						queueFamilies[i].pNext = nullptr;
+					}
+				}
+				vkGetPhysicalDeviceQueueFamilyProperties2(physicalDevice, &queueFamilyCount, queueFamilies);
 			}
-			vkGetPhysicalDeviceQueueFamilyProperties2(physicalDevice, &queueFamilyCount, queueFamilies);
+			else
+			{
+				// Robust fallback for loaders/drivers where vkGetPhysicalDeviceQueueFamilyProperties2 is unavailable.
+				vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
+
+				VkQueueFamilyProperties* queueFamiliesLegacy = nullptr;
+				arrsetlen(queueFamiliesLegacy, queueFamilyCount);
+				vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamiliesLegacy);
+
+				arrsetlen(queueFamilies, queueFamilyCount);
+				arrsetlen(queueFamiliesVideo, queueFamilyCount);
+				for (uint32_t i = 0; i < queueFamilyCount; ++i)
+				{
+					queueFamilies[i] = {};
+					queueFamilies[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
+					queueFamilies[i].pNext = nullptr;
+					queueFamilies[i].queueFamilyProperties = queueFamiliesLegacy[i];
+
+					queueFamiliesVideo[i] = {};
+					queueFamiliesVideo[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_VIDEO_PROPERTIES_KHR;
+				}
+
+				arrfree(queueFamiliesLegacy);
+			}
 
 			// Query base queue families:
 			for (uint32_t i = 0; i < queueFamilyCount; ++i)
