@@ -454,7 +454,7 @@ namespace wi
 
 		void WaitForGPU() const override;
 		void ClearPipelineStateCache() override;
-		size_t GetActivePipelineCount() const override { return arrlenu(pipelines_global); }
+		size_t GetActivePipelineCount() const override { return hmlenu(pipelines_global); }
 
 		ShaderFormat GetShaderFormat() const override
 		{

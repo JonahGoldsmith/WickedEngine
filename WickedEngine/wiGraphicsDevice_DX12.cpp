@@ -4387,6 +4387,7 @@ std::mutex queue_locker;
 				cmd_desc.NumArgumentDescs = SDL_arraysize(drawInstancedCountArgs);
 				cmd_desc.pArgumentDescs = drawInstancedCountArgs;
 				dx12_check(device->CreateCommandSignature(&cmd_desc, internal_state->rootSignature.Get(), PPV_ARGS(internal_state->drawInstancedIndirectCountCommandSignature)));
+				cached.drawInstancedIndirectCountCommandSignature = internal_state->drawInstancedIndirectCountCommandSignature;
 			}
 
 			if (cached.drawIndexedInstancedIndirectCountCommandSignature)
@@ -4405,6 +4406,7 @@ std::mutex queue_locker;
 				cmd_desc.NumArgumentDescs = SDL_arraysize(drawIndexedInstancedCountArgs);
 				cmd_desc.pArgumentDescs = drawIndexedInstancedCountArgs;
 				dx12_check(device->CreateCommandSignature(&cmd_desc, internal_state->rootSignature.Get(), PPV_ARGS(internal_state->drawIndexedInstancedIndirectCountCommandSignature)));
+				cached.drawIndexedInstancedIndirectCountCommandSignature = internal_state->drawIndexedInstancedIndirectCountCommandSignature;
 			}
 		}
 		else if (stage == ShaderStage::MS)
@@ -4441,6 +4443,7 @@ std::mutex queue_locker;
 				cmd_desc.NumArgumentDescs = SDL_arraysize(dispatchMeshCountArgs);
 				cmd_desc.pArgumentDescs = dispatchMeshCountArgs;
 				dx12_check(device->CreateCommandSignature(&cmd_desc, internal_state->rootSignature.Get(), PPV_ARGS(internal_state->dispatchMeshIndirectCountCommandSignature)));
+				cached.dispatchMeshIndirectCountCommandSignature = internal_state->dispatchMeshIndirectCountCommandSignature;
 			}
 		}
 
@@ -4604,12 +4607,12 @@ std::mutex queue_locker;
 		{
 			auto shader_internal = to_internal(pso->desc.ms);
 			stream.stream2.MS = { shader_internal->shadercode, shader_internal->shadercode_size };
+			internal_state->dispatchMeshIndirectCountCommandSignature = shader_internal->dispatchMeshIndirectCountCommandSignature;
 			if (internal_state->rootSignature == nullptr)
 			{
 				internal_state->rootSignature = shader_internal->rootSignature;
 				internal_state->rootsig_desc = shader_internal->rootsig_desc;
 				internal_state->rootsig_desc_lifetime_extender = pso->desc.ms->internal_state;
-				internal_state->dispatchMeshIndirectCountCommandSignature = shader_internal->dispatchMeshIndirectCountCommandSignature;
 				stream.stream1.ROOTSIG = internal_state->rootSignature.Get();
 			}
 		}
@@ -6283,20 +6286,20 @@ std::mutex queue_locker;
 	{
 		if (multidraw_signatures != nullptr)
 		{
-			for (size_t i = 0; i < arrlenu(multidraw_signatures); ++i)
+			for (size_t i = 0; i < hmlenu(multidraw_signatures); ++i)
 			{
 				delete multidraw_signatures[i].value;
 			}
 		}
-		dx12_internal::destroy_stb_array(multidraw_signatures);
+		hmfree(multidraw_signatures);
 		if (pipelines_global != nullptr)
 		{
-			for (size_t i = 0; i < arrlenu(pipelines_global); ++i)
+			for (size_t i = 0; i < hmlenu(pipelines_global); ++i)
 			{
 				delete pipelines_global[i].value;
 			}
 		}
-		dx12_internal::destroy_stb_array(pipelines_global);
+		hmfree(pipelines_global);
 
 		for (size_t i = 0; i < arrlenu(commandlists); ++i)
 		{

@@ -134,6 +134,7 @@ static constexpr uint32_t kTimestampHashEnd = 6u;
 static constexpr uint32_t kTimestampFrameEnd = 7u;
 
 static constexpr uint32_t kArgByteStride = 20u;
+static constexpr float kPi = 3.14159265358979323846f;
 
 #if defined(WICKED_MMGR_ENABLED)
 void* SDLCALL SDLMmgrMalloc(size_t size)
@@ -634,13 +635,13 @@ MeshShapeCPU CreateSphereShape(uint32_t latitudeBands, uint32_t longitudeBands)
 
     for (uint32_t lat = 0; lat <= latitudeBands; ++lat)
     {
-        const float theta = static_cast<float>(lat) * static_cast<float>(M_PI) / static_cast<float>(latitudeBands);
+        const float theta = static_cast<float>(lat) * kPi / static_cast<float>(latitudeBands);
         const float sinTheta = std::sin(theta);
         const float cosTheta = std::cos(theta);
 
         for (uint32_t lon = 0; lon <= longitudeBands; ++lon)
         {
-            const float phi = static_cast<float>(lon) * 2.0f * static_cast<float>(M_PI) / static_cast<float>(longitudeBands);
+            const float phi = static_cast<float>(lon) * 2.0f * kPi / static_cast<float>(longitudeBands);
             const float sinPhi = std::sin(phi);
             const float cosPhi = std::cos(phi);
             shape.vertices.push_back(Vec3{
@@ -689,7 +690,7 @@ MeshShapeCPU CreateCylinderShape(uint32_t segments)
 
     for (uint32_t i = 0; i < segments; ++i)
     {
-        const float a = (static_cast<float>(i) / static_cast<float>(segments)) * 2.0f * static_cast<float>(M_PI);
+        const float a = (static_cast<float>(i) / static_cast<float>(segments)) * 2.0f * kPi;
         const float x = std::cos(a);
         const float z = std::sin(a);
         shape.vertices.push_back(Vec3{ x, halfHeight, z });
@@ -735,14 +736,14 @@ MeshShapeCPU CreateTorusShape(uint32_t majorSegments, uint32_t minorSegments, fl
     for (uint32_t major = 0; major <= majorSegments; ++major)
     {
         const float u = static_cast<float>(major) / static_cast<float>(majorSegments);
-        const float majorAngle = u * 2.0f * static_cast<float>(M_PI);
+        const float majorAngle = u * 2.0f * kPi;
         const float cosMajor = std::cos(majorAngle);
         const float sinMajor = std::sin(majorAngle);
 
         for (uint32_t minor = 0; minor <= minorSegments; ++minor)
         {
             const float v = static_cast<float>(minor) / static_cast<float>(minorSegments);
-            const float minorAngle = v * 2.0f * static_cast<float>(M_PI);
+            const float minorAngle = v * 2.0f * kPi;
             const float cosMinor = std::cos(minorAngle);
             const float sinMinor = std::sin(minorAngle);
 
