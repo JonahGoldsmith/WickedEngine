@@ -537,6 +537,7 @@ public:
 
         while (running)
         {
+            bool resizeRequested = false;
             SDL_Event event;
             while (SDL_PollEvent(&event))
             {
@@ -598,16 +599,22 @@ public:
                 }
                 else if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED || event.type == SDL_EVENT_WINDOW_RESIZED)
                 {
-                    if (!RecreateSwapchain())
-                    {
-                        running = false;
-                    }
+                    resizeRequested = true;
                 }
             }
 
             if (!running)
             {
                 break;
+            }
+
+            if (resizeRequested)
+            {
+                if (!RecreateSwapchain())
+                {
+                    running = false;
+                    break;
+                }
             }
 
             const uint64_t nowTick = SDL_GetPerformanceCounter();
@@ -1019,8 +1026,33 @@ private:
             return false;
         }
 
+        int width = 0;
+        int height = 0;
+        SDL_GetWindowSizeInPixels(window_, &width, &height);
+        if (width <= 0 || height <= 0)
+        {
+            // Minimized / zero drawable size: defer swapchain recreation.
+            SDL_Log("[WickedBackendCubeIndirectCompareDemo] RecreateSwapchain deferred (drawable %dx%d)", width, height);
+            return true;
+        }
+        SDL_Log(
+            "[WickedBackendCubeIndirectCompareDemo] RecreateSwapchain request: old=%ux%u new=%dx%d valid=%d",
+            swapchain_.desc.width,
+            swapchain_.desc.height,
+            width,
+            height,
+            wi::wiGraphicsSwapChainIsValid(&swapchain_) ? 1 : 0
+        );
+        if (wi::wiGraphicsSwapChainIsValid(&swapchain_) &&
+            swapchain_.desc.width == static_cast<uint32_t>(width) &&
+            swapchain_.desc.height == static_cast<uint32_t>(height))
+        {
+            // Skip redundant recreate when SDL emits duplicate resize events with unchanged size.
+            SDL_Log("[WickedBackendCubeIndirectCompareDemo] RecreateSwapchain skipped (size unchanged)");
+            return true;
+        }
+
         device_->WaitForGPU();
-        swapchain_ = {};
         return CreateSwapchain();
     }
 
@@ -1045,14 +1077,21 @@ private:
         desc.clear_color[2] = 0.12f;
         desc.clear_color[3] = 1.0f;
 
+        const bool hasValidSwapchain = wi::wiGraphicsSwapChainIsValid(&swapchain_);
 #if WICKED_SUBSET_USE_VULKAN && !defined(_WIN32)
-        nativeWindow_ = window_;
-#else
-        nativeWindow_ = GetNativeWindowHandle(window_);
-        if (nativeWindow_ == nullptr)
+        if (!hasValidSwapchain)
         {
-            std::fprintf(stderr, "CreateSwapChain aborted: invalid native window handle\n");
-            return false;
+            nativeWindow_ = window_;
+        }
+#else
+        if (!hasValidSwapchain)
+        {
+            nativeWindow_ = GetNativeWindowHandle(window_);
+            if (nativeWindow_ == nullptr)
+            {
+                std::fprintf(stderr, "CreateSwapChain aborted: invalid native window handle\n");
+                return false;
+            }
         }
 #endif
 

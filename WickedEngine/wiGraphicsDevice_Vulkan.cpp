@@ -17,6 +17,7 @@
 #include "Utility/spirv_reflect.h"
 #include "Utility/vulkan/vk_video/vulkan_video_codec_h264std_decode.h"
 #include "Utility/h264.h"
+#include "wiMath.h"
 
 #define VOLK_IMPLEMENTATION
 #include "Utility/volk.h"
