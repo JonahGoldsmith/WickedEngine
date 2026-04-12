@@ -704,7 +704,7 @@ namespace wi::lua
 
 	int RenderPath3D_BindLua::GetLastPostProcessRT(lua_State* L)
 	{
-		const wi::graphics::Texture* tex = ((RenderPath3D*)component)->GetLastPostprocessRT();
+		const wi::Texture* tex = ((RenderPath3D*)component)->GetLastPostprocessRT();
 		if (tex == nullptr)
 			return 0;
 		Luna<Texture_BindLua>::push(L, *tex);

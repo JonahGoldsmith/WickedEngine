@@ -25,13 +25,13 @@ namespace wi::profiler
 	void BeginFrame();
 
 	// Finalize collecting profiling data for the current frame
-	void EndFrame(wi::graphics::CommandList cmd);
+	void EndFrame(wi::CommandList cmd);
 
 	// Start a CPU profiling range
 	range_id BeginRangeCPU(const char* name);
 
 	// Start a GPU profiling range
-	range_id BeginRangeGPU(const char* name, wi::graphics::CommandList cmd);
+	range_id BeginRangeGPU(const char* name, wi::CommandList cmd);
 
 	// End a profiling range
 	void EndRange(range_id id);
@@ -48,7 +48,7 @@ namespace wi::profiler
 	struct ScopedRangeGPU
 	{
 		range_id id;
-		inline ScopedRangeGPU(const char* name, wi::graphics::CommandList cmd) { id = BeginRangeGPU(name, cmd); }
+		inline ScopedRangeGPU(const char* name, wi::CommandList cmd) { id = BeginRangeGPU(name, cmd); }
 		inline ~ScopedRangeGPU() { EndRange(id); }
 	};
 
@@ -57,8 +57,8 @@ namespace wi::profiler
 		const wi::Canvas& canvas,
 		float x,
 		float y,
-		wi::graphics::CommandList cmd,
-		wi::graphics::ColorSpace colorspace = wi::graphics::ColorSpace::SRGB
+		wi::CommandList cmd,
+		wi::ColorSpace colorspace = wi::ColorSpace::SRGB
 	);
 	void DisableDrawForThisFrame();
 

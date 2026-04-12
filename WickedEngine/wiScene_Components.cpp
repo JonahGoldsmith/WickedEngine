@@ -27,7 +27,7 @@
 
 using namespace wi::ecs;
 using namespace wi::enums;
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::primitive;
 
 namespace wi::scene
@@ -391,7 +391,7 @@ namespace wi::scene
 
 		material.options_stencilref |= wi::renderer::CombineStencilrefs(engineStencilRef, userStencilRef) << 24u;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		for (int i = 0; i < TEXTURESLOT_COUNT; ++i)
 		{
 			const MaterialComponent::TextureMap& texturemap = textures[i];
@@ -449,7 +449,7 @@ namespace wi::scene
 	{
 		std::memcpy(&dest->textures[slot].texture_descriptor, &descriptor, sizeof(descriptor)); // memcpy into mapped pointer to avoid read from uncached memory
 	}
-	void MaterialComponent::WriteTextures(const wi::graphics::GPUResource** dest, int count) const
+	void MaterialComponent::WriteTextures(const wi::GPUResource** dest, int count) const
 	{
 		count = std::min(count, (int)TEXTURESLOT_COUNT);
 		for (int i = 0; i < count; ++i)
@@ -619,7 +619,7 @@ namespace wi::scene
 	{
 		DeleteRenderData();
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		if (vertex_tangents.empty() && !vertex_uvset_0.empty() && !vertex_normals.empty())
 		{
@@ -853,7 +853,7 @@ namespace wi::scene
 		{
 			bd.usage = Usage::DEFAULT;
 		}
-		bd.bind_flags = BindFlag::VERTEX_BUFFER | BindFlag::INDEX_BUFFER | BindFlag::SHADER_RESOURCE;
+		bd.bind_flags = BindFlag::BIND_VERTEX_BUFFER | BindFlag::BIND_INDEX_BUFFER | BindFlag::BIND_SHADER_RESOURCE;
 		bd.misc_flags = ResourceMiscFlag::BUFFER_RAW | ResourceMiscFlag::TYPED_FORMAT_CASTING | ResourceMiscFlag::NO_DEFAULT_DESCRIPTORS;
 		if (device->CheckCapability(GraphicsDeviceCapability::RAYTRACING))
 		{
@@ -1446,11 +1446,11 @@ namespace wi::scene
 	}
 	void MeshComponent::CreateStreamoutRenderData()
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		GPUBufferDesc desc;
 		desc.usage = Usage::DEFAULT;
-		desc.bind_flags = BindFlag::VERTEX_BUFFER | BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+		desc.bind_flags = BindFlag::BIND_VERTEX_BUFFER | BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 		desc.misc_flags = ResourceMiscFlag::BUFFER_RAW | ResourceMiscFlag::TYPED_FORMAT_CASTING | ResourceMiscFlag::NO_DEFAULT_DESCRIPTORS;
 		if (device->CheckCapability(GraphicsDeviceCapability::RAYTRACING))
 		{
@@ -1511,7 +1511,7 @@ namespace wi::scene
 	}
 	void MeshComponent::CreateRaytracingRenderData()
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		if (!device->CheckCapability(GraphicsDeviceCapability::RAYTRACING))
 			return;
@@ -2170,7 +2170,7 @@ namespace wi::scene
 	void ObjectComponent::SaveLightmap()
 	{
 		lightmap_render = {};
-		if (lightmap.IsValid() && has_flag(lightmap.desc.bind_flags, BindFlag::UNORDERED_ACCESS))
+		if (lightmap.IsValid() && has_flag(lightmap.desc.bind_flags, BindFlag::BIND_UNORDERED_ACCESS))
 		{
 			SetLightmapRenderRequest(false);
 
@@ -2226,7 +2226,7 @@ namespace wi::scene
 			CompressLightmap();
 
 			wi::texturehelper::CreateTexture(lightmap, lightmapTextureData.data(), lightmapWidth, lightmapHeight, lightmap.desc.format);
-			wi::graphics::GetDevice()->SetName(&lightmap, "lightmap");
+			wi::GetDevice()->SetName(&lightmap, "lightmap");
 		}
 	}
 	void ObjectComponent::CompressLightmap()
@@ -2248,7 +2248,7 @@ namespace wi::scene
 
 			lightmapTextureData = std::move(packed_data);
 			lightmap.desc.format = Format::R11G11B10_FLOAT;
-			lightmap.desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			lightmap.desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 		}
 		else
 		{
@@ -2256,7 +2256,7 @@ namespace wi::scene
 			wi::texturehelper::CreateTexture(lightmap, lightmapTextureData.data(), lightmapWidth, lightmapHeight, lightmap.desc.format);
 			TextureDesc desc = lightmap.desc;
 			desc.format = Format::BC6H_UF16;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			Texture bc6tex;
 			GraphicsDevice* device = GetDevice();
 			device->CreateTexture(&desc, nullptr, &bc6tex);
@@ -2275,12 +2275,12 @@ namespace wi::scene
 	{
 		DeleteRenderData();
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		if (!vertex_ao.empty())
 		{
 			GPUBufferDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			desc.size = sizeof(Vertex_AO) * vertex_ao.size();
 			desc.format = Vertex_AO::FORMAT;
 
@@ -2314,7 +2314,7 @@ namespace wi::scene
 			return;
 		SetDirty();
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		TextureDesc desc;
 		desc.array_size = 6;
@@ -2323,7 +2323,7 @@ namespace wi::scene
 		desc.usage = Usage::DEFAULT;
 		desc.format = Format::BC6H_UF16;
 		desc.sample_count = 1; // Note that this texture is always non-MSAA, even if probe is rendered as MSAA, because this contains resolved result
-		desc.bind_flags = BindFlag::SHADER_RESOURCE;
+		desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 		desc.mip_levels = GetMipCount(resolution, resolution, 1, 16);
 		desc.misc_flags = ResourceMiscFlag::TEXTURECUBE;
 		desc.layout = ResourceState::SHADER_RESOURCE;

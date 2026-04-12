@@ -65,31 +65,31 @@ namespace wi::helper
 	MessageBoxResult messageBoxCustom(const std::string& msg, const std::string& caption = "Warning!", const std::string& buttons = "OK");
 
 	// Returns file path if successful, empty string otherwise
-	std::string screenshot(const wi::graphics::SwapChain& swapchain, const std::string& name = "");
+	std::string screenshot(const wi::SwapChain& swapchain, const std::string& name = "");
 
 	// Returns file path if successful, empty string otherwise
-	std::string screenshot(const wi::graphics::Texture& texture, const std::string& name = "");
+	std::string screenshot(const wi::Texture& texture, const std::string& name = "");
 
 	// Save raw pixel data from the texture to memory
-	bool saveTextureToMemory(const wi::graphics::Texture& texture, wi::vector<uint8_t>& texturedata);
+	bool saveTextureToMemory(const wi::Texture& texture, wi::vector<uint8_t>& texturedata);
 
 	// Save texture to memory as a file format (file format is determined by extension, supported extensions: .png, .jpg, .jpeg, .tga, .bmp, .dds, .ico, .h, .raw)
-	bool saveTextureToMemoryFile(const wi::graphics::Texture& texture, const std::string& fileExtension, wi::vector<uint8_t>& filedata);
+	bool saveTextureToMemoryFile(const wi::Texture& texture, const std::string& fileExtension, wi::vector<uint8_t>& filedata);
 
 	// Save raw texture data to memory as file format (file format is determined by extension, supported extensions: .png, .jpg, .jpeg, .tga, .bmp, .dds, .ico, .h, .raw)
-	bool saveTextureToMemoryFile(const wi::vector<uint8_t>& textureData, const wi::graphics::TextureDesc& desc, const std::string& fileExtension, wi::vector<uint8_t>& filedata);
+	bool saveTextureToMemoryFile(const wi::vector<uint8_t>& textureData, const wi::TextureDesc& desc, const std::string& fileExtension, wi::vector<uint8_t>& filedata);
 
 	// Save texture to file format (file format is determined by extension, supported extensions: .png, .jpg, .jpeg, .tga, .bmp, .dds, .ico, .h, .raw)
-	bool saveTextureToFile(const wi::graphics::Texture& texture, const std::string& fileName);
+	bool saveTextureToFile(const wi::Texture& texture, const std::string& fileName);
 
 	// Save raw texture data to file format (file format is determined by extension, supported extensions: .png, .jpg, .jpeg, .tga, .bmp, .dds, .ico, .h, .raw)
-	bool saveTextureToFile(const wi::vector<uint8_t>& texturedata, const wi::graphics::TextureDesc& desc, const std::string& fileName);
+	bool saveTextureToFile(const wi::vector<uint8_t>& texturedata, const wi::TextureDesc& desc, const std::string& fileName);
 
 	// Download buffer from GPU into CPU memory
-	bool saveBufferToMemory(const wi::graphics::GPUBuffer& buffer, wi::vector<uint8_t>& data);
+	bool saveBufferToMemory(const wi::GPUBuffer& buffer, wi::vector<uint8_t>& data);
 
 	// Creates cursor data from texture. If successful, the file data is returned in the data argument
-	bool CreateCursorFromTexture(const wi::graphics::Texture& texture, int hotspotX, int hotspotY, wi::vector<uint8_t>& data);
+	bool CreateCursorFromTexture(const wi::Texture& texture, int hotspotX, int hotspotY, wi::vector<uint8_t>& data);
 
 	std::string getCurrentDateTimeAsString();
 

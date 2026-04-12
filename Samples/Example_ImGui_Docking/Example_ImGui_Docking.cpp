@@ -36,7 +36,7 @@
 
 using namespace wi::ecs;
 using namespace wi::scene;
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::primitive;
 
 
@@ -53,7 +53,7 @@ ImFont* iconfont;
 #ifdef _WIN32
 HWND hWnd = NULL;
 #endif
-wi::graphics::SwapChain myswapChain;
+wi::SwapChain myswapChain;
 void style_dark_ruda(void);
 void add_my_font(const char* fontpath);
 Example_ImGuiRenderer* active_render = nullptr;
@@ -85,21 +85,21 @@ bool ImGui_Impl_CreateDeviceObjects()
 	textureDesc.mip_levels = 1;
 	textureDesc.array_size = 1;
 	textureDesc.format = Format::R8G8B8A8_UNORM;
-	textureDesc.bind_flags = BindFlag::SHADER_RESOURCE;
+	textureDesc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 
 	SubresourceData textureData;
 	textureData.data_ptr = pixels;
 	textureData.row_pitch = width * GetFormatStride(textureDesc.format);
 	textureData.slice_pitch = textureData.row_pitch * height;
 
-	wi::graphics::GetDevice()->CreateTexture(&textureDesc, &textureData, &fontTexture);
+	wi::GetDevice()->CreateTexture(&textureDesc, &textureData, &fontTexture);
 
 	SamplerDesc samplerDesc;
 	samplerDesc.address_u = TextureAddressMode::WRAP;
 	samplerDesc.address_v = TextureAddressMode::WRAP;
 	samplerDesc.address_w = TextureAddressMode::WRAP;
 	samplerDesc.filter = Filter::MIN_MAG_MIP_LINEAR;
-	wi::graphics::GetDevice()->CreateSampler(&samplerDesc, &sampler);
+	wi::GetDevice()->CreateSampler(&samplerDesc, &sampler);
 
 	// Store our identifier
 	io.Fonts->SetTexID((ImTextureID)&fontTexture);
@@ -120,7 +120,7 @@ bool ImGui_Impl_CreateDeviceObjects()
 	desc.rs = wi::renderer::GetRasterizerState(wi::enums::RSTYPE_DOUBLESIDED);
 	desc.bs = wi::renderer::GetBlendState(wi::enums::BSTYPE_TRANSPARENT);
 	desc.pt = PrimitiveTopology::TRIANGLELIST;
-	wi::graphics::GetDevice()->CreatePipelineState(&desc, &imguiPSO);
+	wi::GetDevice()->CreatePipelineState(&desc, &imguiPSO);
 
 	return true;
 }
@@ -205,7 +205,7 @@ void Example_ImGui::Initialize()
 	ActivatePath(&renderer);
 }
 
-void Example_ImGui::Compose(wi::graphics::CommandList cmd)
+void Example_ImGui::Compose(wi::CommandList cmd)
 {
 	Application::Compose(cmd);
 
@@ -227,7 +227,7 @@ void Example_ImGui::Compose(wi::graphics::CommandList cmd)
 
 	auto* bd = ImGui_Impl_GetBackendData();
 
-	GraphicsDevice* device = wi::graphics::GetDevice();
+	GraphicsDevice* device = wi::GetDevice();
 
 	// Get memory for vertex and index buffers
 	const uint64_t vbSize = sizeof(ImDrawVert) * drawData->TotalVtxCount;
@@ -1263,7 +1263,7 @@ void Example_ImGuiRenderer::Update(float dt)
 		int columns = 7;
 		ImGui::BeginColumns("##debugger", columns, ImGuiOldColumnFlags_NoBorder | ImGuiOldColumnFlags_NoResize);
 
-		std::vector< wi::graphics::Texture > debug_textures;
+		std::vector< wi::Texture > debug_textures;
 		std::vector< std::string > debug_texture_name;
 
 		//PE: TODO , add shaders that are able to display things like rtPrimitiveID (divide option).

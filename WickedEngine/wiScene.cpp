@@ -24,7 +24,7 @@
 
 using namespace wi::ecs;
 using namespace wi::enums;
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::primitive;
 
 namespace wi::scene
@@ -33,7 +33,7 @@ namespace wi::scene
 
 	void Scene::Update(float dt)
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		cpu_gpu_mapped_resource_index = GetDevice()->GetBufferIndex(); // this is now saved so that the renderer knows the last resource index that the scene was updated with
 		this->dt = dt;
 		time += dt;
@@ -89,7 +89,7 @@ namespace wi::scene
 			desc.stride = sizeof(ShaderMeshInstance);
 			desc.alignment = alignof(ShaderMeshInstance);
 			desc.size = desc.stride * instanceArraySize * 2; // *2 to grow fast
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			if (!device->CheckCapability(GraphicsDeviceCapability::CACHE_COHERENT_UMA))
 			{
@@ -98,8 +98,8 @@ namespace wi::scene
 				device->SetName(&instanceBuffer, "Scene::instanceBuffer");
 
 				// Upload buffer shouldn't be used by shaders with Non-UMA:
-				desc.bind_flags = BindFlag::NONE;
-				desc.misc_flags = ResourceMiscFlag::NONE;
+				desc.bind_flags = BindFlag::BIND_NONE;
+				desc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 			}
 
 			desc.usage = Usage::UPLOAD;
@@ -128,7 +128,7 @@ namespace wi::scene
 			desc.stride = sizeof(ShaderMaterial);
 			desc.alignment = alignof(ShaderMaterial);
 			desc.size = desc.stride * materialArraySize * 2; // *2 to grow fast
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			if (!device->CheckCapability(GraphicsDeviceCapability::CACHE_COHERENT_UMA))
 			{
@@ -137,8 +137,8 @@ namespace wi::scene
 				device->SetName(&materialBuffer, "Scene::materialBuffer");
 
 				// Upload buffer shouldn't be used by shaders with Non-UMA:
-				desc.bind_flags = BindFlag::NONE;
-				desc.misc_flags = ResourceMiscFlag::NONE;
+				desc.bind_flags = BindFlag::BIND_NONE;
+				desc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 			}
 
 			desc.usage = Usage::UPLOAD;
@@ -156,15 +156,15 @@ namespace wi::scene
 			desc.stride = sizeof(uint32_t);
 			desc.alignment = alignof(uint32_t);
 			desc.size = desc.stride * materialArraySize * 2; // *2 to grow fast
-			desc.bind_flags = BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = Format::R32_UINT;
 			device->CreateBuffer(&desc, nullptr, &textureStreamingFeedbackBuffer);
 			device->SetName(&textureStreamingFeedbackBuffer, "Scene::textureStreamingFeedbackBuffer");
 
 			// Readback buffer shouldn't be used by shaders:
 			desc.usage = Usage::READBACK;
-			desc.bind_flags = BindFlag::NONE;
-			desc.misc_flags = ResourceMiscFlag::NONE;
+			desc.bind_flags = BindFlag::BIND_NONE;
+			desc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 			for (int i = 0; i < arraysize(textureStreamingFeedbackBuffer_readback); ++i)
 			{
 				device->CreateBuffer(&desc, nullptr, &textureStreamingFeedbackBuffer_readback[i]);
@@ -196,10 +196,10 @@ namespace wi::scene
 					device->SetName(&queryResultBuffer[i], "Scene::queryResultBuffer");
 				}
 
-				if (device->CheckCapability(GraphicsDeviceCapability::PREDICATION))
+				if (device->CheckCapability(GraphicsDeviceCapability::GRAPHICS_DEVICE_CAPABILITY_PREDICATION))
 				{
 					bd.usage = Usage::DEFAULT;
-					bd.misc_flags |= ResourceMiscFlag::PREDICATION;
+					bd.misc_flags |= ResourceMiscFlag::RESOURCE_MISC_PREDICATION;
 					success = device->CreateBuffer(&bd, nullptr, &queryPredicationBuffer);
 					assert(success);
 					device->SetName(&queryPredicationBuffer, "Scene::queryPredicationBuffer");
@@ -319,7 +319,7 @@ namespace wi::scene
 			desc.stride = sizeof(ShaderGeometry);
 			desc.alignment = alignof(ShaderGeometry);
 			desc.size = desc.stride * geometryArraySize * 2; // *2 to grow fast
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			if (!device->CheckCapability(GraphicsDeviceCapability::CACHE_COHERENT_UMA))
 			{
@@ -328,8 +328,8 @@ namespace wi::scene
 				device->SetName(&geometryBuffer, "Scene::geometryBuffer");
 
 				// Upload buffer shouldn't be used by shaders with Non-UMA:
-				desc.bind_flags = BindFlag::NONE;
-				desc.misc_flags = ResourceMiscFlag::NONE;
+				desc.bind_flags = BindFlag::BIND_NONE;
+				desc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 			}
 
 			desc.usage = Usage::UPLOAD;
@@ -348,7 +348,7 @@ namespace wi::scene
 		{
 			GPUBufferDesc desc;
 			desc.size = skinningDataSize * 2; // *2 to grow fast
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_RAW;
 			if (!device->CheckCapability(GraphicsDeviceCapability::CACHE_COHERENT_UMA))
 			{
@@ -357,8 +357,8 @@ namespace wi::scene
 				device->SetName(&skinningBuffer, "Scene::skinningBuffer");
 
 				// Upload buffer shouldn't be used by shaders with Non-UMA:
-				desc.bind_flags = BindFlag::NONE;
-				desc.misc_flags = ResourceMiscFlag::NONE;
+				desc.bind_flags = BindFlag::BIND_NONE;
+				desc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 			}
 
 			desc.usage = Usage::UPLOAD;
@@ -430,7 +430,7 @@ namespace wi::scene
 			GPUBufferDesc desc;
 			desc.stride = sizeof(ShaderMeshlet);
 			desc.size = desc.stride * meshletCount * 2; // *2 to grow fast
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			bool success = device->CreateBuffer(&desc, nullptr, &meshletBuffer);
 			assert(success);
@@ -498,7 +498,7 @@ namespace wi::scene
 				buf.stride = sizeof(Surfel);
 				buf.size = buf.stride * SURFEL_CAPACITY;
 				buf.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
-				buf.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+				buf.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 				device->CreateBufferZeroed(&buf, &surfelgi.surfelBuffer);
 				device->SetName(&surfelgi.surfelBuffer, "surfelgi.surfelBuffer");
 
@@ -570,7 +570,7 @@ namespace wi::scene
 				tex.width = SURFEL_MOMENT_ATLAS_TEXELS;
 				tex.height = SURFEL_MOMENT_ATLAS_TEXELS;
 				tex.format = Format::R16G16_FLOAT;
-				tex.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+				tex.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 				tex.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
 				device->CreateTexture(&tex, nullptr, &surfelgi.momentsTexture);
 				device->SetName(&surfelgi.momentsTexture, "surfelgi.momentsTexture");
@@ -598,7 +598,7 @@ namespace wi::scene
 				GPUBufferDesc buf;
 				buf.stride = sizeof(DDGIRayDataPacked);
 				buf.size = buf.stride * probe_count * DDGI_MAX_RAYCOUNT;
-				buf.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+				buf.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 				buf.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 				device->CreateBufferZeroed(&buf, &ddgi.ray_buffer);
 				device->SetName(&ddgi.ray_buffer, "ddgi.ray_buffer");
@@ -611,7 +611,7 @@ namespace wi::scene
 
 				buf.stride = sizeof(uint8_t);
 				buf.size = buf.stride * probe_count;
-				buf.misc_flags = ResourceMiscFlag::NONE;
+				buf.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 				buf.format = Format::R8_UINT;
 				device->CreateBufferZeroed(&buf, &ddgi.raycount_buffer);
 				device->SetName(&ddgi.raycount_buffer, "ddgi.raycount_buffer");
@@ -635,7 +635,7 @@ namespace wi::scene
 				tex.height = DDGI_DEPTH_TEXELS * ddgi.grid_dimensions.z;
 				tex.format = Format::R16G16_FLOAT;
 				tex.misc_flags = {};
-				tex.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+				tex.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 				tex.layout = ResourceState::SHADER_RESOURCE;
 				wi::vector<uint8_t> zerodata(ComputeTextureMemorySizeInBytes(tex));
 				SubresourceData initdata;
@@ -677,7 +677,7 @@ namespace wi::scene
 				desc.depth = vxgi.res;
 				desc.mip_levels = 1;
 				desc.format = Format::R16G16B16A16_FLOAT;
-				desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 				desc.usage = Usage::DEFAULT;
 
 				device->CreateTexture(&desc, nullptr, &vxgi.radiance);
@@ -697,7 +697,7 @@ namespace wi::scene
 				desc.depth = vxgi.res * VOXELIZATION_CHANNEL_COUNT;
 				desc.mip_levels = 1;
 				desc.usage = Usage::DEFAULT;
-				desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 				desc.format = Format::R32_UINT;
 				device->CreateTexture(&desc, nullptr, &vxgi.render_atomic);
 				device->SetName(&vxgi.render_atomic, "vxgi.render_atomic");
@@ -711,7 +711,7 @@ namespace wi::scene
 				desc.depth = vxgi.res;
 				desc.mip_levels = 1;
 				desc.usage = Usage::DEFAULT;
-				desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 				desc.format = Format::R16_FLOAT;
 				device->CreateTexture(&desc, nullptr, &vxgi.sdf);
 				device->SetName(&vxgi.sdf, "vxgi.sdf");
@@ -731,7 +731,7 @@ namespace wi::scene
 
 				GPUBufferDesc desc;
 				desc.usage = Usage::DEFAULT;
-				desc.bind_flags = BindFlag::INDEX_BUFFER | BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+				desc.bind_flags = BindFlag::BIND_INDEX_BUFFER | BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 				desc.misc_flags = ResourceMiscFlag::BUFFER_RAW | ResourceMiscFlag::TYPED_FORMAT_CASTING | ResourceMiscFlag::INDIRECT_ARGS | ResourceMiscFlag::NO_DEFAULT_DESCRIPTORS;
 
 				const uint64_t alignment =
@@ -850,7 +850,7 @@ namespace wi::scene
 				desc.format = Format::R16G16B16A16_FLOAT;
 				desc.width = cloudmap_resolution;
 				desc.height = cloudmap_resolution;
-				desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+				desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 				bool success = device->CreateTexture(&desc, nullptr, &cloudmap);
 				assert(success);
 				device->SetName(&cloudmap, "cloudmap");
@@ -858,7 +858,7 @@ namespace wi::scene
 				GPUBufferDesc bd;
 				bd.stride = sizeof(XMUINT4) * 2 + sizeof(float);
 				bd.size = bd.stride * (desc.width / 2) * (desc.height / 2);
-				bd.bind_flags = BindFlag::UNORDERED_ACCESS;
+				bd.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 				bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 				success = device->CreateBuffer(&bd, nullptr, &cloudmap_variance);
 				device->SetName(&cloudmap_variance, "cloudmap_variance");
@@ -999,7 +999,7 @@ namespace wi::scene
 			{
 				GPUBufferDesc desc;
 				desc.size = required_size;
-				desc.bind_flags = BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 				desc.misc_flags = ResourceMiscFlag::BUFFER_RAW;
 				device->CreateBuffer(&desc, nullptr, &voxelgrid_gpu);
 				device->SetName(&voxelgrid_gpu, "voxelgrid_gpu");
@@ -4270,7 +4270,7 @@ namespace wi::scene
 
 		if (impostors.GetCount() > 0 && !impostorArray.IsValid())
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			TextureDesc desc;
 			desc.width = impostorTextureDim;
@@ -4299,10 +4299,10 @@ namespace wi::scene
 			device->SetName(&impostorRenderTarget_Surface_MSAA, "impostorRenderTarget_Surface_MSAA");
 
 			desc.sample_count = 1;
-			desc.misc_flags = ResourceMiscFlag::NONE;
+			desc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 			desc.layout = ResourceState::SHADER_RESOURCE;
 
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::RENDER_TARGET; // Note: RenderTarget required for MSAA resolve dest [PS5]
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::RENDER_TARGET; // Note: RenderTarget required for MSAA resolve dest [PS5]
 			desc.format = Format::R8G8B8A8_UNORM;
 			device->CreateTexture(&desc, nullptr, &impostorRenderTarget_Albedo);
 			device->SetName(&impostorRenderTarget_Albedo, "impostorRenderTarget_Albedo");
@@ -4314,9 +4314,9 @@ namespace wi::scene
 			device->SetName(&impostorRenderTarget_Surface, "impostorRenderTarget_Surface");
 
 			desc.format = Format::BC3_UNORM;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			desc.layout = ResourceState::SHADER_RESOURCE;
-			desc.misc_flags = ResourceMiscFlag::NONE;
+			desc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 			desc.array_size = maxImpostorCount * impostorCaptureAngles * 3;
 			device->CreateTexture(&desc, nullptr, &impostorArray);
 			device->SetName(&impostorArray, "impostorArray");
@@ -4430,7 +4430,7 @@ namespace wi::scene
 			Entity entity = objects.GetEntity(args.jobIndex);
 			ObjectComponent& object = objects[args.jobIndex];
 			AABB& aabb = aabb_objects[args.jobIndex];
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			// Update occlusion culling status:
 			OcclusionResult& occlusion_result = occlusion_results_objects[args.jobIndex];
@@ -4483,7 +4483,7 @@ namespace wi::scene
 					GPUBufferDesc desc;
 					desc.size = mesh.vertex_positions.size() * sizeof(uint16_t);
 					desc.format = Format::R16_UNORM;
-					desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+					desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 					device->CreateBuffer(&desc, nullptr, &object.wetmap);
 					device->SetName(&object.wetmap, "wetmap");
 					object.wetmap_cleared = false;
@@ -4721,7 +4721,7 @@ namespace wi::scene
 						TextureDesc desc;
 						desc.width = object.lightmapWidth;
 						desc.height = object.lightmapHeight;
-						desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+						desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 						// Note: we need the full precision format to achieve correct accumulative blending! 
 						//	But the final lightmap will be compressed into an optimal format when the rendering is finished
 						desc.format = Format::R32G32B32A32_FLOAT;
@@ -4736,7 +4736,7 @@ namespace wi::scene
 						TextureDesc desc;
 						desc.width = object.lightmapWidth;
 						desc.height = object.lightmapHeight;
-						desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+						desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 						desc.format = Format::R16G16B16A16_FLOAT; // denoiser needs at least half precision float
 
 						device->CreateTexture(&desc, nullptr, &object.lightmap);
@@ -5078,7 +5078,7 @@ namespace wi::scene
 				}
 			}
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			uint32_t indexCount = hair.GetIndexCount();
 			uint32_t triangleCount = indexCount / 3u;
@@ -5203,7 +5203,7 @@ namespace wi::scene
 			if (emitter.IsInactive()) // check after UpdateCPU
 				return; // can skip writing TLAS instace below
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			ShaderGeometry geometry = shader_geometry_null;
 			geometry.indexOffset = 0;
@@ -5330,7 +5330,7 @@ namespace wi::scene
 
 		if (weather.rain_amount > 0)
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			rainEmitter.opacityCurveControlPeakStart = 0;
 			rainEmitter._flags |= wi::EmittedParticleSystem::FLAG_USE_RAIN_BLOCKER;
 			rainEmitter.shaderType = wi::EmittedParticleSystem::PARTICLESHADERTYPE::SOFT_LIGHTING;
@@ -5368,7 +5368,7 @@ namespace wi::scene
 				Texture gradientTexBC;
 				TextureDesc desc = gradientTex.GetDesc();
 				desc.format = Format::BC4_UNORM;
-				desc.swizzle = { wi::graphics::ComponentSwizzle::ONE,wi::graphics::ComponentSwizzle::ONE,wi::graphics::ComponentSwizzle::ONE,wi::graphics::ComponentSwizzle::R };
+				desc.swizzle = { wi::ComponentSwizzle::SWIZZLE_ONE,wi::ComponentSwizzle::SWIZZLE_ONE,wi::ComponentSwizzle::SWIZZLE_ONE,wi::ComponentSwizzle::R };
 				bool success = device->CreateTexture(&desc, nullptr, &gradientTexBC);
 				assert(success);
 				wi::renderer::AddDeferredBlockCompression(gradientTex, gradientTexBC);
@@ -5382,7 +5382,7 @@ namespace wi::scene
 				Texture gradientTexBC;
 				TextureDesc desc = gradientTex.GetDesc();
 				desc.format = Format::BC5_UNORM;
-				desc.swizzle = { wi::graphics::ComponentSwizzle::R,wi::graphics::ComponentSwizzle::G,wi::graphics::ComponentSwizzle::ONE,wi::graphics::ComponentSwizzle::ONE };
+				desc.swizzle = { wi::ComponentSwizzle::R,wi::ComponentSwizzle::G,wi::ComponentSwizzle::SWIZZLE_ONE,wi::ComponentSwizzle::SWIZZLE_ONE };
 				bool success = device->CreateTexture(&desc, nullptr, &gradientTexBC);
 				assert(success);
 				wi::renderer::AddDeferredBlockCompression(gradientTex, gradientTexBC);

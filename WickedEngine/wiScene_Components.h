@@ -207,7 +207,7 @@ namespace wi::scene
 		float clearcoatRoughness = 0;
 
 		uint8_t userStencilRef = 0;
-		wi::graphics::ShadingRate shadingRate = wi::graphics::ShadingRate::RATE_1X1;
+		wi::ShadingRate shadingRate = wi::ShadingRate::RATE_1X1;
 
 		XMFLOAT2 texAnimDirection = XMFLOAT2(0, 0);
 		float texAnimFrameRate = 0.0f;
@@ -242,7 +242,7 @@ namespace wi::scene
 			std::string name;
 			wi::Resource resource;
 			uint32_t uvset = 0;
-			const wi::graphics::GPUResource* GetGPUResource() const
+			const wi::GPUResource* GetGPUResource() const
 			{
 				if (!resource.IsValid() || !resource.GetTexture().IsValid())
 					return nullptr;
@@ -389,7 +389,7 @@ namespace wi::scene
 		void WriteShaderTextureSlot(ShaderMaterial* dest, int slot, int descriptor);
 
 		// Retrieve the array of textures from the material
-		void WriteTextures(const wi::graphics::GPUResource** dest, int count) const;
+		void WriteTextures(const wi::GPUResource** dest, int count) const;
 
 		// Returns the bitwise OR of all the wi::enums::FILTER flags applicable to this material
 		uint32_t GetFilterMask() const;
@@ -722,10 +722,10 @@ namespace wi::scene
 
 		// Non-serialized attributes:
 		wi::primitive::AABB aabb;
-		wi::graphics::GPUBuffer generalBuffer; // index buffer + all static vertex buffers
-		wi::graphics::GPUBuffer streamoutBuffer; // all dynamic vertex buffers
+		wi::GPUBuffer generalBuffer; // index buffer + all static vertex buffers
+		wi::GPUBuffer streamoutBuffer; // all dynamic vertex buffers
 		wi::allocator::PageAllocator::Allocation generalBufferOffsetAllocation;
-		wi::graphics::GPUBuffer generalBufferOffsetAllocationAlias;
+		wi::GPUBuffer generalBufferOffsetAllocationAlias;
 		struct BufferView
 		{
 			uint64_t offset = ~0ull;
@@ -764,7 +764,7 @@ namespace wi::scene
 		XMFLOAT2 uv_range_min = XMFLOAT2(0, 0);
 		XMFLOAT2 uv_range_max = XMFLOAT2(1, 1);
 
-		wi::vector<wi::graphics::RaytracingAccelerationStructure> BLASes; // one BLAS per LOD
+		wi::vector<wi::RaytracingAccelerationStructure> BLASes; // one BLAS per LOD
 
 		wi::vector<wi::primitive::AABB> bvh_leaf_aabbs;
 		wi::BVH bvh;
@@ -812,11 +812,11 @@ namespace wi::scene
 		constexpr float GetTessellationFactor() const { return tessellationFactor; }
 		constexpr bool IsSkinned() const { return armatureID != wi::ecs::INVALID_ENTITY; }
 
-		inline wi::graphics::IndexBufferFormat GetIndexFormat() const { return wi::graphics::GetIndexBufferFormat((uint32_t)vertex_positions.size()); }
-		inline size_t GetIndexStride() const { return GetIndexFormat() == wi::graphics::IndexBufferFormat::UINT32 ? sizeof(uint32_t) : sizeof(uint16_t); }
+		inline wi::IndexBufferFormat GetIndexFormat() const { return wi::GetIndexBufferFormat((uint32_t)vertex_positions.size()); }
+		inline size_t GetIndexStride() const { return GetIndexFormat() == wi::IndexBufferFormat::UINT32 ? sizeof(uint32_t) : sizeof(uint16_t); }
 
-		inline wi::graphics::IndexBufferFormat GetProvokingIndexFormat() const { return wi::graphics::GetIndexBufferFormat((uint32_t)indices.size()); }
-		inline size_t GetProvokingIndexStride() const { return GetProvokingIndexFormat() == wi::graphics::IndexBufferFormat::UINT32 ? sizeof(uint32_t) : sizeof(uint16_t); }
+		inline wi::IndexBufferFormat GetProvokingIndexFormat() const { return wi::GetIndexBufferFormat((uint32_t)indices.size()); }
+		inline size_t GetProvokingIndexStride() const { return GetProvokingIndexFormat() == wi::IndexBufferFormat::UINT32 ? sizeof(uint32_t) : sizeof(uint16_t); }
 
 		uint32_t GetLODCount() const { return subsets_per_lod == 0 ? 1 : ((uint32_t)subsets.size() / subsets_per_lod); }
 		void GetLODSubsetRange(uint32_t lod, uint32_t& first_subset, uint32_t& last_subset) const
@@ -924,7 +924,7 @@ namespace wi::scene
 			{
 				return uint8_t((float(w) / 65535.0f) * 255);
 			}
-			static constexpr wi::graphics::Format FORMAT = wi::graphics::Format::R16G16B16A16_UNORM;
+			static constexpr wi::Format FORMAT = wi::Format::R16G16B16A16_UNORM;
 		};
 		struct Vertex_POS32
 		{
@@ -946,7 +946,7 @@ namespace wi::scene
 			{
 				return XMFLOAT3(x, y, z);
 			}
-			static constexpr wi::graphics::Format FORMAT = wi::graphics::Format::R32G32B32_FLOAT;
+			static constexpr wi::Format FORMAT = wi::Format::R32G32B32_FLOAT;
 		};
 		struct Vertex_POS32W
 		{
@@ -974,9 +974,9 @@ namespace wi::scene
 			{
 				return uint8_t(w * 255);
 			}
-			static constexpr wi::graphics::Format FORMAT = wi::graphics::Format::R32G32B32A32_FLOAT;
+			static constexpr wi::Format FORMAT = wi::Format::R32G32B32A32_FLOAT;
 		};
-		wi::graphics::Format position_format = Vertex_POS16::FORMAT; // CreateRenderData() will choose the appropriate format
+		wi::Format position_format = Vertex_POS16::FORMAT; // CreateRenderData() will choose the appropriate format
 
 		struct Vertex_TEX
 		{
@@ -988,7 +988,7 @@ namespace wi::scene
 				x = uint16_t(wi::math::InverseLerp(uv_range_min.x, uv_range_max.x, uv.x) * 65535.0f);
 				y = uint16_t(wi::math::InverseLerp(uv_range_min.y, uv_range_max.y, uv.y) * 65535.0f);
 			}
-			static constexpr wi::graphics::Format FORMAT = wi::graphics::Format::R16G16_UNORM;
+			static constexpr wi::Format FORMAT = wi::Format::R16G16_UNORM;
 		};
 		struct Vertex_TEX32
 		{
@@ -1000,19 +1000,19 @@ namespace wi::scene
 				x = wi::math::InverseLerp(uv_range_min.x, uv_range_max.x, uv.x);
 				y = wi::math::InverseLerp(uv_range_min.y, uv_range_max.y, uv.y);
 			}
-			static constexpr wi::graphics::Format FORMAT = wi::graphics::Format::R32G32_FLOAT;
+			static constexpr wi::Format FORMAT = wi::Format::R32G32_FLOAT;
 		};
 		struct Vertex_UVS
 		{
 			Vertex_TEX uv0;
 			Vertex_TEX uv1;
-			static constexpr wi::graphics::Format FORMAT = wi::graphics::Format::R16G16B16A16_UNORM;
+			static constexpr wi::Format FORMAT = wi::Format::R16G16B16A16_UNORM;
 		};
 		struct Vertex_UVS32
 		{
 			Vertex_TEX32 uv0;
 			Vertex_TEX32 uv1;
-			static constexpr wi::graphics::Format FORMAT = wi::graphics::Format::R32G32B32A32_FLOAT;
+			static constexpr wi::Format FORMAT = wi::Format::R32G32B32A32_FLOAT;
 		};
 		struct Vertex_BON
 		{
@@ -1046,7 +1046,7 @@ namespace wi::scene
 		struct Vertex_COL
 		{
 			uint32_t color = 0;
-			static constexpr wi::graphics::Format FORMAT = wi::graphics::Format::R8G8B8A8_UNORM;
+			static constexpr wi::Format FORMAT = wi::Format::R8G8B8A8_UNORM;
 		};
 		struct Vertex_NOR
 		{
@@ -1084,7 +1084,7 @@ namespace wi::scene
 					0
 				);
 			}
-			static constexpr wi::graphics::Format FORMAT = wi::graphics::Format::R8G8B8A8_SNORM;
+			static constexpr wi::Format FORMAT = wi::Format::R8G8B8A8_SNORM;
 		};
 		struct Vertex_TAN
 		{
@@ -1115,7 +1115,7 @@ namespace wi::scene
 					float(w) / 127.5f
 				);
 			}
-			static constexpr wi::graphics::Format FORMAT = wi::graphics::Format::R8G8B8A8_SNORM;
+			static constexpr wi::Format FORMAT = wi::Format::R8G8B8A8_SNORM;
 		};
 
 	};
@@ -1180,12 +1180,12 @@ namespace wi::scene
 		// Non-serialized attributes:
 		uint32_t filterMaskDynamic = 0;
 
-		wi::graphics::Texture lightmap_render;
-		wi::graphics::Texture lightmap;
+		wi::Texture lightmap_render;
+		wi::Texture lightmap;
 		mutable uint32_t lightmapIterationCount = 0;
 		int vb_ao_srv = -1;
-		wi::graphics::GPUBuffer vb_ao;
-		wi::graphics::GPUBuffer wetmap;
+		wi::GPUBuffer vb_ao;
+		wi::GPUBuffer wetmap;
 
 		XMFLOAT3 center = XMFLOAT3(0, 0, 0);
 		float radius = 0;
@@ -1242,7 +1242,7 @@ namespace wi::scene
 		struct Vertex_AO
 		{
 			uint8_t value = 0;
-			static constexpr wi::graphics::Format FORMAT = wi::graphics::Format::R8_UNORM;
+			static constexpr wi::Format FORMAT = wi::Format::R8_UNORM;
 		};
 	};
 
@@ -1447,7 +1447,7 @@ namespace wi::scene
 		XMFLOAT4 clipPlane = XMFLOAT4(0, 0, 0, 0); // default: no clip plane
 		XMFLOAT4 clipPlaneOriginal = XMFLOAT4(0, 0, 0, 0); // not reversed clip plane
 		wi::Canvas canvas;
-		wi::graphics::Rect scissor;
+		wi::Rect scissor;
 		uint32_t sample_count = 1;
 		int texture_primitiveID_index = -1;
 		int texture_depth_index = -1;
@@ -1476,13 +1476,13 @@ namespace wi::scene
 			XMUINT2 resolution = XMUINT2(0, 0);
 			uint32_t sample_count = 1;
 			float update_interval = 0.0f;
-			wi::graphics::Texture rendertarget_MSAA;
-			wi::graphics::Texture rendertarget_render;
-			wi::graphics::Texture rendertarget_display;
-			wi::graphics::Texture depthstencil;
-			wi::graphics::Texture depthstencil_resolved;
+			wi::Texture rendertarget_MSAA;
+			wi::Texture rendertarget_render;
+			wi::Texture rendertarget_display;
+			wi::Texture depthstencil;
+			wi::Texture depthstencil_resolved;
 			XMUINT2 tileCount = {};
-			wi::graphics::GPUBuffer entityTiles;
+			wi::GPUBuffer entityTiles;
 			wi::allocator::shared_ptr<void> visibility;
 			float time_accumulator = 0.0f;
 		} render_to_texture;
@@ -1539,7 +1539,7 @@ namespace wi::scene
 		float view_distance = -1; // -1: use main camera's view distance, > 0: custom view distance
 
 		// Non-serialized attributes:
-		wi::graphics::Texture texture;
+		wi::Texture texture;
 		int subresource = -1;
 		wi::Resource resource; // if texture is coming from an asset
 		XMFLOAT3 position;

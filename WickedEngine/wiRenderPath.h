@@ -37,12 +37,12 @@ namespace wi
 		virtual void PostRender() {}
 		// Compose the rendered layers (for example blend the layers together as Images)
 		// This will be rendered to the backbuffer
-		virtual void Compose(wi::graphics::CommandList cmd) const {}
+		virtual void Compose(wi::CommandList cmd) const {}
 
 		inline uint32_t getLayerMask() const { return layerMask; }
 		inline void setlayerMask(uint32_t value) { layerMask = value; }
 
-		wi::graphics::ColorSpace colorspace = wi::graphics::ColorSpace::SRGB;
+		wi::ColorSpace colorspace = wi::ColorSpace::SRGB;
 
 		// This is an identifier of RenderPath subtype that is used for lua binding.
 		static constexpr const auto script_check_identifier = relative_path_storage(__FILE__);

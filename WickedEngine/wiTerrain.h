@@ -64,11 +64,11 @@ namespace wi::terrain
 	{
 		struct Map
 		{
-			wi::graphics::Texture texture;
-			wi::graphics::Texture texture_raw_block;
+			wi::Texture texture;
+			wi::Texture texture_raw_block;
 		};
 		Map maps[4];
-		wi::graphics::GPUBuffer tile_pool;
+		wi::GPUBuffer tile_pool;
 
 		uint8_t physical_tile_count_x = 0;
 		uint8_t physical_tile_count_y = 0;
@@ -94,14 +94,14 @@ namespace wi::terrain
 
 		struct Residency
 		{
-			wi::graphics::Texture feedbackMap;
-			wi::graphics::Texture residencyMap;
-			wi::graphics::GPUBuffer requestBuffer;
-			wi::graphics::GPUBuffer allocationBuffer;
-			wi::graphics::GPUBuffer allocationBuffer_CPU_readback[wi::graphics::GraphicsDevice::GetBufferCount()];
-			wi::graphics::GPUBuffer pageBuffer;
-			wi::graphics::GPUBuffer pageBuffer_CPU_upload[wi::graphics::GraphicsDevice::GetBufferCount()];
-			bool data_available_CPU[wi::graphics::GraphicsDevice::GetBufferCount()] = {};
+			wi::Texture feedbackMap;
+			wi::Texture residencyMap;
+			wi::GPUBuffer requestBuffer;
+			wi::GPUBuffer allocationBuffer;
+			wi::GPUBuffer allocationBuffer_CPU_readback[wi::GraphicsDevice::GetBufferCount()];
+			wi::GPUBuffer pageBuffer;
+			wi::GPUBuffer pageBuffer_CPU_upload[wi::GraphicsDevice::GetBufferCount()];
+			bool data_available_CPU[wi::GraphicsDevice::GetBufferCount()] = {};
 			int16_t cpu_resource_id = 0;
 			uint32_t resolution = 0;
 
@@ -207,7 +207,7 @@ namespace wi::terrain
 			uint8_t tile_y = 0;
 		};
 		mutable wi::vector<UpdateRequest> update_requests;
-		wi::graphics::Texture blendmap;
+		wi::Texture blendmap;
 	};
 
 	struct BlendmapLayer
@@ -226,14 +226,14 @@ namespace wi::terrain
 		wi::HairParticleSystem grass;
 		wi::vector<BlendmapLayer> blendmap_layers;
 		wi::vector<BlendmapLayer> spline_blendmap_layers;
-		wi::graphics::Texture blendmap;
+		wi::Texture blendmap;
 		wi::primitive::Sphere sphere;
 		XMFLOAT3 position = XMFLOAT3(0, 0, 0);
 		bool visible = true;
 		bool invalidated = false;
 		wi::allocator::shared_ptr<VirtualTexture> vt;
 		wi::vector<uint16_t> heightmap_data;
-		wi::graphics::Texture heightmap;
+		wi::Texture heightmap;
 
 		void enable_blendmap_layer(size_t materialIndex)
 		{
@@ -298,18 +298,18 @@ namespace wi::terrain
 		wi::allocator::shared_ptr<Generator> generator;
 
 		wi::vector<VirtualTexture*> virtual_textures_in_use;
-		wi::graphics::Sampler sampler;
+		wi::Sampler sampler;
 		VirtualTextureAtlas atlas;
 
 		struct NoSparseCopy
 		{
-			const wi::graphics::Texture* texture_src = nullptr;
-			const wi::graphics::Texture* texture_dst = nullptr;
-			wi::graphics::Box srcbox = {};
+			const wi::Texture* texture_src = nullptr;
+			const wi::Texture* texture_dst = nullptr;
+			wi::Box srcbox = {};
 		};
 		mutable wi::vector<NoSparseCopy> nosparse_copies;
 
-		wi::graphics::GPUBuffer chunk_buffer;
+		wi::GPUBuffer chunk_buffer;
 		int chunk_buffer_range = 3; // how many chunks to upload to GPU in X and Z directions
 
 		constexpr bool IsCenterToCamEnabled() const { return _flags & CENTER_TO_CAM; }
@@ -359,10 +359,10 @@ namespace wi::terrain
 		void CreateChunkRegionTexture(ChunkData& chunk_data);
 
 		void UpdateVirtualTexturesCPU();
-		void UpdateVirtualTexturesGPU(wi::graphics::CommandList cmd) const;
-		void CopyVirtualTexturePageStatusGPU(wi::graphics::CommandList cmd) const;
-		void AllocateVirtualTextureTileRequestsGPU(wi::graphics::CommandList cmd) const;
-		void WritebackTileRequestsGPU(wi::graphics::CommandList cmd) const;
+		void UpdateVirtualTexturesGPU(wi::CommandList cmd) const;
+		void CopyVirtualTexturePageStatusGPU(wi::CommandList cmd) const;
+		void AllocateVirtualTextureTileRequestsGPU(wi::CommandList cmd) const;
+		void WritebackTileRequestsGPU(wi::CommandList cmd) const;
 
 		ShaderTerrain GetShaderTerrain() const;
 

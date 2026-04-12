@@ -39,7 +39,7 @@ static std::atomic<uint32_t> number_of_heap_allocations{ 0 };
 static std::atomic<size_t> size_of_heap_allocations{ 0 };
 #endif // WICKED_ENGINE_HEAP_ALLOCATION_COUNTER
 
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi
 {
@@ -114,7 +114,7 @@ namespace wi
 				desc.width = swapChain.desc.width;
 				desc.height = swapChain.desc.height;
 				desc.format = Format::R11G11B10_FLOAT;
-				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 				// try to set background color for swapchain color as if it's using hdr scaling:
 				desc.clear.color[0] = swapChain.desc.clear_color[0] * 9;
 				desc.clear.color[1] = swapChain.desc.clear_color[1] * 9;
@@ -339,17 +339,17 @@ namespace wi
 				)
 			{
 				TextureDesc desc = backbuffer.desc;
-				desc.bind_flags = BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 				bool success = graphicsDevice->CreateTexture(&desc, nullptr, &fadeManager.crossFadeTexture);
 				assert(success);
 				graphicsDevice->SetName(&fadeManager.crossFadeTexture, "wiFadeManager::crossFadeTexture");
 			}
-			wi::renderer::PushBarrier(GPUBarrier::Image(&backbuffer, backbuffer.desc.layout, ResourceState::COPY_SRC));
-			wi::renderer::PushBarrier(GPUBarrier::Image(&fadeManager.crossFadeTexture, fadeManager.crossFadeTexture.desc.layout, ResourceState::COPY_DST));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&backbuffer, backbuffer.desc.layout, ResourceState::COPY_SRC));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&fadeManager.crossFadeTexture, fadeManager.crossFadeTexture.desc.layout, ResourceState::COPY_DST));
 			wi::renderer::FlushBarriers(cmd);
 			graphicsDevice->CopyResource(&fadeManager.crossFadeTexture, &backbuffer, cmd);
-			wi::renderer::PushBarrier(GPUBarrier::Image(&fadeManager.crossFadeTexture, ResourceState::COPY_DST, fadeManager.crossFadeTexture.desc.layout));
-			wi::renderer::PushBarrier(GPUBarrier::Image(&backbuffer, ResourceState::COPY_SRC, backbuffer.desc.layout));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&fadeManager.crossFadeTexture, ResourceState::COPY_DST, fadeManager.crossFadeTexture.desc.layout));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&backbuffer, ResourceState::COPY_SRC, backbuffer.desc.layout));
 			wi::renderer::FlushBarriers(cmd);
 			fadeManager.crossFadeTextureSaveRequired = false;
 		}
@@ -543,13 +543,13 @@ namespace wi
 				switch (colorSpace)
 				{
 				default:
-				case wi::graphics::ColorSpace::SRGB:
+				case wi::ColorSpace::SRGB:
 					infodisplay_str += "sRGB";
 					break;
-				case wi::graphics::ColorSpace::HDR10_ST2084:
+				case wi::ColorSpace::HDR10_ST2084:
 					infodisplay_str += "ST.2084 (HDR10)";
 					break;
-				case wi::graphics::ColorSpace::HDR_LINEAR:
+				case wi::ColorSpace::HDR_LINEAR:
 					infodisplay_str += "Linear (HDR)";
 					break;
 				}
@@ -701,7 +701,7 @@ namespace wi
 
 			if (infoDisplay.rect.right > 0)
 			{
-				wi::graphics::Rect rect;
+				wi::Rect rect;
 				rect.right = canvas.width;
 				rect.bottom = canvas.height;
 				graphicsDevice->BindScissorRects(1, &rect, cmd);
@@ -816,7 +816,7 @@ namespace wi
 			}
 #endif // PLATFORM_PS5
 		}
-		wi::graphics::GetDevice() = graphicsDevice.get();
+		wi::GetDevice() = graphicsDevice.get();
 
 		if (renderWidth > 0 && renderHeight > 0)
 		{

@@ -25,7 +25,7 @@
 
 using namespace wi::ecs;
 using namespace wi::scene;
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi::terrain
 {
@@ -236,7 +236,7 @@ namespace wi::terrain
 			td.height = granularity;
 
 			td.format = Format::R8G8B8A8_UINT;
-			td.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			td.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			td.usage = Usage::DEFAULT;
 			td.layout = ResourceState::UNORDERED_ACCESS;
 			td.mip_levels = lod_count;
@@ -258,7 +258,7 @@ namespace wi::terrain
 			}
 
 			td.format = Format::R32_UINT; // shader atomic support needed
-			td.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+			td.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 			td.usage = Usage::DEFAULT;
 			td.layout = ResourceState::UNORDERED_ACCESS;
 			td.mip_levels = 1;
@@ -271,7 +271,7 @@ namespace wi::terrain
 				GPUBufferDesc bd;
 				bd.misc_flags = ResourceMiscFlag::BUFFER_RAW;
 				bd.usage = Usage::DEFAULT;
-				bd.bind_flags = BindFlag::UNORDERED_ACCESS;
+				bd.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 				bd.size = sizeof(uint32_t) * tile_count;
 				wi::vector<uint32_t> data(tile_count);
 				std::fill(data.begin(), data.end(), 0xFF);
@@ -283,7 +283,7 @@ namespace wi::terrain
 				GPUBufferDesc bd;
 				bd.misc_flags = ResourceMiscFlag::BUFFER_RAW;
 				bd.usage = Usage::DEFAULT;
-				bd.bind_flags = BindFlag::UNORDERED_ACCESS;
+				bd.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 				bd.size = sizeof(uint32_t) * (tile_count + 1); // +1: atomic global counter
 				wi::vector<uint32_t> data(tile_count + 1);
 				success = device->CreateBuffer(&bd, data.data(), &allocationBuffer);
@@ -291,7 +291,7 @@ namespace wi::terrain
 				device->SetName(&allocationBuffer, "VirtualTexture::allocationBuffer");
 
 				bd.misc_flags = {};
-				bd.bind_flags = BindFlag::NONE;
+				bd.bind_flags = BindFlag::BIND_NONE;
 				bd.usage = Usage::READBACK;
 				for (int i = 0; i < arraysize(allocationBuffer_CPU_readback); ++i)
 				{
@@ -304,7 +304,7 @@ namespace wi::terrain
 				GPUBufferDesc bd;
 				bd.format = Format::R16_UINT;
 				bd.usage = Usage::DEFAULT;
-				bd.bind_flags = BindFlag::SHADER_RESOURCE;
+				bd.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 				bd.size = GetFormatStride(bd.format) * tile_count;
 				success = device->CreateBuffer(&bd, nullptr, &pageBuffer);
 				assert(success);
@@ -926,7 +926,7 @@ namespace wi::terrain
 			GPUBufferDesc desc;
 			desc.usage = Usage::DEFAULT;
 			desc.size = required_chunk_buffer_size;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			desc.stride = sizeof(ShaderTerrainChunk);
 			bool success = device->CreateBuffer(&desc, nullptr, &chunk_buffer);
@@ -1490,7 +1490,7 @@ namespace wi::terrain
 			desc.width = (uint32_t)chunk_width;
 			desc.height = (uint32_t)chunk_width;
 			desc.format = Format::R16_UNORM;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 
 			SubresourceData data;
 			data.data_ptr = chunk_data.heightmap_data.data();
@@ -1509,7 +1509,7 @@ namespace wi::terrain
 			desc.height = (uint32_t)chunk_width;
 			desc.array_size = required_layers;
 			desc.format = Format::R8_UNORM;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 
 			wi::vector<SubresourceData> data(required_layers);
 			for (size_t i = 0; i < chunk_data.blendmap_layers.size(); ++i)
@@ -1588,14 +1588,14 @@ namespace wi::terrain
 #ifndef NOSPARSE
 					desc.misc_flags = ResourceMiscFlag::SPARSE;
 #endif // NOSPARSE
-					desc.bind_flags = BindFlag::SHADER_RESOURCE;
+					desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 					desc.mip_levels = 1;
 					desc.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
 
 					TextureDesc desc_raw_block = desc;
 					desc_raw_block.width /= 4;
 					desc_raw_block.height /= 4;
-					desc_raw_block.bind_flags = BindFlag::UNORDERED_ACCESS;
+					desc_raw_block.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 					desc_raw_block.layout = ResourceState::UNORDERED_ACCESS;
 
 					switch (map_type)
@@ -1611,8 +1611,8 @@ namespace wi::terrain
 						desc_raw_block.format = Format::R32G32B32A32_UINT;
 						desc.swizzle.r = ComponentSwizzle::R;
 						desc.swizzle.g = ComponentSwizzle::G;
-						desc.swizzle.b = ComponentSwizzle::ONE;
-						desc.swizzle.a = ComponentSwizzle::ONE;
+						desc.swizzle.b = ComponentSwizzle::SWIZZLE_ONE;
+						desc.swizzle.a = ComponentSwizzle::SWIZZLE_ONE;
 						break;
 					case MaterialComponent::SURFACEMAP:
 						desc.format = Format::BC3_UNORM;
@@ -1908,7 +1908,7 @@ namespace wi::terrain
 		device->EventBegin("Terrain - UpdateVirtualTexturesGPU", cmd);
 		auto range = wi::profiler::BeginRangeGPU("Terrain - UpdateVirtualTexturesGPU", cmd);
 
-		device->Barrier(GPUBarrier::Memory(), cmd); // on Apple this fixes corruption so better be safe on all platforms, do not remove
+		device->Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd); // on Apple this fixes corruption so better be safe on all platforms, do not remove
 
 		device->EventBegin("Update Residency Maps", cmd);
 		device->BindComputeShader(wi::renderer::GetShader(wi::enums::CSTYPE_VIRTUALTEXTURE_RESIDENCYUPDATE), cmd);
@@ -2073,7 +2073,7 @@ namespace wi::terrain
 			}
 			vt->update_requests.clear();
 		}
-		device->Barrier(GPUBarrier::Memory(), cmd);
+		device->Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd);
 		device->EventEnd(cmd);
 
 #ifdef NOSPARSE
@@ -2083,8 +2083,8 @@ namespace wi::terrain
 		{
 			if (!map.texture.IsValid())
 				continue;
-			wi::renderer::PushBarrier(GPUBarrier::Image(&map.texture, ResourceState::SHADER_RESOURCE, ResourceState::COPY_DST));
-			wi::renderer::PushBarrier(GPUBarrier::Image(&map.texture_raw_block, ResourceState::UNORDERED_ACCESS, ResourceState::COPY_SRC));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&map.texture, ResourceState::SHADER_RESOURCE, ResourceState::COPY_DST));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&map.texture_raw_block, ResourceState::UNORDERED_ACCESS, ResourceState::COPY_SRC));
 		}
 		wi::renderer::FlushBarriers(cmd);
 
@@ -2098,8 +2098,8 @@ namespace wi::terrain
 		{
 			if (!map.texture.IsValid())
 				continue;
-			wi::renderer::PushBarrier(GPUBarrier::Image(&map.texture, ResourceState::COPY_DST, ResourceState::SHADER_RESOURCE));
-			wi::renderer::PushBarrier(GPUBarrier::Image(&map.texture_raw_block, ResourceState::COPY_SRC, ResourceState::UNORDERED_ACCESS));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&map.texture, ResourceState::COPY_DST, ResourceState::SHADER_RESOURCE));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&map.texture_raw_block, ResourceState::COPY_SRC, ResourceState::UNORDERED_ACCESS));
 		}
 		wi::renderer::FlushBarriers(cmd);
 		device->EventEnd(cmd);
@@ -2186,7 +2186,7 @@ namespace wi::terrain
 			device->EventEnd(cmd);
 		}
 
-		device->Barrier(GPUBarrier::Memory(), cmd);
+		device->Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd);
 
 		{
 			device->EventBegin("Tile Allocation Requests", cmd);
@@ -2230,7 +2230,7 @@ namespace wi::terrain
 			if (vt->residency == nullptr)
 				continue;
 			device->CopyResource(&vt->residency->allocationBuffer_CPU_readback[vt->residency->cpu_resource_id], &vt->residency->allocationBuffer, cmd);
-			wi::renderer::PushBarrier(GPUBarrier::Buffer(&vt->residency->allocationBuffer, ResourceState::COPY_SRC, ResourceState::COPY_DST));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierBuffer(&vt->residency->allocationBuffer, ResourceState::COPY_SRC, ResourceState::COPY_DST));
 		}
 
 		wi::renderer::FlushBarriers(cmd);
@@ -2256,7 +2256,7 @@ namespace wi::terrain
 			device->CopyResource(&vt->residency->requestBuffer, &clear.requestBuffer, cmd);
 			device->CopyResource(&vt->residency->allocationBuffer, &clear.allocationBuffer, cmd);
 
-			wi::renderer::PushBarrier(GPUBarrier::Image(&vt->residency->residencyMap, ResourceState::COPY_DST, ResourceState::COPY_SRC));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&vt->residency->residencyMap, ResourceState::COPY_DST, ResourceState::COPY_SRC));
 		}
 		wi::renderer::FlushBarriers(cmd);
 		device->EventEnd(cmd);

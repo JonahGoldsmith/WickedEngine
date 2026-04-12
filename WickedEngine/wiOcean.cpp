@@ -11,7 +11,7 @@
 #include <algorithm>
 #include <mutex>
 
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::scene;
 
 namespace wi
@@ -47,7 +47,7 @@ namespace wi
 			wi::renderer::LoadShader(ShaderStage::PS, wireframePS, "oceanSurfaceSimplePS.cso");
 
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			{
 				PipelineStateDesc desc;
@@ -120,7 +120,7 @@ namespace wi
 			occlusionQueries[i] = -1;
 		}
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		// Height map H(0)
 		int height_map_size = (params.dmap_dim + 4) * (params.dmap_dim + 1);
@@ -136,7 +136,7 @@ namespace wi
 
 		GPUBufferDesc buf_desc;
 		buf_desc.usage = Usage::DEFAULT;
-		buf_desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+		buf_desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 		buf_desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 
 		// RW buffer allocations
@@ -171,7 +171,7 @@ namespace wi
 		tex_desc.array_size = 1;
 		tex_desc.sample_count = 1;
 		tex_desc.usage = Usage::DEFAULT;
-		tex_desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+		tex_desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 
 		tex_desc.format = Format::R16G16B16A16_FLOAT;
 		tex_desc.mip_levels = GetMipCount(tex_desc.width, tex_desc.height);
@@ -202,7 +202,7 @@ namespace wi
 		for (uint32_t i = 0; i < arraysize(displacementMap_readback); ++i)
 		{
 			tex_desc.usage = Usage::READBACK;
-			tex_desc.bind_flags = BindFlag::NONE;
+			tex_desc.bind_flags = BindFlag::BIND_NONE;
 			tex_desc.layout = ResourceState::COPY_DST;
 			device->CreateTexture(&tex_desc, nullptr, &displacementMap_readback[i]);
 			device->SetName(&displacementMap_readback[i], "displacementMap_readback[i]");
@@ -210,7 +210,7 @@ namespace wi
 
 		GPUBufferDesc cb_desc;
 		cb_desc.usage = Usage::DEFAULT;
-		cb_desc.bind_flags = BindFlag::CONSTANT_BUFFER;
+		cb_desc.bind_flags = BindFlag::BIND_CONSTANT_BUFFER;
 		cb_desc.size = sizeof(OceanCB);
 		device->CreateBuffer(&cb_desc, nullptr, &constantBuffer);
 	}
@@ -337,16 +337,16 @@ namespace wi
 
 	void Ocean::UpdateDisplacementMap(CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		device->EventBegin("Ocean Simulation", cmd);
 
 		const uint2 dim = uint2(160 * params.surfaceDetail, 90 * params.surfaceDetail);
 		OceanCB cb = GetOceanCBAtDim(params, dim);
 
-		device->Barrier(GPUBarrier::Buffer(&constantBuffer, ResourceState::CONSTANT_BUFFER, ResourceState::COPY_DST), cmd);
+		device->Barrier(wiGraphicsCreateGPUBarrierBuffer(&constantBuffer, ResourceState::CONSTANT_BUFFER, ResourceState::COPY_DST), cmd);
 		device->UpdateBuffer(&constantBuffer, &cb, cmd);
-		device->Barrier(GPUBarrier::Buffer(&constantBuffer, ResourceState::COPY_DST, ResourceState::CONSTANT_BUFFER), cmd);
+		device->Barrier(wiGraphicsCreateGPUBarrierBuffer(&constantBuffer, ResourceState::COPY_DST, ResourceState::CONSTANT_BUFFER), cmd);
 
 		device->BindConstantBuffer(&constantBuffer, CB_GETBINDSLOT(OceanCB), cmd);
 
@@ -367,7 +367,7 @@ namespace wi
 		uint32_t group_count_x = (params.dmap_dim + OCEAN_COMPUTE_TILESIZE - 1) / OCEAN_COMPUTE_TILESIZE;
 		uint32_t group_count_y = (params.dmap_dim + OCEAN_COMPUTE_TILESIZE - 1) / OCEAN_COMPUTE_TILESIZE;
 		device->Dispatch(group_count_x, group_count_y, 1, cmd);
-		device->Barrier(GPUBarrier::Memory(), cmd);
+		device->Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd);
 
 
 
@@ -379,8 +379,8 @@ namespace wi
 		device->BindConstantBuffer(&constantBuffer, CB_GETBINDSLOT(OceanCB), cmd);
 
 		GPUBarrier barriers[] = {
-			GPUBarrier::Image(&displacementMap, displacementMap.desc.layout, ResourceState::UNORDERED_ACCESS),
-			GPUBarrier::Image(&gradientMap, gradientMap.desc.layout, ResourceState::UNORDERED_ACCESS),
+			wiGraphicsCreateGPUBarrierImage(&displacementMap, displacementMap.desc.layout, ResourceState::UNORDERED_ACCESS),
+			wiGraphicsCreateGPUBarrierImage(&gradientMap, gradientMap.desc.layout, ResourceState::UNORDERED_ACCESS),
 		};
 		device->Barrier(barriers, arraysize(barriers), cmd);
 
@@ -394,7 +394,7 @@ namespace wi
 			1,
 			cmd
 		);
-		device->Barrier(GPUBarrier::Image(&displacementMap, ResourceState::UNORDERED_ACCESS, displacementMap.desc.layout), cmd);
+		device->Barrier(wiGraphicsCreateGPUBarrierImage(&displacementMap, ResourceState::UNORDERED_ACCESS, displacementMap.desc.layout), cmd);
 
 		// Update gradient map:
 		device->BindComputeShader(&updateGradientFoldingCS, cmd);
@@ -406,16 +406,16 @@ namespace wi
 			1,
 			cmd
 		);
-		device->Barrier(GPUBarrier::Image(&gradientMap, ResourceState::UNORDERED_ACCESS, gradientMap.desc.layout), cmd);
+		device->Barrier(wiGraphicsCreateGPUBarrierImage(&gradientMap, ResourceState::UNORDERED_ACCESS, gradientMap.desc.layout), cmd);
 
 		wi::renderer::GenerateMipChain(gradientMap, wi::renderer::MIPGENFILTER_LINEAR, cmd);
 
 		device->EventEnd(cmd);
 	}
 
-	void Ocean::CopyDisplacementMapReadback(wi::graphics::CommandList cmd) const
+	void Ocean::CopyDisplacementMapReadback(wi::CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		device->EventBegin("Ocean Readback Copy", cmd);
 		device->CopyResource(&displacementMap_readback[displacement_readback_index], &displacementMap, cmd);
 		displacement_readback_valid[displacement_readback_index] = true;
@@ -425,7 +425,7 @@ namespace wi
 
 	void Ocean::RenderForOcclusionTest(const CameraComponent& camera, CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		device->EventBegin("Ocean Occlusion Test", cmd);
 
@@ -458,7 +458,7 @@ namespace wi
 			}
 
 			GPUBufferDesc desc;
-			desc.bind_flags = BindFlag::INDEX_BUFFER;
+			desc.bind_flags = BindFlag::BIND_INDEX_BUFFER;
 			desc.size = indexbuffer_required_size;
 			device->CreateBuffer(&desc, index_data.data(), &indexBuffer_occlusionTest);
 			device->SetName(&indexBuffer_occlusionTest, "Ocean::indexBuffer_occlusionTest");
@@ -481,7 +481,7 @@ namespace wi
 
 	void Ocean::RenderForCubemap(CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		device->EventBegin("Ocean Rendering into Cubemap", cmd);
 
@@ -514,7 +514,7 @@ namespace wi
 			}
 
 			GPUBufferDesc desc;
-			desc.bind_flags = BindFlag::INDEX_BUFFER;
+			desc.bind_flags = BindFlag::BIND_INDEX_BUFFER;
 			desc.size = indexbuffer_required_size;
 			device->CreateBuffer(&desc, index_data.data(), &indexBuffer_cubemap);
 			device->SetName(&indexBuffer_cubemap, "Ocean::indexBuffer_cubemap");
@@ -538,7 +538,7 @@ namespace wi
 
 	void Ocean::Render(const CameraComponent& camera, CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		device->EventBegin("Ocean Rendering", cmd);
 
@@ -582,7 +582,7 @@ namespace wi
 			}
 
 			GPUBufferDesc desc;
-			desc.bind_flags = BindFlag::INDEX_BUFFER;
+			desc.bind_flags = BindFlag::BIND_INDEX_BUFFER;
 			desc.size = indexbuffer_required_size;
 			device->CreateBuffer(&desc, index_data.data(), &indexBuffer);
 			device->SetName(&indexBuffer, "Ocean::indexBuffer");
@@ -608,7 +608,7 @@ namespace wi
 
 		RasterizerState ras_desc;
 		ras_desc.fill_mode = FillMode::SOLID;
-		ras_desc.cull_mode = CullMode::NONE;
+		ras_desc.cull_mode = CullMode::CULL_NONE;
 		ras_desc.front_counter_clockwise = false;
 		ras_desc.depth_bias = 0;
 		ras_desc.slope_scaled_depth_bias = 0.0f;
@@ -629,7 +629,7 @@ namespace wi
 		depth_desc.stencil_enable = false;
 		depthStencilState = depth_desc;
 
-		depth_desc.depth_write_mask = DepthWriteMask::ZERO;
+		depth_desc.depth_write_mask = DepthWriteMask::DEPTH_WRITE_ZERO;
 		depthStencilState_occlusionTest = depth_desc;
 
 		BlendState blend_desc;

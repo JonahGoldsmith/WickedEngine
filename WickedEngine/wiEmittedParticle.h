@@ -31,29 +31,29 @@ namespace wi
 		};
 
 		ParticleCounters statistics = {};
-		wi::graphics::GPUBuffer statisticsReadbackBuffer[wi::graphics::GraphicsDevice::GetBufferCount()];
+		wi::GPUBuffer statisticsReadbackBuffer[wi::GraphicsDevice::GetBufferCount()];
 
-		wi::graphics::GPUBuffer particleBuffer;
-		wi::graphics::GPUBuffer aliveList[2];
-		wi::graphics::GPUBuffer deadList;
-		wi::graphics::GPUBuffer distanceBuffer; // for sorting
-		wi::graphics::GPUBuffer sphGridCells;  // for SPH
-		wi::graphics::GPUBuffer sphParticleCells;  // for SPH
-		wi::graphics::GPUBuffer densityBuffer; // for SPH
-		wi::graphics::GPUBuffer counterBuffer;
-		wi::graphics::GPUBuffer indirectBuffers; // kickoffUpdate, simulation, draw
-		wi::graphics::GPUBuffer constantBuffer;
-		wi::graphics::GPUBuffer generalBuffer;
+		wi::GPUBuffer particleBuffer;
+		wi::GPUBuffer aliveList[2];
+		wi::GPUBuffer deadList;
+		wi::GPUBuffer distanceBuffer; // for sorting
+		wi::GPUBuffer sphGridCells;  // for SPH
+		wi::GPUBuffer sphParticleCells;  // for SPH
+		wi::GPUBuffer densityBuffer; // for SPH
+		wi::GPUBuffer counterBuffer;
+		wi::GPUBuffer indirectBuffers; // kickoffUpdate, simulation, draw
+		wi::GPUBuffer constantBuffer;
+		wi::GPUBuffer generalBuffer;
 		wi::scene::MeshComponent::BufferView vb_pos;
 		wi::scene::MeshComponent::BufferView vb_nor;
 		wi::scene::MeshComponent::BufferView vb_uvs;
 		wi::scene::MeshComponent::BufferView vb_col;
-		wi::graphics::GPUBuffer primitiveBuffer; // raytracing
-		wi::graphics::GPUBuffer culledIndirectionBuffer; // rasterization
-		wi::graphics::GPUBuffer culledIndirectionBuffer2; // rasterization
-		wi::graphics::Texture opacityCurveTex;
+		wi::GPUBuffer primitiveBuffer; // raytracing
+		wi::GPUBuffer culledIndirectionBuffer; // rasterization
+		wi::GPUBuffer culledIndirectionBuffer2; // rasterization
+		wi::Texture opacityCurveTex;
 
-		wi::graphics::RaytracingAccelerationStructure BLAS;
+		wi::RaytracingAccelerationStructure BLAS;
 
 	private:
 		void CreateSelfBuffers();
@@ -75,9 +75,9 @@ namespace wi
 		void Restart();
 
 		// Must have a transform and material component, but mesh is optional
-		void UpdateGPU(uint32_t instanceIndex, const wi::scene::MeshComponent* mesh, wi::graphics::CommandList cmd) const;
-		void Draw(const wi::scene::MaterialComponent& material, wi::graphics::CommandList cmd, const PARTICLESHADERTYPE* shadertype_override = nullptr) const;
-		void DrawForShadowmap(const wi::scene::MaterialComponent& material, wi::graphics::CommandList cmd) const;
+		void UpdateGPU(uint32_t instanceIndex, const wi::scene::MeshComponent* mesh, wi::CommandList cmd) const;
+		void Draw(const wi::scene::MaterialComponent& material, wi::CommandList cmd, const PARTICLESHADERTYPE* shadertype_override = nullptr) const;
+		void DrawForShadowmap(const wi::scene::MaterialComponent& material, wi::CommandList cmd) const;
 
 		void CreateRaytracingRenderData();
 
@@ -171,7 +171,7 @@ namespace wi
 		// Set the opacity curve parameters
 		//	peak : start peak of the opacity relative to particle lifetime [0,1]
 		void SetOpacityCurveControl(float peakStart, float peakEnd);
-		const wi::graphics::Texture* GetOpacityCurveTex() const { return &opacityCurveTex; }
+		const wi::Texture* GetOpacityCurveTex() const { return &opacityCurveTex; }
 
 		void Serialize(wi::Archive& archive, wi::ecs::EntitySerializer& seri);
 

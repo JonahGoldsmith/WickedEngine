@@ -14,7 +14,7 @@
 #include "wiTrailRenderer_BindLua.h"
 
 using namespace wi::ecs;
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::scene;
 using namespace wi::lua::scene;
 using namespace wi::lua::primitive;
@@ -54,7 +54,7 @@ namespace wi::lua::renderer
 	}
 	int IsRaytracingSupported(lua_State* L)
 	{
-		wi::lua::SSetBool(L, wi::graphics::GetDevice()->CheckCapability(GraphicsDeviceCapability::RAYTRACING));
+		wi::lua::SSetBool(L, wi::GetDevice()->CheckCapability(GraphicsDeviceCapability::RAYTRACING));
 		return 1;
 	}
 

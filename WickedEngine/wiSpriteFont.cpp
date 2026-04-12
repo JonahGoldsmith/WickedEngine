@@ -1,7 +1,7 @@
 #include "wiSpriteFont.h"
 #include "wiHelper.h"
 
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi
 {

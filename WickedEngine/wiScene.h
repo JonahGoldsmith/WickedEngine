@@ -83,11 +83,11 @@ namespace wi::scene
 		wi::vector<wi::primitive::AABB> parallel_bounds;
 		WeatherComponent weather;
 		uint32_t cloudmap_resolution = 256;
-		wi::graphics::Texture cloudmap;
-		wi::graphics::GPUBuffer cloudmap_variance;
+		wi::Texture cloudmap;
+		wi::GPUBuffer cloudmap_variance;
 		mutable int cloudmap_frame = 0;
-		wi::graphics::RaytracingAccelerationStructure TLAS;
-		wi::graphics::GPUBuffer TLAS_instancesUpload[wi::graphics::GraphicsDevice::GetBufferCount()];
+		wi::RaytracingAccelerationStructure TLAS;
+		wi::GPUBuffer TLAS_instancesUpload[wi::GraphicsDevice::GetBufferCount()];
 		void* TLAS_instancesMapped = nullptr;
 		wi::GPUBVH BVH; // this is for non-hardware accelerated raytracing
 		mutable bool acceleration_structure_update_requested = false;
@@ -121,10 +121,10 @@ namespace wi::scene
 		//		2) hair particles
 		//		3) emitted particles
 		//		4) impostors
-		wi::graphics::GPUBuffer instanceUploadBuffer[wi::graphics::GraphicsDevice::GetBufferCount()];
+		wi::GPUBuffer instanceUploadBuffer[wi::GraphicsDevice::GetBufferCount()];
 		ShaderMeshInstance* instanceArrayMapped = nullptr;
 		size_t instanceArraySize = 0;
-		wi::graphics::GPUBuffer instanceBuffer;
+		wi::GPUBuffer instanceBuffer;
 
 		// Geometries for bindless visiblity indexing:
 		//	contains in order:
@@ -132,36 +132,36 @@ namespace wi::scene
 		//		2) hair particles * 1
 		//		3) emitted particles * 1
 		//		4) impostors * 1
-		wi::graphics::GPUBuffer geometryUploadBuffer[wi::graphics::GraphicsDevice::GetBufferCount()];
+		wi::GPUBuffer geometryUploadBuffer[wi::GraphicsDevice::GetBufferCount()];
 		ShaderGeometry* geometryArrayMapped = nullptr;
 		size_t geometryArraySize = 0;
-		wi::graphics::GPUBuffer geometryBuffer;
+		wi::GPUBuffer geometryBuffer;
 		std::atomic<uint32_t> geometryAllocator{ 0 };
 
 		// Materials for bindless visibility indexing:
-		wi::graphics::GPUBuffer materialUploadBuffer[wi::graphics::GraphicsDevice::GetBufferCount()];
+		wi::GPUBuffer materialUploadBuffer[wi::GraphicsDevice::GetBufferCount()];
 		ShaderMaterial* materialArrayMapped = nullptr;
 		size_t materialArraySize = 0;
-		wi::graphics::GPUBuffer materialBuffer;
-		wi::graphics::GPUBuffer textureStreamingFeedbackBuffer;
-		wi::graphics::GPUBuffer textureStreamingFeedbackBuffer_readback[wi::graphics::GraphicsDevice::GetBufferCount()];
+		wi::GPUBuffer materialBuffer;
+		wi::GPUBuffer textureStreamingFeedbackBuffer;
+		wi::GPUBuffer textureStreamingFeedbackBuffer_readback[wi::GraphicsDevice::GetBufferCount()];
 		const uint32_t* textureStreamingFeedbackMapped = nullptr;
 
 		// Meshlets:
-		wi::graphics::GPUBuffer meshletBuffer;
+		wi::GPUBuffer meshletBuffer;
 		std::atomic<uint32_t> meshletAllocator{ 0 };
 
 		// Skinning GPU data containining all bones, all morph descriptions:
-		wi::graphics::GPUBuffer skinningUploadBuffer[wi::graphics::GraphicsDevice::GetBufferCount()];
+		wi::GPUBuffer skinningUploadBuffer[wi::GraphicsDevice::GetBufferCount()];
 		void* skinningDataMapped = nullptr;
 		size_t skinningDataSize = 0;
-		wi::graphics::GPUBuffer skinningBuffer;
+		wi::GPUBuffer skinningBuffer;
 		std::atomic<uint32_t> skinningAllocator{ 0 };
 
 		// Occlusion query state:
 		struct OcclusionResult
 		{
-			int occlusionQueries[wi::graphics::GraphicsDevice::GetBufferCount()];
+			int occlusionQueries[wi::GraphicsDevice::GetBufferCount()];
 			// occlusion result history bitfield (32 bit->32 frame history)
 			uint32_t occlusionHistory = ~0u;
 
@@ -175,9 +175,9 @@ namespace wi::scene
 			}
 		};
 		mutable wi::vector<OcclusionResult> occlusion_results_objects;
-		wi::graphics::GPUQueryHeap queryHeap;
-		wi::graphics::GPUBuffer queryResultBuffer[arraysize(OcclusionResult::occlusionQueries)];
-		wi::graphics::GPUBuffer queryPredicationBuffer;
+		wi::GPUQueryHeap queryHeap;
+		wi::GPUBuffer queryResultBuffer[arraysize(OcclusionResult::occlusionQueries)];
+		wi::GPUBuffer queryPredicationBuffer;
 		uint32_t queryheap_idx = 0;
 		mutable std::atomic<uint32_t> queryAllocator{ 0 };
 
@@ -185,17 +185,17 @@ namespace wi::scene
 		struct SurfelGI
 		{
 			mutable bool cleared = false;
-			wi::graphics::GPUBuffer surfelBuffer;
-			wi::graphics::GPUBuffer dataBuffer;
-			wi::graphics::GPUBuffer varianceBuffer;
-			wi::graphics::GPUBuffer aliveBuffer[2];
-			wi::graphics::GPUBuffer deadBuffer;
-			wi::graphics::GPUBuffer statsBuffer;
-			wi::graphics::GPUBuffer indirectBuffer;
-			wi::graphics::GPUBuffer gridBuffer;
-			wi::graphics::GPUBuffer cellBuffer;
-			wi::graphics::GPUBuffer rayBuffer;
-			wi::graphics::Texture momentsTexture;
+			wi::GPUBuffer surfelBuffer;
+			wi::GPUBuffer dataBuffer;
+			wi::GPUBuffer varianceBuffer;
+			wi::GPUBuffer aliveBuffer[2];
+			wi::GPUBuffer deadBuffer;
+			wi::GPUBuffer statsBuffer;
+			wi::GPUBuffer indirectBuffer;
+			wi::GPUBuffer gridBuffer;
+			wi::GPUBuffer cellBuffer;
+			wi::GPUBuffer rayBuffer;
+			wi::Texture momentsTexture;
 		} surfelgi;
 
 		// DDGI resources:
@@ -206,12 +206,12 @@ namespace wi::scene
 			float3 grid_min = float3(-1, -1, -1);
 			float3 grid_max = float3(1, 1, 1);
 			float smooth_backface = 0.01f; // smoothness of backface test
-			wi::graphics::GPUBuffer ray_buffer;
-			wi::graphics::GPUBuffer variance_buffer;
-			wi::graphics::GPUBuffer raycount_buffer;
-			wi::graphics::GPUBuffer rayallocation_buffer;
-			wi::graphics::GPUBuffer probe_buffer;
-			wi::graphics::Texture depth_texture;
+			wi::GPUBuffer ray_buffer;
+			wi::GPUBuffer variance_buffer;
+			wi::GPUBuffer raycount_buffer;
+			wi::GPUBuffer rayallocation_buffer;
+			wi::GPUBuffer probe_buffer;
+			wi::Texture depth_texture;
 
 			void Serialize(wi::Archive& archive);
 		} ddgi;
@@ -231,11 +231,11 @@ namespace wi::scene
 			} clipmaps[VXGI_CLIPMAP_COUNT];
 			uint32_t clipmap_to_update = 0;
 
-			wi::graphics::Texture radiance;
-			wi::graphics::Texture prev_radiance;
-			wi::graphics::Texture render_atomic;
-			wi::graphics::Texture sdf;
-			wi::graphics::Texture sdf_temp;
+			wi::Texture radiance;
+			wi::Texture prev_radiance;
+			wi::Texture render_atomic;
+			wi::Texture sdf;
+			wi::Texture sdf_temp;
 			mutable bool pre_clear = true;
 		} vxgi;
 
@@ -246,15 +246,15 @@ namespace wi::scene
 		// Impostor state:
 		static constexpr uint32_t maxImpostorCount = 8;
 		static constexpr uint32_t impostorTextureDim = 128;
-		wi::graphics::Texture impostorDepthStencil;
-		wi::graphics::Texture impostorRenderTarget_Albedo_MSAA;
-		wi::graphics::Texture impostorRenderTarget_Normal_MSAA;
-		wi::graphics::Texture impostorRenderTarget_Surface_MSAA;
-		wi::graphics::Texture impostorRenderTarget_Albedo;
-		wi::graphics::Texture impostorRenderTarget_Normal;
-		wi::graphics::Texture impostorRenderTarget_Surface;
-		wi::graphics::Texture impostorArray;
-		wi::graphics::GPUBuffer impostorBuffer;
+		wi::Texture impostorDepthStencil;
+		wi::Texture impostorRenderTarget_Albedo_MSAA;
+		wi::Texture impostorRenderTarget_Normal_MSAA;
+		wi::Texture impostorRenderTarget_Surface_MSAA;
+		wi::Texture impostorRenderTarget_Albedo;
+		wi::Texture impostorRenderTarget_Normal;
+		wi::Texture impostorRenderTarget_Surface;
+		wi::Texture impostorArray;
+		wi::GPUBuffer impostorBuffer;
 		uint32_t allocated_impostor_capacity = 0;
 		MeshComponent::BufferView impostor_ib32;
 		MeshComponent::BufferView impostor_ib16;
@@ -262,7 +262,7 @@ namespace wi::scene
 		MeshComponent::BufferView impostor_vb_nor;
 		MeshComponent::BufferView impostor_data;
 		MeshComponent::BufferView impostor_indirect;
-		wi::graphics::Format impostor_ib_format = wi::graphics::Format::R32_UINT;
+		wi::Format impostor_ib_format = wi::Format::R32_UINT;
 		uint32_t impostorInstanceOffset = ~0u;
 		uint32_t impostorGeometryOffset = ~0u;
 		uint32_t impostorMaterialOffset = ~0u;
@@ -300,7 +300,7 @@ namespace wi::scene
 		void PutWaterRipple(const XMFLOAT3& pos);
 		void PutWaterRipple(const std::string& image, const XMFLOAT3& pos);
 
-		wi::graphics::GPUBuffer voxelgrid_gpu; // primary CPU voxelgrid uploaded to GPU
+		wi::GPUBuffer voxelgrid_gpu; // primary CPU voxelgrid uploaded to GPU
 
 		// Animation processing optimizer:
 		struct AnimationQueue

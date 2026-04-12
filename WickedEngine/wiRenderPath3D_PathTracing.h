@@ -10,17 +10,17 @@ namespace wi
 	protected:
 		int sam = -1;
 		int target = 1024;
-		wi::graphics::Texture traceResult;
-		wi::graphics::Texture traceDepth;
-		wi::graphics::Texture traceStencil;
+		wi::Texture traceResult;
+		wi::Texture traceDepth;
+		wi::Texture traceStencil;
 
 		wi::vector<uint8_t> texturedata_src;
 		wi::vector<uint8_t> texturedata_dst;
 		wi::vector<uint8_t> texturedata_albedo;
 		wi::vector<uint8_t> texturedata_normal;
-		wi::graphics::Texture denoiserAlbedo;
-		wi::graphics::Texture denoiserNormal;
-		wi::graphics::Texture denoiserResult;
+		wi::Texture denoiserAlbedo;
+		wi::Texture denoiserNormal;
+		wi::Texture denoiserResult;
 		wi::jobsystem::context denoiserContext;
 
 		void ResizeBuffers() override;
@@ -31,7 +31,7 @@ namespace wi
 
 		void Update(float dt) override;
 		void Render() const override;
-		void Compose(wi::graphics::CommandList cmd) const override;
+		void Compose(wi::CommandList cmd) const override;
 
 		int getCurrentSampleCount() const { return sam; }
 		void setTargetSampleCount(int value) { target = value; }

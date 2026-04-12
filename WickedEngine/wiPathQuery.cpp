@@ -4,7 +4,7 @@
 #include "wiProfiler.h"
 #include "wiPrimitive.h"
 
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::primitive;
 
 namespace wi

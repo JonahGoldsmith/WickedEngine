@@ -107,14 +107,14 @@ namespace wi
 		constexpr bool IsCompressionEnabled() const { return header.properties.bits.compressed; }
 
 		// If Archive contains thumbnail image data, then creates a Texture from it:
-		wi::graphics::Texture CreateThumbnailTexture() const;
+		wi::Texture CreateThumbnailTexture() const;
 
 		// Set a Texture as the thumbnail. This resets the archive, so you should usually do this before writing data:
-		void SetThumbnailAndResetPos(const wi::graphics::Texture& texture);
+		void SetThumbnailAndResetPos(const wi::Texture& texture);
 
 		// Open just the tumbnail data from an archive, and return it as a Texture:
 		//	header: optional, can return header info if not null
-		static wi::graphics::Texture PeekThumbnail(const std::string& filename, Header* out_header = nullptr);
+		static wi::Texture PeekThumbnail(const std::string& filename, Header* out_header = nullptr);
 
 		// Appends the current archive write offset as uint64_t to the archive
 		//	Returns the previous write offset of the archive, which can be used by PatchUnknownJumpPosition()

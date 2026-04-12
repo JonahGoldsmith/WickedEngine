@@ -21,7 +21,7 @@
 #include <atomic>
 #include <sstream>
 
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi::profiler
 {
@@ -79,7 +79,7 @@ namespace wi::profiler
 
 			ranges.reserve(100);
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			GPUQueryHeapDesc desc;
 			desc.type = GpuQueryType::TIMESTAMP;
@@ -108,7 +108,7 @@ namespace wi::profiler
 
 		cpu_frame = BeginRangeCPU("CPU Frame");
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		CommandList cmd = device->BeginCommandList();
 		queryheap_idx = device->GetBufferIndex();
 
@@ -170,7 +170,7 @@ namespace wi::profiler
 		if (!ENABLED || !initialized)
 			return;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		// note: read the GPU Frame end range manually because it will be on a separate command list than start point:
 		auto& gpu_range = ranges[gpu_frame];
@@ -240,7 +240,7 @@ namespace wi::profiler
 		ranges[id].name = name;
 		ranges[id].cmd = cmd;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		ranges[id].gpuBegin[queryheap_idx] = nextQuery.fetch_add(1);
 		device->QueryEnd(&queryHeap, ranges[id].gpuBegin[queryheap_idx], cmd);
 
@@ -271,7 +271,7 @@ namespace wi::profiler
 			}
 			else
 			{
-				GraphicsDevice* device = wi::graphics::GetDevice();
+				GraphicsDevice* device = wi::GetDevice();
 				ranges[id].gpuEnd[queryheap_idx] = nextQuery.fetch_add(1);
 				device->QueryEnd(&queryHeap, it->second.gpuEnd[queryheap_idx], it->second.cmd);
 			}
@@ -294,7 +294,7 @@ namespace wi::profiler
 	float gpu_memory_graph[graph_vertex_count] = {};
 	void LoadShaders()
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		PipelineStateDesc desc;
 		desc.vs = wi::renderer::GetShader(wi::enums::VSTYPE_VERTEXCOLOR);
@@ -415,8 +415,8 @@ namespace wi::profiler
 
 		// Graph:
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
-			wi::graphics::GraphicsDevice::MemoryUsage gpu_memory_usage = device->GetMemoryUsage();
+			GraphicsDevice* device = wi::GetDevice();
+			wi::GraphicsDevice::MemoryUsage gpu_memory_usage = device->GetMemoryUsage();
 			wi::helper::MemoryUsage cpu_memory_usage = wi::helper::GetMemoryUsage();
 
 			static bool shaders_loaded = false;

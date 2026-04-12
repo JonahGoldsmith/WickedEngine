@@ -14,11 +14,11 @@ namespace wi
 	class RenderPath2D : public RenderPath
 	{
 	protected:
-		wi::graphics::Texture rtStencilExtracted;
-		wi::graphics::Texture stencilScaled;
+		wi::Texture rtStencilExtracted;
+		wi::Texture stencilScaled;
 
-		wi::graphics::Texture rtFinal;
-		wi::graphics::Texture rtFinal_MSAA;
+		wi::Texture rtFinal;
+		wi::Texture rtFinal_MSAA;
 
 		wi::gui::GUI GUI;
 
@@ -44,7 +44,7 @@ namespace wi
 		void FixedUpdate() override;
 		void PreRender() override;
 		void Render() const override;
-		void Compose(wi::graphics::CommandList cmd) const override;
+		void Compose(wi::CommandList cmd) const override;
 
 		virtual void setMSAASampleCount(uint32_t value) { msaaSampleCount = value; }
 		constexpr uint32_t getMSAASampleCount() const { return msaaSampleCount; }
@@ -52,9 +52,9 @@ namespace wi
 		virtual void setMSAASampleCount2D(uint32_t value) { msaaSampleCount2D = value; }
 		constexpr uint32_t getMSAASampleCount2D() const { return msaaSampleCount2D; }
 
-		const wi::graphics::Texture& GetRenderResult() const { return rtFinal; }
-		virtual const wi::graphics::Texture* GetDepthStencil() const { return nullptr; }
-		virtual const wi::graphics::Texture* GetGUIBlurredBackground() const { return nullptr; }
+		const wi::Texture& GetRenderResult() const { return rtFinal; }
+		virtual const wi::Texture* GetDepthStencil() const { return nullptr; }
+		virtual const wi::Texture* GetGUIBlurredBackground() const { return nullptr; }
 
 		void AddSprite(wi::Sprite* sprite, const std::string& layer = "");
 		void RemoveSprite(wi::Sprite* sprite);

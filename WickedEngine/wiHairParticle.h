@@ -19,10 +19,10 @@ namespace wi
 	class HairParticleSystem
 	{
 	public:
-		wi::graphics::GPUBuffer constantBuffer;
-		wi::graphics::GPUBuffer generalBuffer;
+		wi::GPUBuffer constantBuffer;
+		wi::GPUBuffer generalBuffer;
 		wi::allocator::PageAllocator::Allocation generalBufferOffsetAllocation;
-		wi::graphics::GPUBuffer generalBufferOffsetAllocationAlias;
+		wi::GPUBuffer generalBufferOffsetAllocationAlias;
 		wi::scene::MeshComponent::BufferView simulation_view;
 		wi::scene::MeshComponent::BufferView vb_pos[2];
 		wi::scene::MeshComponent::BufferView vb_nor;
@@ -33,10 +33,10 @@ namespace wi
 		wi::scene::MeshComponent::BufferView indirect_view;
 		wi::scene::MeshComponent::BufferView prim_view;
 
-		wi::graphics::GPUBuffer indexBuffer;
-		wi::graphics::GPUBuffer vertexBuffer_length;
+		wi::GPUBuffer indexBuffer;
+		wi::GPUBuffer vertexBuffer_length;
 
-		wi::graphics::RaytracingAccelerationStructure BLAS;
+		wi::RaytracingAccelerationStructure BLAS;
 
 		void CreateFromMesh(const wi::scene::MeshComponent& mesh);
 		void DeleteRenderData();
@@ -52,7 +52,7 @@ namespace wi
 		static void InitializeGPUBuffersIfNeeded(
 			const HairParticleSystem* hairs,
 			size_t hairCount,
-			wi::graphics::CommandList cmd
+			wi::CommandList cmd
 		);
 
 		struct UpdateGPUItem
@@ -66,13 +66,13 @@ namespace wi
 		static void UpdateGPU(
 			const UpdateGPUItem* items,
 			uint32_t itemCount,
-			wi::graphics::CommandList cmd
+			wi::CommandList cmd
 		);
 
 		void Draw(
 			const wi::scene::MaterialComponent& material,
 			wi::enums::RENDERPASS renderPass,
-			wi::graphics::CommandList cmd
+			wi::CommandList cmd
 		) const;
 
 		wi::ecs::Entity meshID = wi::ecs::INVALID_ENTITY;
@@ -114,7 +114,7 @@ namespace wi
 		wi::vector<uint32_t> indices; // it is dependent on vertex_lengths and contains triangles with non-zero lengths
 		uint32_t layerMask = ~0u;
 		mutable bool regenerate_frame = true;
-		wi::graphics::Format position_format = wi::graphics::Format::R16G16B16A16_UNORM;
+		wi::Format position_format = wi::Format::R16G16B16A16_UNORM;
 		mutable bool must_rebuild_blas = true;
 		mutable bool gpu_initialized = false;
 

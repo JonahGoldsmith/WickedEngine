@@ -2826,7 +2826,7 @@ namespace wi::scene
 
 	void Scene::DDGI::Serialize(wi::Archive& archive)
 	{
-		using namespace wi::graphics;
+		using namespace wi;
 		GraphicsDevice* device = GetDevice();
 
 		if (archive.IsReadMode())
@@ -2852,7 +2852,7 @@ namespace wi::scene
 				GPUBufferDesc buf;
 				buf.stride = sizeof(DDGIProbe);
 				buf.size = buf.stride * probe_count;
-				buf.bind_flags = BindFlag::SHADER_RESOURCE;
+				buf.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 				buf.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 				buf.format = Format::UNKNOWN;
 				device->CreateBuffer(&buf, data.data(), &probe_buffer);
@@ -2867,7 +2867,7 @@ namespace wi::scene
 				desc.width = DDGI_DEPTH_TEXELS * grid_dimensions.x * grid_dimensions.y;
 				desc.height = DDGI_DEPTH_TEXELS * grid_dimensions.z;
 				desc.format = Format::R16G16_FLOAT;
-				desc.bind_flags = BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 
 				SubresourceData initdata;
 				initdata.data_ptr = data.data();

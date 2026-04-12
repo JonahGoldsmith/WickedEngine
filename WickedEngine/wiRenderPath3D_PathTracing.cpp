@@ -19,7 +19,7 @@
 #endif // OIDN_VERSION_MAJOR >= 2
 #endif // __has_include("OpenImageDenoise/oidn.hpp")
 
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::scene;
 
 
@@ -51,28 +51,28 @@ namespace wi
 	{
 		DeleteGPUResources();
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		XMUINT2 internalResolution = GetInternalResolution();
 
 		{
 			TextureDesc desc;
 			desc.format = wi::renderer::format_rendertarget_main;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
 			device->CreateTexture(&desc, nullptr, &rtMain);
 			device->SetName(&rtMain, "rtMain");
 
 			desc.format = wi::renderer::format_idbuffer;
-			desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
 			desc.sample_count = 1;
 			device->CreateTexture(&desc, nullptr, &rtPrimitiveID);
 			device->SetName(&rtPrimitiveID, "rtPrimitiveID");
 
-			desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE | BindFlag::RENDER_TARGET;
+			desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE | BindFlag::RENDER_TARGET;
 			desc.format = Format::R32G32B32A32_FLOAT;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -80,7 +80,7 @@ namespace wi
 			device->SetName(&traceResult, "traceResult");
 
 #ifdef OPEN_IMAGE_DENOISE
-			desc.bind_flags = BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 			desc.layout = ResourceState::UNORDERED_ACCESS;
 			device->CreateTexture(&desc, nullptr, &denoiserAlbedo);
 			device->SetName(&denoiserAlbedo, "denoiserAlbedo");
@@ -89,7 +89,7 @@ namespace wi
 #endif // OPEN_IMAGE_DENOISE
 
 			{
-				desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 				desc.format = Format::R32_FLOAT;
 				device->CreateTexture(&desc, nullptr, &traceDepth);
 				device->SetName(&traceDepth, "traceDepth");
@@ -109,7 +109,7 @@ namespace wi
 		}
 		{
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = Format::R32_FLOAT;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -129,7 +129,7 @@ namespace wi
 		}
 		{
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = Format::R11G11B10_FLOAT;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -139,7 +139,7 @@ namespace wi
 
 			desc.width /= 4;
 			desc.height /= 4;
-			desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 			device->CreateTexture(&desc, nullptr, &rtGUIBlurredBackground[0]);
 			device->SetName(&rtGUIBlurredBackground[0], "rtGUIBlurredBackground[0]");
 
@@ -292,12 +292,12 @@ namespace wi
 							}
 						}
 
-						GraphicsDevice* device = wi::graphics::GetDevice();
+						GraphicsDevice* device = wi::GetDevice();
 
 						TextureDesc desc;
 						desc.width = (uint32_t)width;
 						desc.height = (uint32_t)height;
-						desc.bind_flags = BindFlag::SHADER_RESOURCE;
+						desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 						desc.format = Format::R32G32B32A32_FLOAT;
 
 						SubresourceData initdata;
@@ -320,7 +320,7 @@ namespace wi
 
 	void RenderPath3D_PathTracing::Render() const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		wi::jobsystem::context ctx;
 
 		if (sam < target)
@@ -363,7 +363,7 @@ namespace wi
 			}
 			wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
 
-				GraphicsDevice* device = wi::graphics::GetDevice();
+				GraphicsDevice* device = wi::GetDevice();
 
 				wi::renderer::BindCameraCB(
 					*camera,
@@ -376,7 +376,7 @@ namespace wi
 
 				// just clear depth for safety:
 				RenderPassImage rp[] = {
-					RenderPassImage::DepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::CLEAR),
+					wiGraphicsCreateRenderPassImageDepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::CLEAR),
 				};
 				device->RenderPassBegin(rp, arraysize(rp), cmd);
 				device->RenderPassEnd(cmd);
@@ -390,7 +390,7 @@ namespace wi
 				if (wi::renderer::GetRaytraceDebugBVHVisualizerEnabled())
 				{
 					RenderPassImage rp[] = {
-						RenderPassImage::RenderTarget(&traceResult, RenderPassImage::LoadOp::CLEAR)
+						wiGraphicsCreateRenderPassImageRenderTarget(&traceResult, RenderPassImage::LoadOp::CLEAR)
 					};
 					device->RenderPassBegin(rp, arraysize(rp), cmd);
 
@@ -475,7 +475,7 @@ namespace wi
 		CommandList cmd = device->BeginCommandList();
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			wi::renderer::BindCameraCB(
 				*camera,
@@ -511,8 +511,8 @@ namespace wi
 			// Composite other effects on top:
 			{
 				RenderPassImage rp[] = {
-					RenderPassImage::RenderTarget(&rtMain, RenderPassImage::LoadOp::CLEAR),
-					RenderPassImage::DepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::LOAD),
+					wiGraphicsCreateRenderPassImageRenderTarget(&rtMain, RenderPassImage::LoadOp::CLEAR),
+					wiGraphicsCreateRenderPassImageDepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::LOAD),
 				};
 				device->RenderPassBegin(rp, arraysize(rp), cmd);
 
@@ -734,7 +734,7 @@ namespace wi
 
 	void RenderPath3D_PathTracing::Compose(CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		device->EventBegin("RenderPath3D_PathTracing::Compose", cmd);
 

@@ -12,11 +12,11 @@ namespace wi::gpusortlib
 	//	payloadBuffer_uint_RW	-	The payload buffer of uint32_t values to sort based on the keyBuffer [optional] (ReadWrite UNORDERED_ACCESS state)
 	void Sort(
 		uint32_t maxCount,
-		const wi::graphics::GPUBuffer& keyBuffer_uint_RW,
-		const wi::graphics::GPUBuffer& counterBuffer_RO,
+		const wi::GPUBuffer& keyBuffer_uint_RW,
+		const wi::GPUBuffer& counterBuffer_RO,
 		uint32_t counterReadOffset,
-		const wi::graphics::GPUBuffer& payloadBuffer_uint_RW,
-		wi::graphics::CommandList cmd
+		const wi::GPUBuffer& payloadBuffer_uint_RW,
+		wi::CommandList cmd
 	);
 
 	void Initialize();

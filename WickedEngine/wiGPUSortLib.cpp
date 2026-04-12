@@ -8,7 +8,7 @@
 #define FFX_CPP
 #include "shaders/ffx-parallelsort/FFX_ParallelSort.h"
 
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi::gpusortlib
 {
@@ -51,14 +51,14 @@ namespace wi::gpusortlib
 
 		bd.stride = sizeof(FFX_ParallelSortCB);
 		bd.size = bd.stride;
-		bd.bind_flags = BindFlag::CONSTANT_BUFFER | BindFlag::UNORDERED_ACCESS;
+		bd.bind_flags = BindFlag::BIND_CONSTANT_BUFFER | BindFlag::BIND_UNORDERED_ACCESS;
 		bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 		device->CreateBuffer(&bd, nullptr, &m_IndirectConstantBuffer);
 		device->SetName(&m_IndirectConstantBuffer, "gpusortlib::m_IndirectConstantBuffer");
 
 		bd.stride = sizeof(uint32_t);
 		bd.size = bd.stride * 3;
-		bd.bind_flags = BindFlag::UNORDERED_ACCESS;
+		bd.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 		bd.misc_flags = ResourceMiscFlag::INDIRECT_ARGS | ResourceMiscFlag::BUFFER_STRUCTURED;
 		device->CreateBuffer(&bd, nullptr, &m_IndirectCountScatterArgs);
 		device->SetName(&m_IndirectCountScatterArgs, "gpusortlib::m_IndirectCountScatterArgs");
@@ -83,7 +83,7 @@ namespace wi::gpusortlib
 		const GPUBuffer& payloadBuffer_uint_RW,
 		CommandList cmd)
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		uint32_t scratchBufferSize;
 		uint32_t reducedScratchBufferSize;
@@ -97,7 +97,7 @@ namespace wi::gpusortlib
 			GPUBufferDesc bd;
 			bd.stride = sizeof(uint32_t);
 			bd.size = scratchBufferSize;
-			bd.bind_flags = BindFlag::UNORDERED_ACCESS;
+			bd.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			device->CreateBuffer(&bd, nullptr, &m_FPSScratchBuffer);
 			device->SetName(&m_FPSScratchBuffer, "gpusortlib::m_FPSScratchBuffer");
@@ -107,7 +107,7 @@ namespace wi::gpusortlib
 			GPUBufferDesc bd;
 			bd.stride = sizeof(uint32_t);
 			bd.size = reducedScratchBufferSize;
-			bd.bind_flags = BindFlag::UNORDERED_ACCESS;
+			bd.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			device->CreateBuffer(&bd, nullptr, &m_FPSReducedScratchBuffer);
 			device->SetName(&m_FPSReducedScratchBuffer, "gpusortlib::m_FPSReducedScratchBuffer");
@@ -117,7 +117,7 @@ namespace wi::gpusortlib
 			GPUBufferDesc bd;
 			bd.stride = sizeof(uint32_t);
 			bd.size = keyBuffer_uint_RW.desc.size;
-			bd.bind_flags = BindFlag::UNORDERED_ACCESS;
+			bd.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			device->CreateBuffer(&bd, nullptr, &m_TmpKeyBuffer);
 			device->SetName(&m_TmpKeyBuffer, "gpusortlib::m_TmpKeyBuffer");
@@ -127,7 +127,7 @@ namespace wi::gpusortlib
 			GPUBufferDesc bd;
 			bd.stride = sizeof(uint32_t);
 			bd.size = payloadBuffer_uint_RW.desc.size;
-			bd.bind_flags = BindFlag::UNORDERED_ACCESS;
+			bd.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			device->CreateBuffer(&bd, nullptr, &m_TmpPayloadBuffer);
 			device->SetName(&m_TmpPayloadBuffer, "gpusortlib::m_TmpPayloadBuffer");
@@ -146,20 +146,20 @@ namespace wi::gpusortlib
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Buffer(&counterBuffer_RO,ResourceState::SHADER_RESOURCE,ResourceState::COPY_SRC),
-				GPUBarrier::Buffer(&m_IndirectCountBuffer,ResourceState::UNORDERED_ACCESS,ResourceState::COPY_DST),
+				wiGraphicsCreateGPUBarrierBuffer(&counterBuffer_RO,ResourceState::SHADER_RESOURCE,ResourceState::COPY_SRC),
+				wiGraphicsCreateGPUBarrierBuffer(&m_IndirectCountBuffer,ResourceState::UNORDERED_ACCESS,ResourceState::COPY_DST),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
 		device->CopyBuffer(&m_IndirectCountBuffer, 0, &counterBuffer_RO, counterReadOffset, sizeof(uint32_t), cmd);
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Buffer(&counterBuffer_RO,ResourceState::COPY_SRC,ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&m_IndirectCountBuffer,ResourceState::COPY_DST,ResourceState::UNORDERED_ACCESS),
+				wiGraphicsCreateGPUBarrierBuffer(&counterBuffer_RO,ResourceState::COPY_SRC,ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&m_IndirectCountBuffer,ResourceState::COPY_DST,ResourceState::UNORDERED_ACCESS),
 
-				GPUBarrier::Buffer(&m_IndirectConstantBuffer, ResourceState::CONSTANT_BUFFER, ResourceState::UNORDERED_ACCESS),
-				GPUBarrier::Buffer(&m_IndirectCountScatterArgs, ResourceState::INDIRECT_ARGUMENT, ResourceState::UNORDERED_ACCESS),
-				GPUBarrier::Buffer(&m_IndirectReduceScanArgs, ResourceState::INDIRECT_ARGUMENT, ResourceState::UNORDERED_ACCESS),
+				wiGraphicsCreateGPUBarrierBuffer(&m_IndirectConstantBuffer, ResourceState::CONSTANT_BUFFER, ResourceState::UNORDERED_ACCESS),
+				wiGraphicsCreateGPUBarrierBuffer(&m_IndirectCountScatterArgs, ResourceState::INDIRECT_ARGUMENT, ResourceState::UNORDERED_ACCESS),
+				wiGraphicsCreateGPUBarrierBuffer(&m_IndirectReduceScanArgs, ResourceState::INDIRECT_ARGUMENT, ResourceState::UNORDERED_ACCESS),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -186,11 +186,11 @@ namespace wi::gpusortlib
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Memory(&m_IndirectCountScatterArgs),
-				GPUBarrier::Memory(&m_IndirectReduceScanArgs),
-				GPUBarrier::Buffer(&m_IndirectConstantBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::CONSTANT_BUFFER),
-				GPUBarrier::Buffer(&m_IndirectCountScatterArgs, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT),
-				GPUBarrier::Buffer(&m_IndirectReduceScanArgs, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT),
+				wiGraphicsCreateGPUBarrierMemory(&m_IndirectCountScatterArgs),
+				wiGraphicsCreateGPUBarrierMemory(&m_IndirectReduceScanArgs),
+				wiGraphicsCreateGPUBarrierBuffer(&m_IndirectConstantBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::CONSTANT_BUFFER),
+				wiGraphicsCreateGPUBarrierBuffer(&m_IndirectCountScatterArgs, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT),
+				wiGraphicsCreateGPUBarrierBuffer(&m_IndirectReduceScanArgs, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -218,7 +218,7 @@ namespace wi::gpusortlib
 			}
 
 			// UAV barrier on the sum table
-			device->Barrier(GPUBarrier::Memory(&ScratchBufferInfo), cmd);
+			device->Barrier(wiGraphicsCreateGPUBarrierMemory(&ScratchBufferInfo), cmd);
 
 			device->BindUAV(&ReducedScratchBufferInfo, 3, cmd);
 
@@ -229,7 +229,7 @@ namespace wi::gpusortlib
 				device->DispatchIndirect(&m_IndirectReduceScanArgs, 0, cmd);
 
 				// UAV barrier on the reduced sum table
-				device->Barrier(GPUBarrier::Memory(&ReducedScratchBufferInfo), cmd);
+				device->Barrier(wiGraphicsCreateGPUBarrierMemory(&ReducedScratchBufferInfo), cmd);
 			}
 
 			// Sort Scan
@@ -243,7 +243,7 @@ namespace wi::gpusortlib
 				device->Dispatch(1, 1, 1, cmd);
 
 				// UAV barrier on the reduced sum table
-				device->Barrier(GPUBarrier::Memory(&ReducedScratchBufferInfo), cmd);
+				device->Barrier(wiGraphicsCreateGPUBarrierMemory(&ReducedScratchBufferInfo), cmd);
 
 				// Next do scan prefix on the histogram with partial sums that we just did
 				device->BindUAV(&ScratchBufferInfo, 6, cmd);
@@ -256,7 +256,7 @@ namespace wi::gpusortlib
 			}
 
 			// UAV barrier on the sum table
-			device->Barrier(GPUBarrier::Memory(&ScratchBufferInfo), cmd);
+			device->Barrier(wiGraphicsCreateGPUBarrierMemory(&ScratchBufferInfo), cmd);
 
 			if (bHasPayload)
 			{
@@ -276,9 +276,9 @@ namespace wi::gpusortlib
 			// Finish doing everything and barrier for the next pass
 			GPUBarrier barriers[2];
 			int numBarriers = 0;
-			barriers[numBarriers++] = GPUBarrier::Memory(WriteBufferInfo);
+			barriers[numBarriers++] = wiGraphicsCreateGPUBarrierMemory(WriteBufferInfo);
 			if (bHasPayload)
-				barriers[numBarriers++] = GPUBarrier::Memory(WritePayloadBufferInfo);
+				barriers[numBarriers++] = wiGraphicsCreateGPUBarrierMemory(WritePayloadBufferInfo);
 			device->Barrier(barriers, numBarriers, cmd);
 
 			// Swap read/write sources

@@ -139,7 +139,7 @@ namespace wi::font
 	void Initialize();
 
 	// Get the texture that contains currently cached glyphs
-	const wi::graphics::Texture* GetAtlas();
+	const wi::Texture* GetAtlas();
 
 	// Create a font from a file. It must be an existing .ttf file.
 	//	fontName : path to .ttf font
@@ -165,12 +165,12 @@ namespace wi::font
 	// Draw text with specified parameters and return cursor for last word
 	//	The next Draw() can continue from where this left off by using the return value of this function
 	//	in wi::font::Params::cursor
-	Cursor Draw(const char* text, size_t text_length, const Params& params, wi::graphics::CommandList cmd);
-	Cursor Draw(const wchar_t* text, size_t text_length, const Params& params, wi::graphics::CommandList cmd);
-	Cursor Draw(const char* text, const Params& params, wi::graphics::CommandList cmd);
-	Cursor Draw(const wchar_t* text, const Params& params, wi::graphics::CommandList cmd);
-	Cursor Draw(const std::string& text, const Params& params, wi::graphics::CommandList cmd);
-	Cursor Draw(const std::wstring& text, const Params& params, wi::graphics::CommandList cmd);
+	Cursor Draw(const char* text, size_t text_length, const Params& params, wi::CommandList cmd);
+	Cursor Draw(const wchar_t* text, size_t text_length, const Params& params, wi::CommandList cmd);
+	Cursor Draw(const char* text, const Params& params, wi::CommandList cmd);
+	Cursor Draw(const wchar_t* text, const Params& params, wi::CommandList cmd);
+	Cursor Draw(const std::string& text, const Params& params, wi::CommandList cmd);
+	Cursor Draw(const std::wstring& text, const Params& params, wi::CommandList cmd);
 
 	// Computes the text's size measurements in logical canvas coordinates
 	XMFLOAT2 TextSize(const char* text, size_t text_length, const Params& params);

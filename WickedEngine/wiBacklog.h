@@ -36,13 +36,13 @@ namespace wi::backlog
 	void Update(const wi::Canvas& canvas, float dt = 1.0f / 60.0f);
 	void Draw(
 		const wi::Canvas& canvas,
-		wi::graphics::CommandList cmd,
-		wi::graphics::ColorSpace colorspace = wi::graphics::ColorSpace::SRGB
+		wi::CommandList cmd,
+		wi::ColorSpace colorspace = wi::ColorSpace::SRGB
 	);
 	void DrawOutputText(
 		const wi::Canvas& canvas,
-		wi::graphics::CommandList cmd,
-		wi::graphics::ColorSpace colorspace = wi::graphics::ColorSpace::SRGB
+		wi::CommandList cmd,
+		wi::ColorSpace colorspace = wi::ColorSpace::SRGB
 	);
 
 	std::string getText();
@@ -55,7 +55,7 @@ namespace wi::backlog
 
 	bool isActive();
 
-	void setBackground(wi::graphics::Texture* texture);
+	void setBackground(wi::Texture* texture);
 	void setBackgroundColor(wi::Color color);
 	void setFontSize(int value);
 	void setFontRowspacing(float value);

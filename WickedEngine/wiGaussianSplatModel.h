@@ -28,7 +28,7 @@ namespace wi
 		XMFLOAT4X4 transform = wi::math::IDENTITY_MATRIX;
 		XMFLOAT4X4 transform_inverse = wi::math::IDENTITY_MATRIX;
 		float maxScale = 1;
-		wi::graphics::GPUBuffer buffer;
+		wi::GPUBuffer buffer;
 		int subresource_splatBuffer = -1;
 		int subresource_shBuffer = -1;
 
@@ -52,17 +52,17 @@ namespace wi
 	public:
 		size_t model_capacity = 0;
 		size_t splat_capacity = 0;
-		wi::graphics::GPUBuffer modelBuffer;
-		wi::graphics::GPUBuffer indirectBuffer;
-		wi::graphics::GPUBuffer sortedIndexBuffer;
-		wi::graphics::GPUBuffer distanceBuffer;
-		wi::graphics::GPUBuffer splatLookupBuffer;
+		wi::GPUBuffer modelBuffer;
+		wi::GPUBuffer indirectBuffer;
+		wi::GPUBuffer sortedIndexBuffer;
+		wi::GPUBuffer distanceBuffer;
+		wi::GPUBuffer splatLookupBuffer;
 
 		constexpr bool IsValid() const { return splat_capacity > 0; }
 
 		void MakeReservations(const GaussianSplatModel* models, size_t model_count);
-		void UpdateGPU(const GaussianSplatModel** models, size_t model_count, wi::graphics::CommandList cmd, const XMFLOAT4X4* viewmatrices, uint32_t camera_count = 1) const; // culling and sorting. Multiple cameras can be provided when rendering will be performed to multiple destinations
-		void Draw(wi::graphics::CommandList cmd, uint32_t camera_count = 1) const; // will be drawn with culling and sorting based on previous call to UpdateGPU
+		void UpdateGPU(const GaussianSplatModel** models, size_t model_count, wi::CommandList cmd, const XMFLOAT4X4* viewmatrices, uint32_t camera_count = 1) const; // culling and sorting. Multiple cameras can be provided when rendering will be performed to multiple destinations
+		void Draw(wi::CommandList cmd, uint32_t camera_count = 1) const; // will be drawn with culling and sorting based on previous call to UpdateGPU
 		void Clear();
 	};
 }

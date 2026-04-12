@@ -13,7 +13,7 @@
 #include <mutex>
 #include <unordered_map>
 
-using namespace wi::graphics;
+using namespace wi;
 
 //#define RESOURCE_LOGGING
 
@@ -43,7 +43,7 @@ namespace wi
 	struct ResourceInternal
 	{
 		resourcemanager::Flags flags = resourcemanager::Flags::NONE;
-		wi::graphics::Texture texture;
+		wi::Texture texture;
 		int srgb_subresource = -1;
 		wi::audio::Sound sound;
 		std::string script;
@@ -68,9 +68,9 @@ namespace wi
 		uint32_t streaming_unload_delay = 0;
 
 		// Virtual texture things:
-		wi::graphics::GPUBuffer tile_pool;
-		wi::graphics::Texture texture_feedback;
-		wi::graphics::Texture texture_residency;
+		wi::GPUBuffer tile_pool;
+		wi::Texture texture_feedback;
+		wi::Texture texture_residency;
 	};
 
 	const wi::vector<uint8_t>& Resource::GetFileData() const
@@ -78,7 +78,7 @@ namespace wi
 		const ResourceInternal* resourceinternal = (ResourceInternal*)internal_state.get();
 		return resourceinternal->filedata;
 	}
-	const wi::graphics::Texture& Resource::GetTexture() const
+	const wi::Texture& Resource::GetTexture() const
 	{
 		const ResourceInternal* resourceinternal = (ResourceInternal*)internal_state.get();
 		return resourceinternal->texture;
@@ -141,7 +141,7 @@ namespace wi
 		ResourceInternal* resourceinternal = (ResourceInternal*)internal_state.get();
 		resourceinternal->filedata = std::move(data);
 	}
-	void Resource::SetTexture(const wi::graphics::Texture& texture, int srgb_subresource)
+	void Resource::SetTexture(const wi::Texture& texture, int srgb_subresource)
 	{
 		if (internal_state == nullptr)
 		{
@@ -340,7 +340,7 @@ namespace wi
 			{
 			case DataType::IMAGE:
 			{
-				GraphicsDevice* device = wi::graphics::GetDevice();
+				GraphicsDevice* device = wi::GetDevice();
 				if (!ext.compare("DDS"))
 				{
 					dds::Header header = dds::read_header(filedata, filesize);
@@ -348,7 +348,7 @@ namespace wi
 					{
 						TextureDesc desc;
 						desc.array_size = 1;
-						desc.bind_flags = BindFlag::SHADER_RESOURCE;
+						desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 						desc.width = header.width();
 						desc.height = header.height();
 						desc.depth = header.depth();
@@ -446,14 +446,14 @@ namespace wi
 							desc.swizzle.r = ComponentSwizzle::R;
 							desc.swizzle.g = ComponentSwizzle::R;
 							desc.swizzle.b = ComponentSwizzle::R;
-							desc.swizzle.a = ComponentSwizzle::ONE;
+							desc.swizzle.a = ComponentSwizzle::SWIZZLE_ONE;
 						}
 						if (desc.format == Format::BC5_UNORM || desc.format == Format::BC5_SNORM)
 						{
 							desc.swizzle.r = ComponentSwizzle::R;
 							desc.swizzle.g = ComponentSwizzle::G;
-							desc.swizzle.b = ComponentSwizzle::ONE;
-							desc.swizzle.a = ComponentSwizzle::ONE;
+							desc.swizzle.b = ComponentSwizzle::SWIZZLE_ONE;
+							desc.swizzle.a = ComponentSwizzle::SWIZZLE_ONE;
 						}
 
 						if (header.is_1d())
@@ -648,7 +648,7 @@ namespace wi
 							}
 							break;
 						}
-						desc.bind_flags = BindFlag::SHADER_RESOURCE;
+						desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 						desc.mip_levels = 1;
 						SubresourceData InitData;
 						InitData.data_ptr = data;
@@ -679,7 +679,7 @@ namespace wi
 						case 1:
 							format = Format::R16_UNORM;
 							bc_format = Format::BC4_UNORM;
-							swizzle = { ComponentSwizzle::R, ComponentSwizzle::R, ComponentSwizzle::R, ComponentSwizzle::ONE };
+							swizzle = { ComponentSwizzle::R, ComponentSwizzle::R, ComponentSwizzle::R, ComponentSwizzle::SWIZZLE_ONE };
 							break;
 						case 2:
 							format = Format::R16G16_UNORM;
@@ -706,7 +706,7 @@ namespace wi
 							rgba = color4;
 							format = Format::R16G16B16A16_UNORM;
 							bc_format = Format::BC1_UNORM;
-							swizzle = { ComponentSwizzle::R, ComponentSwizzle::G, ComponentSwizzle::B, ComponentSwizzle::ONE };
+							swizzle = { ComponentSwizzle::R, ComponentSwizzle::G, ComponentSwizzle::B, ComponentSwizzle::SWIZZLE_ONE };
 						}
 						break;
 						case 4:
@@ -725,7 +725,7 @@ namespace wi
 						case 1:
 							format = Format::R8_UNORM;
 							bc_format = Format::BC4_UNORM;
-							swizzle = { ComponentSwizzle::R, ComponentSwizzle::R, ComponentSwizzle::R, ComponentSwizzle::ONE };
+							swizzle = { ComponentSwizzle::R, ComponentSwizzle::R, ComponentSwizzle::R, ComponentSwizzle::SWIZZLE_ONE };
 							break;
 						case 2:
 							format = Format::R8G8_UNORM;
@@ -752,7 +752,7 @@ namespace wi
 							rgba = color4;
 							format = Format::R8G8B8A8_UNORM;
 							bc_format = Format::BC1_UNORM;
-							swizzle = { ComponentSwizzle::R, ComponentSwizzle::G, ComponentSwizzle::B, ComponentSwizzle::ONE };
+							swizzle = { ComponentSwizzle::R, ComponentSwizzle::G, ComponentSwizzle::B, ComponentSwizzle::SWIZZLE_ONE };
 						}
 						break;
 						case 4:
@@ -802,7 +802,7 @@ namespace wi
 								desc.width = 16;
 								desc.height = 16;
 								desc.depth = 16;
-								desc.bind_flags = BindFlag::SHADER_RESOURCE;
+								desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 								SubresourceData InitData;
 								InitData.data_ptr = data;
 								InitData.row_pitch = 16 * sizeof(uint32_t);
@@ -813,7 +813,7 @@ namespace wi
 						}
 						else
 						{
-							desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+							desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 							desc.mip_levels = GetMipCount(desc.width, desc.height);
 							desc.usage = Usage::DEFAULT;
 							desc.layout = ResourceState::SHADER_RESOURCE;
@@ -858,10 +858,10 @@ namespace wi
 								if (has_flag(flags, Flags::IMPORT_NORMALMAP))
 								{
 									desc.format = Format::BC5_UNORM;
-									desc.swizzle = { ComponentSwizzle::R, ComponentSwizzle::G, ComponentSwizzle::ONE, ComponentSwizzle::ONE };
+									desc.swizzle = { ComponentSwizzle::R, ComponentSwizzle::G, ComponentSwizzle::SWIZZLE_ONE, ComponentSwizzle::SWIZZLE_ONE };
 								}
 
-								desc.bind_flags = BindFlag::SHADER_RESOURCE;
+								desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 
 								const uint32_t block_size = GetFormatBlockSize(desc.format);
 								desc.width = align(desc.width, block_size);

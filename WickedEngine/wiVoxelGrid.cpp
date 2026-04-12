@@ -6,7 +6,7 @@
 
 #include "Utility/meshoptimizer/meshoptimizer.h"
 
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::primitive;
 
 namespace wi

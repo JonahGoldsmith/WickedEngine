@@ -46,7 +46,7 @@ namespace wi
 		//Start Executing the tasks and mark the loading as active
 		void Start() override;
 
-		void Compose(wi::graphics::CommandList cmd) const override;
+		void Compose(wi::CommandList cmd) const override;
 
 		// This is an identifier of RenderPath subtype that is used for lua binding.
 		static constexpr const auto script_check_identifier = relative_path_storage(__FILE__);

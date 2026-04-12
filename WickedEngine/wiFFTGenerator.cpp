@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <assert.h>
 
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi::fftgenerator
 {
@@ -20,9 +20,9 @@ namespace wi::fftgenerator
 		uint32_t slices;
 
 		// For 512x512 config, we need 6 constant buffers
-		wi::graphics::GPUBuffer pRadix008A_CB[6];
+		wi::GPUBuffer pRadix008A_CB[6];
 
-		wi::graphics::GPUBuffer pBuffer_Tmp;
+		wi::GPUBuffer pBuffer_Tmp;
 
 		inline bool IsValid() const { return pBuffer_Tmp.IsValid(); }
 	};
@@ -46,7 +46,7 @@ namespace wi::fftgenerator
 		// Setup execution configuration
 		uint32_t grid = thread_count / COHERENCY_GRANULARITY;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		// Buffers
 		const GPUResource* srvs[1] = { &pSRV_Src };
@@ -69,7 +69,7 @@ namespace wi::fftgenerator
 		device->Dispatch(grid, 1, 1, cmd);
 
 		GPUBarrier barriers[] = {
-			GPUBarrier::Memory(),
+			wiGraphicsCreateGPUBarrierMemory(),
 		};
 		device->Barrier(barriers, arraysize(barriers), cmd);
 
@@ -82,7 +82,7 @@ namespace wi::fftgenerator
 		const GPUResource& pSRV_Src,
 		CommandList cmd)
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		if (!fft_plan.IsValid())
 		{
@@ -91,7 +91,7 @@ namespace wi::fftgenerator
 			// Create 6 cbuffers for 512x512 transform.
 
 			GPUBufferDesc cb_desc;
-			cb_desc.bind_flags = BindFlag::CONSTANT_BUFFER;
+			cb_desc.bind_flags = BindFlag::BIND_CONSTANT_BUFFER;
 			cb_desc.size = sizeof(FFTGeneratorCB);
 			cb_desc.stride = 0;
 
@@ -150,7 +150,7 @@ namespace wi::fftgenerator
 			GPUBufferDesc buf_desc;
 			buf_desc.size = sizeof(float) * 2 * (512 * fft_plan.slices) * 512;
 			buf_desc.usage = Usage::DEFAULT;
-			buf_desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+			buf_desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 			buf_desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			buf_desc.stride = sizeof(float) * 2;
 

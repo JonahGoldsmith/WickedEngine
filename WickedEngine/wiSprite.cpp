@@ -4,7 +4,7 @@
 #include "wiTextureHelper.h"
 #include "wiHelper.h"
 
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi
 {
@@ -152,7 +152,7 @@ namespace wi
 
 	}
 
-	const wi::graphics::Texture* Sprite::GetTexture() const
+	const wi::Texture* Sprite::GetTexture() const
 	{
 		return textureResource.IsValid() ? &textureResource.GetTexture() : nullptr;
 	}

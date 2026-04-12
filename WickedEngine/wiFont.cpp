@@ -22,7 +22,7 @@
 #include <mutex>
 
 using namespace wi::enums;
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi::font
 {
@@ -292,7 +292,7 @@ namespace wi::font
 			desc.dss = &depthStencilStates[d];
 			desc.rs = &rasterizerState;
 			desc.pt = PrimitiveTopology::TRIANGLESTRIP;
-			wi::graphics::GetDevice()->CreatePipelineState(&desc, &PSO[d]);
+			wi::GetDevice()->CreatePipelineState(&desc, &PSO[d]);
 		}
 	}
 	void Initialize()
@@ -309,7 +309,7 @@ namespace wi::font
 
 		RasterizerState rs;
 		rs.fill_mode = FillMode::SOLID;
-		rs.cull_mode = CullMode::NONE;
+		rs.cull_mode = CullMode::CULL_NONE;
 		rs.front_counter_clockwise = true;
 		rs.depth_bias = 0;
 		rs.depth_bias_clamp = 0;
@@ -337,7 +337,7 @@ namespace wi::font
 		depthStencilStates[DEPTH_TEST_OFF] = dsd;
 
 		dsd.depth_enable = true;
-		dsd.depth_write_mask = DepthWriteMask::ZERO;
+		dsd.depth_write_mask = DepthWriteMask::DEPTH_WRITE_ZERO;
 		dsd.depth_func = ComparisonFunc::GREATER_EQUAL;
 		depthStencilStates[DEPTH_TEST_ON] = dsd;
 
@@ -572,7 +572,7 @@ namespace wi::font
 
 		if (status.quadCount > 0)
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			GraphicsDevice::GPUAllocation mem = device->AllocateGPU(sizeof(FontVertex) * status.quadCount * 4, cmd);
 			if (!mem.IsValid())
 			{

@@ -1,11 +1,22 @@
 #include "wiShaderCompiler.h"
-#include "wiBacklog.h"
 #include "wiPlatform.h"
-#include "wiHelper.h"
 #include "wiArchive.h"
-#include "wiUnorderedSet.h"
 
+#include <fstream>
 #include <mutex>
+#include <cstdlib>
+#include <clocale>
+#include <filesystem>
+
+#if __has_include(<SDL3/SDL_filesystem.h>) && __has_include(<SDL3/SDL_iostream.h>) && __has_include(<SDL3/SDL_stdinc.h>)
+#include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL_iostream.h>
+#include <SDL3/SDL_stdinc.h>
+#endif
+
+#if !defined(SDL_arraysize)
+#define SDL_arraysize(array) (sizeof(array) / sizeof((array)[0]))
+#endif
 
 #ifdef PLATFORM_WINDOWS_DESKTOP
 #define SHADERCOMPILER_ENABLED
@@ -48,7 +59,245 @@ using namespace Microsoft::WRL;
 #include "wiGraphicsDevice_Metal.h"
 #endif // PLATFORM_APPLE
 
-using namespace wi::graphics;
+#if defined(WICKED_MMGR_ENABLED)
+// MMGR include must come after standard/project includes to avoid macro collisions in system headers.
+#include "../forge-mmgr/FluidStudios/MemoryManager/mmgr.h"
+#endif
+
+using namespace wi;
+
+namespace
+{
+	static bool ConvertUTF8ToWString(const std::string& input, std::wstring& output)
+	{
+		output.clear();
+		char* converted = SDL_iconv_string("WCHAR_T", "UTF-8", input.c_str(), SDL_strlen(input.c_str()) + 1);
+		if (converted == nullptr)
+		{
+			return false;
+		}
+		output = reinterpret_cast<const wchar_t*>(converted);
+		SDL_free(converted);
+		return true;
+	}
+	static bool ConvertUTF8ToWString(const char* input, std::wstring& output)
+	{
+		if (input == nullptr)
+		{
+			output.clear();
+			return false;
+		}
+		return ConvertUTF8ToWString(std::string(input), output);
+	}
+	static bool ConvertWStringToUTF8(const wchar_t* input, std::string& output)
+	{
+		output.clear();
+		if (input == nullptr)
+		{
+			return false;
+		}
+		char* converted = SDL_iconv_wchar_utf8(input);
+		if (converted == nullptr)
+		{
+			return false;
+		}
+		output = converted;
+		SDL_free(converted);
+		return true;
+	}
+	static bool FileExistsSDL(const std::string& path)
+	{
+		SDL_PathInfo info = {};
+		return SDL_GetPathInfo(path.c_str(), &info) && info.type == SDL_PATHTYPE_FILE;
+	}
+	static uint64_t FileTimestampSDL(const std::string& path)
+	{
+		SDL_PathInfo info = {};
+		if (!SDL_GetPathInfo(path.c_str(), &info))
+		{
+			return 0;
+		}
+		return (uint64_t)info.modify_time;
+	}
+	static bool FileWriteSDL(const std::string& path, const uint8_t* data, size_t size)
+	{
+		SDL_IOStream* stream = SDL_IOFromFile(path.c_str(), "wb");
+		if (stream == nullptr)
+		{
+			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "wi::shadercompiler: failed to open output for writing: %s", path.c_str());
+			return false;
+		}
+		const size_t written = size > 0 ? SDL_WriteIO(stream, data, size) : 0;
+		const bool closed = SDL_CloseIO(stream);
+		return written == size && closed;
+	}
+	static std::string GetDirectoryFromPathStd(const std::string& path)
+	{
+		return std::filesystem::path(path).parent_path().string();
+	}
+	static std::string GetFilenameFromPathStd(const std::string& path)
+	{
+		return std::filesystem::path(path).filename().string();
+	}
+	static std::string ReplaceExtensionStd(const std::string& path, const char* extension)
+	{
+		std::filesystem::path fs_path(path);
+		fs_path.replace_extension(extension);
+		return fs_path.string();
+	}
+	static bool DirectoryCreateSDL(const std::string& path)
+	{
+		if (path.empty())
+		{
+			return true;
+		}
+		return SDL_CreateDirectory(path.c_str());
+	}
+	static void MakePathAbsoluteStd(std::string& path)
+	{
+		std::error_code ec;
+		const std::filesystem::path absolute_path = std::filesystem::absolute(std::filesystem::path(path), ec);
+		if (!ec)
+		{
+			path = absolute_path.string();
+		}
+	}
+	static void MakePathRelativeStd(const std::string& root, std::string& path)
+	{
+		std::error_code ec;
+		const std::filesystem::path relative_path = std::filesystem::relative(std::filesystem::path(path), std::filesystem::path(root), ec);
+		if (!ec && !relative_path.empty())
+		{
+			path = relative_path.string();
+		}
+	}
+
+	// Use unqualified malloc/free to allow MMGR macro overrides when enabled.
+	static char* DuplicateCStringMMGRCompatible(const char* source)
+	{
+		if (source == nullptr)
+		{
+			return nullptr;
+		}
+		const size_t length = std::strlen(source) + 1;
+#if defined(WICKED_MMGR_ENABLED)
+		char* duplicated = (char*)mmgrAllocator(__FILE__, __LINE__, __FUNCTION__, m_alloc_malloc, sizeof(void*), length);
+#else
+		char* duplicated = (char*)malloc(length);
+#endif
+		if (duplicated != nullptr)
+		{
+			std::memcpy(duplicated, source, length);
+		}
+		return duplicated;
+	}
+	static void FreeMMGRCompatible(void* memory)
+	{
+		if (memory == nullptr)
+		{
+			return;
+		}
+#if defined(WICKED_MMGR_ENABLED)
+		mmgrDeallocator(__FILE__, __LINE__, __FUNCTION__, m_alloc_free, memory);
+#else
+		free(memory);
+#endif
+	}
+
+	static bool ReadFileBytes(const std::string& fileName, wi::shadercompiler::ByteArray& data, size_t max_read = ~0ull, size_t offset = 0)
+	{
+		std::ifstream file(fileName, std::ios::binary | std::ios::ate);
+		if (!file.is_open())
+		{
+			return false;
+		}
+
+		const std::streampos file_end = file.tellg();
+		if (file_end < 0)
+		{
+			return false;
+		}
+
+		const size_t file_size = static_cast<size_t>(file_end);
+		if (offset > file_size)
+		{
+			return false;
+		}
+
+		size_t read_size = file_size - offset;
+		if (max_read != ~0ull && read_size > max_read)
+		{
+			read_size = max_read;
+		}
+
+		wi::shadercompiler::ByteArray temp = {};
+		temp.resize(read_size);
+		file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+		if (read_size > 0)
+		{
+			file.read(reinterpret_cast<char*>(temp.data), static_cast<std::streamsize>(read_size));
+			if (!file && !file.eof())
+			{
+				wi::shadercompiler::Destroy(temp);
+				return false;
+			}
+		}
+
+		wi::shadercompiler::Move(data, temp);
+		wi::shadercompiler::Destroy(temp);
+		return true;
+	}
+
+	// stb_ds array storage: each slot owns a std::wstring* and must be deleted explicitly on teardown.
+	struct WideStringList
+	{
+		std::wstring** items = nullptr;
+
+		void clear()
+		{
+			if (items != nullptr)
+			{
+				const size_t count = size();
+				for (size_t i = 0; i < count; ++i)
+				{
+					delete items[i];
+				}
+				arrfree(items);
+				items = nullptr;
+			}
+		}
+		template<typename... Args>
+		std::wstring& emplace_back(Args&&... args)
+		{
+			auto* value = new std::wstring(std::forward<Args>(args)...);
+			items = (std::wstring**)stbds_arrgrowf(items, sizeof(*items), 1, 0);
+			stbds_header(items)->length++;
+			items[stbds_header(items)->length - 1] = value;
+			return *value;
+		}
+		void push_back(const wchar_t* value)
+		{
+			emplace_back(value);
+		}
+		void push_back(const std::wstring& value)
+		{
+			emplace_back(value);
+		}
+		size_t size() const
+		{
+			return items != nullptr ? arrlenu(items) : 0;
+		}
+		const wchar_t* c_str(size_t index) const
+		{
+			WI_SC_ASSERT(index < size());
+			return items[index]->c_str();
+		}
+	};
+	inline void Destroy(WideStringList& list)
+	{
+		list.clear();
+	}
+}
 
 namespace wi::shadercompiler
 {
@@ -80,22 +329,22 @@ namespace wi::shadercompiler
 				{
 					ComPtr<IDxcCompiler3> dxcCompiler;
 					HRESULT hr = DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&dxcCompiler));
-					assert(SUCCEEDED(hr));
+					WI_SC_ASSERT(SUCCEEDED(hr));
 					ComPtr<IDxcVersionInfo> info;
 					hr = dxcCompiler->QueryInterface(IID_PPV_ARGS(&info));
-					assert(SUCCEEDED(hr));
+					WI_SC_ASSERT(SUCCEEDED(hr));
 					uint32_t minor = 0;
 					uint32_t major = 0;
 					hr = info->GetVersion(&major, &minor);
-					assert(SUCCEEDED(hr));
-					wi::backlog::post("wi::shadercompiler: loaded " + library + " (version: " + std::to_string(major) + "." + std::to_string(minor) + ")");
+					WI_SC_ASSERT(SUCCEEDED(hr));
+					SDL_Log("wi::shadercompiler: loaded %s (version: %u.%u)", library.c_str(), major, minor);
 				}
 			}
 			else
 			{
-				wi::backlog::post("wi::shadercompiler: could not load library " + library, wi::backlog::LogLevel::Error);
+				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "wi::shadercompiler: could not load library %s", library.c_str());
 #ifdef PLATFORM_LINUX
-				wi::backlog::post(dlerror(), wi::backlog::LogLevel::Error); // print dlopen() error detail: https://linux.die.net/man/3/dlerror
+				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", dlerror()); // print dlopen() error detail: https://linux.die.net/man/3/dlerror
 #endif // PLATFORM_LINUX
 			}
 
@@ -122,26 +371,39 @@ namespace wi::shadercompiler
 
 		ComPtr<IDxcUtils> dxcUtils;
 		ComPtr<IDxcCompiler3> dxcCompiler;
+		wi::shadercompiler::ByteArray shadersourcedata;
+		WideStringList args;
+		// stb_ds array storage: command-line arguments are collected here and released by cleanup().
+		const wchar_t** args_raw = nullptr;
 
 		HRESULT hr = compiler_internal.DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&dxcUtils));
-		assert(SUCCEEDED(hr));
+		WI_SC_ASSERT(SUCCEEDED(hr));
 		hr = compiler_internal.DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&dxcCompiler));
-		assert(SUCCEEDED(hr));
+		WI_SC_ASSERT(SUCCEEDED(hr));
+
+		auto cleanup = [&]()
+		{
+			arrfree(args_raw);
+			args_raw = nullptr;
+			Destroy(args);
+			wi::shadercompiler::Destroy(shadersourcedata);
+		};
 
 		if (dxcCompiler == nullptr)
 		{
+			cleanup();
 			return;
 		}
 
-		wi::vector<uint8_t> shadersourcedata;
-		if (!wi::helper::FileRead(input.shadersourcefilename, shadersourcedata))
+		if (!ReadFileBytes(input.shadersourcefilename, shadersourcedata))
 		{
+			cleanup();
 			return;
 		}
 
 		// https://github.com/microsoft/DirectXShaderCompiler/wiki/Using-dxc.exe-and-dxcompiler.dll#dxcompiler-dll-interface
 
-		wi::vector<std::wstring> args = {
+		args.emplace_back(
 			//L"-res-may-alias",
 			//L"-flegacy-macro-expansion",
 			//L"-no-legacy-cbuf-layout",
@@ -152,8 +414,7 @@ namespace wi::shadercompiler
 			//L"-Ges", // Enable strict mode
 			//L"-O0", // Optimization Level 0
 			//L"-enable-16bit-types",
-			L"-Wno-conversion",
-		};
+			L"-Wno-conversion");
 
 		if (has_flag(input.flags, Flags::DISABLE_OPTIMIZATION))
 		{
@@ -181,32 +442,33 @@ namespace wi::shadercompiler
 			args.push_back(L"-fspv-target-env=vulkan1.3");
 			args.push_back(L"-fvk-use-dx-layout");
 			args.push_back(L"-fvk-use-dx-position-w");
-			args.push_back(L"-fvk-b-shift"); args.push_back(std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::VULKAN_BINDING_SHIFT_B)); args.push_back(L"0");
-			args.push_back(L"-fvk-t-shift"); args.push_back(std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::VULKAN_BINDING_SHIFT_T)); args.push_back(L"0");
-			args.push_back(L"-fvk-u-shift"); args.push_back(std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::VULKAN_BINDING_SHIFT_U)); args.push_back(L"0");
-			args.push_back(L"-fvk-s-shift"); args.push_back(std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::VULKAN_BINDING_SHIFT_S)); args.push_back(L"0");
+			args.push_back(L"-fvk-b-shift"); args.push_back(std::to_wstring((int)wi::GraphicsDevice_Vulkan::VULKAN_BINDING_SHIFT_B)); args.push_back(L"0");
+			args.push_back(L"-fvk-t-shift"); args.push_back(std::to_wstring((int)wi::GraphicsDevice_Vulkan::VULKAN_BINDING_SHIFT_T)); args.push_back(L"0");
+			args.push_back(L"-fvk-u-shift"); args.push_back(std::to_wstring((int)wi::GraphicsDevice_Vulkan::VULKAN_BINDING_SHIFT_U)); args.push_back(L"0");
+			args.push_back(L"-fvk-s-shift"); args.push_back(std::to_wstring((int)wi::GraphicsDevice_Vulkan::VULKAN_BINDING_SHIFT_S)); args.push_back(L"0");
 
 			// These require mutable descriptor extension which have issues on linux so it's not used:
-			//args.push_back(L"-fvk-bind-sampler-heap"); args.push_back(L"0"); args.push_back(std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_SAMPLER));
-			//args.push_back(L"-fvk-bind-resource-heap"); args.push_back(L"0"); args.push_back(std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_RESOURCE));
+			//args.push_back(L"-fvk-bind-sampler-heap"); args.push_back(L"0"); args.push_back(std::to_wstring((int)wi::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_SAMPLER));
+			//args.push_back(L"-fvk-bind-resource-heap"); args.push_back(L"0"); args.push_back(std::to_wstring((int)wi::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_RESOURCE));
 
 			// Non-mutable bindless descriptor heap bind points:
-			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_SAMPLER=" + std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_SAMPLER));
-			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER=" + std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER));
-			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_UNIFORM_TEXEL_BUFFER=" + std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_UNIFORM_TEXEL_BUFFER));
-			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_SAMPLED_IMAGE=" + std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_SAMPLED_IMAGE));
-			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_STORAGE_IMAGE=" + std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_STORAGE_IMAGE));
-			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_STORAGE_TEXEL_BUFFER=" + std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_STORAGE_TEXEL_BUFFER));
-			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_ACCELERATION_STRUCTURE=" + std::to_wstring((int)wi::graphics::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_ACCELERATION_STRUCTURE));
+			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_SAMPLER=" + std::to_wstring((int)wi::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_SAMPLER));
+			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER=" + std::to_wstring((int)wi::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER));
+			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_UNIFORM_TEXEL_BUFFER=" + std::to_wstring((int)wi::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_UNIFORM_TEXEL_BUFFER));
+			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_SAMPLED_IMAGE=" + std::to_wstring((int)wi::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_SAMPLED_IMAGE));
+			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_STORAGE_IMAGE=" + std::to_wstring((int)wi::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_STORAGE_IMAGE));
+			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_STORAGE_TEXEL_BUFFER=" + std::to_wstring((int)wi::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_STORAGE_TEXEL_BUFFER));
+			args.push_back(L"-D"); args.push_back(L"DESCRIPTOR_SET_BINDLESS_ACCELERATION_STRUCTURE=" + std::to_wstring((int)wi::GraphicsDevice_Vulkan::DESCRIPTOR_SET_BINDLESS_ACCELERATION_STRUCTURE));
 
 			break;
-		case ShaderFormat::METAL:
-			args.push_back(L"-D"); args.push_back(L"__metal__");
-			break;
-		default:
-			assert(0);
-			return;
-		}
+			case ShaderFormat::METAL:
+				args.push_back(L"-D"); args.push_back(L"__metal__");
+				break;
+			default:
+				WI_SC_ASSERT(0);
+				cleanup();
+				return;
+			}
 
 		ShaderModel minshadermodel = input.minshadermodel;
 
@@ -444,20 +706,20 @@ namespace wi::shadercompiler
 			}
 			break;
 		default:
-			assert(0);
+			WI_SC_ASSERT(0);
 			return;
 		}
 
-		for (auto& x : input.defines)
+		for (size_t i = 0; i < input.defines.size(); ++i)
 		{
 			args.push_back(L"-D");
-			wi::helper::StringConvert(x, args.emplace_back());
+			ConvertUTF8ToWString(input.defines[i], args.emplace_back());
 		}
 
-		for (auto& x : input.include_directories)
+		for (size_t i = 0; i < input.include_directories.size(); ++i)
 		{
 			args.push_back(L"-I");
-			wi::helper::StringConvert(x, args.emplace_back());
+			ConvertUTF8ToWString(input.include_directories[i], args.emplace_back());
 		}
 
 #ifdef SHADERCOMPILER_XBOX_INCLUDED
@@ -469,19 +731,19 @@ namespace wi::shadercompiler
 
 		// Entry point parameter:
 		std::wstring wentry;
-		wi::helper::StringConvert(input.entrypoint, wentry);
+		ConvertUTF8ToWString(input.entrypoint, wentry);
 		args.push_back(L"-E");
 		args.push_back(wentry.c_str());
 
 		// Add source file name as last parameter. This will be displayed in error messages
 		std::wstring wsource;
-		wi::helper::StringConvert(wi::helper::GetFileNameFromPath(input.shadersourcefilename), wsource);
+		ConvertUTF8ToWString(GetFilenameFromPathStd(input.shadersourcefilename), wsource);
 		args.push_back(wsource.c_str());
 
-		DxcBuffer Source;
-		Source.Ptr = shadersourcedata.data();
-		Source.Size = shadersourcedata.size();
-		Source.Encoding = DXC_CP_ACP;
+			DxcBuffer Source;
+			Source.Ptr = shadersourcedata.data;
+			Source.Size = shadersourcedata.size();
+			Source.Encoding = DXC_CP_ACP;
 
 		struct IncludeHandler final : public IDxcIncludeHandler
 		{
@@ -498,7 +760,7 @@ namespace wi::shadercompiler
 				if (SUCCEEDED(hr))
 				{
 					std::string& filename = output->dependencies.emplace_back();
-					wi::helper::StringConvert(pFilename, filename);
+					ConvertWStringToUTF8(pFilename, filename);
 				}
 				return hr;
 			}
@@ -522,13 +784,13 @@ namespace wi::shadercompiler
 		includehandler.output = &output;
 
 		hr = dxcUtils->CreateDefaultIncludeHandler(&includehandler.dxcIncludeHandler);
-		assert(SUCCEEDED(hr));
+		WI_SC_ASSERT(SUCCEEDED(hr));
 
-		wi::vector<const wchar_t*> args_raw;
-		args_raw.reserve(args.size());
-		for (auto& x : args)
-		{
-			args_raw.push_back(x.c_str());
+			for (size_t i = 0; i < args.size(); ++i)
+			{
+				args_raw = (const wchar_t**)stbds_arrgrowf((void*)args_raw, sizeof(*args_raw), 1, 0);
+				stbds_header(args_raw)->length++;
+				args_raw[stbds_header(args_raw)->length - 1] = args.c_str(i);
 		}
 
 #ifndef _WIN32
@@ -541,7 +803,7 @@ namespace wi::shadercompiler
 		{
 			std::scoped_lock lock(locale_mut);
 			if (scope++ == 0) {
-				prev_locale = strdup(setlocale(LC_ALL, nullptr));
+				prev_locale = DuplicateCStringMMGRCompatible(setlocale(LC_ALL, nullptr));
 				setlocale(LC_ALL, "en_US.UTF-8");
 			}
 		}
@@ -549,7 +811,7 @@ namespace wi::shadercompiler
 		ComPtr<IDxcResult> pResults;
 		hr = dxcCompiler->Compile(
 			&Source,						// Source buffer.
-			args_raw.data(),			// Array of pointers to arguments.
+			args_raw,					// Array of pointers to arguments.
 			(uint32_t)args.size(),		// Number of arguments.
 			&includehandler,		// User-provided interface to handle #include directives (optional).
 			IID_PPV_ARGS(&pResults)	// Compiler output status, buffer, and errors.
@@ -559,31 +821,33 @@ namespace wi::shadercompiler
 			std::scoped_lock lock(locale_mut);
 			if (--scope == 0) {
 				setlocale(LC_ALL, prev_locale);
-				free(prev_locale);
+				FreeMMGRCompatible(prev_locale);
 			}
 		}
 #endif
-		assert(SUCCEEDED(hr));
+			cleanup();
+			WI_SC_ASSERT(SUCCEEDED(hr));
 
 		ComPtr<IDxcBlobUtf8> pErrors = nullptr;
 		hr = pResults->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&pErrors), nullptr);
-		assert(SUCCEEDED(hr));
+		WI_SC_ASSERT(SUCCEEDED(hr));
 		if (pErrors != nullptr && pErrors->GetStringLength() != 0)
 		{
 			output.error_message = pErrors->GetStringPointer();
 		}
 
-		HRESULT hrStatus;
-		hr = pResults->GetStatus(&hrStatus);
-		assert(SUCCEEDED(hr));
-		if (FAILED(hrStatus))
-		{
-			return;
-		}
+			HRESULT hrStatus;
+			hr = pResults->GetStatus(&hrStatus);
+			WI_SC_ASSERT(SUCCEEDED(hr));
+			if (FAILED(hrStatus))
+			{
+				cleanup();
+				return;
+			}
 
 		ComPtr<IDxcBlob> pShader = nullptr;
 		hr = pResults->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&pShader), nullptr);
-		assert(SUCCEEDED(hr));
+		WI_SC_ASSERT(SUCCEEDED(hr));
 		if (pShader != nullptr)
 		{
 			output.dependencies.push_back(input.shadersourcefilename);
@@ -599,7 +863,7 @@ namespace wi::shadercompiler
 			if (input.format == ShaderFormat::METAL)
 			{
 				static HMODULE irconverter = wiLoadLibrary("libmetalirconverter.dylib");
-				assert(irconverter); // You must install the metal shader converter
+				WI_SC_ASSERT(irconverter); // You must install the metal shader converter
 				if (irconverter != nullptr)
 				{
 #define LINK_IR(name) using PFN_##name = decltype(&name); static PFN_##name name = (PFN_##name)wiGetProcAddress(irconverter, #name);
@@ -626,20 +890,20 @@ namespace wi::shadercompiler
 					
 					static IRDescriptorRange1 binding_resources[] =
 					{
-						{ .RangeType = IRDescriptorRangeTypeCBV, .BaseShaderRegister = arraysize(GraphicsDevice_Metal::RootLayout::root_cbvs), .RegisterSpace = 0, .OffsetInDescriptorsFromTableStart = IRDescriptorRangeOffsetAppend, .NumDescriptors = (arraysize(DescriptorBindingTable::CBV) - arraysize(GraphicsDevice_Metal::RootLayout::root_cbvs)), .Flags = IRDescriptorRangeFlagDataStaticWhileSetAtExecute },
-						{ .RangeType = IRDescriptorRangeTypeSRV, .BaseShaderRegister = 0, .RegisterSpace = 0, .OffsetInDescriptorsFromTableStart = IRDescriptorRangeOffsetAppend, .NumDescriptors = arraysize(DescriptorBindingTable::SRV), .Flags = IRDescriptorRangeFlagDataStaticWhileSetAtExecute },
-						{ .RangeType = IRDescriptorRangeTypeUAV, .BaseShaderRegister = 0, .RegisterSpace = 0, .OffsetInDescriptorsFromTableStart = IRDescriptorRangeOffsetAppend, .NumDescriptors = arraysize(DescriptorBindingTable::UAV), .Flags = IRDescriptorRangeFlagDataStaticWhileSetAtExecute },
+						{ .RangeType = IRDescriptorRangeTypeCBV, .BaseShaderRegister = SDL_arraysize(GraphicsDevice_Metal::RootLayout::root_cbvs), .RegisterSpace = 0, .OffsetInDescriptorsFromTableStart = IRDescriptorRangeOffsetAppend, .NumDescriptors = (SDL_arraysize(DescriptorBindingTable::CBV) - SDL_arraysize(GraphicsDevice_Metal::RootLayout::root_cbvs)), .Flags = IRDescriptorRangeFlagDataStaticWhileSetAtExecute },
+						{ .RangeType = IRDescriptorRangeTypeSRV, .BaseShaderRegister = 0, .RegisterSpace = 0, .OffsetInDescriptorsFromTableStart = IRDescriptorRangeOffsetAppend, .NumDescriptors = SDL_arraysize(DescriptorBindingTable::SRV), .Flags = IRDescriptorRangeFlagDataStaticWhileSetAtExecute },
+						{ .RangeType = IRDescriptorRangeTypeUAV, .BaseShaderRegister = 0, .RegisterSpace = 0, .OffsetInDescriptorsFromTableStart = IRDescriptorRangeOffsetAppend, .NumDescriptors = SDL_arraysize(DescriptorBindingTable::UAV), .Flags = IRDescriptorRangeFlagDataStaticWhileSetAtExecute },
 					};
 					static IRDescriptorRange1 binding_samplers[] =
 					{
-						{ .RangeType = IRDescriptorRangeTypeSampler, .BaseShaderRegister = 0, .RegisterSpace = 0, .OffsetInDescriptorsFromTableStart = IRDescriptorRangeOffsetAppend, .NumDescriptors = arraysize(DescriptorBindingTable::SAM), .Flags = IRDescriptorRangeFlagDescriptorsVolatile },
-						{ .RangeType = IRDescriptorRangeTypeSampler, .BaseShaderRegister = wi::graphics::STATIC_SAMPLER_SLOT_BEGIN, .RegisterSpace = 0, .OffsetInDescriptorsFromTableStart = IRDescriptorRangeOffsetAppend, .NumDescriptors = arraysize(GraphicsDevice_Metal::StaticSamplerDescriptors::samplers), .Flags = IRDescriptorRangeFlagDescriptorsVolatile }, // static samplers workaround (**)
+						{ .RangeType = IRDescriptorRangeTypeSampler, .BaseShaderRegister = 0, .RegisterSpace = 0, .OffsetInDescriptorsFromTableStart = IRDescriptorRangeOffsetAppend, .NumDescriptors = SDL_arraysize(DescriptorBindingTable::SAM), .Flags = IRDescriptorRangeFlagDescriptorsVolatile },
+						{ .RangeType = IRDescriptorRangeTypeSampler, .BaseShaderRegister = wi::STATIC_SAMPLER_SLOT_BEGIN, .RegisterSpace = 0, .OffsetInDescriptorsFromTableStart = IRDescriptorRangeOffsetAppend, .NumDescriptors = SDL_arraysize(GraphicsDevice_Metal::StaticSamplerDescriptors::samplers), .Flags = IRDescriptorRangeFlagDescriptorsVolatile }, // static samplers workaround (**)
 					};
 					static IRRootParameter1 root_parameters[] =
 					{
 						{
 							.ParameterType = IRRootParameterType32BitConstants,
-							.Constants = { .ShaderRegister = 999, .Num32BitValues = arraysize(GraphicsDevice_Metal::RootLayout::constants), .RegisterSpace = 0 },
+							.Constants = { .ShaderRegister = 999, .Num32BitValues = SDL_arraysize(GraphicsDevice_Metal::RootLayout::constants), .RegisterSpace = 0 },
 							.ShaderVisibility = IRShaderVisibilityAll
 						},
 						{
@@ -659,12 +923,12 @@ namespace wi::shadercompiler
 						},
 						{
 							.ParameterType = IRRootParameterTypeDescriptorTable,
-							.DescriptorTable = { .NumDescriptorRanges = arraysize(binding_resources), .pDescriptorRanges = binding_resources },
+							.DescriptorTable = { .NumDescriptorRanges = SDL_arraysize(binding_resources), .pDescriptorRanges = binding_resources },
 							.ShaderVisibility = IRShaderVisibilityAll
 						},
 						{
 							.ParameterType = IRRootParameterTypeDescriptorTable,
-							.DescriptorTable = { .NumDescriptorRanges = arraysize(binding_samplers), .pDescriptorRanges = binding_samplers },
+							.DescriptorTable = { .NumDescriptorRanges = SDL_arraysize(binding_samplers), .pDescriptorRanges = binding_samplers },
 							.ShaderVisibility = IRShaderVisibilityAll
 						},
 					};
@@ -692,16 +956,16 @@ namespace wi::shadercompiler
 					static const IRVersionedRootSignatureDescriptor desc = {
 						.version = IRRootSignatureVersion_1_1,
 						.desc_1_1.Flags = IRRootSignatureFlags(IRRootSignatureFlagAllowInputAssemblerInputLayout | IRRootSignatureFlagCBVSRVUAVHeapDirectlyIndexed | IRRootSignatureFlagSamplerHeapDirectlyIndexed),
-						.desc_1_1.NumParameters = arraysize(root_parameters),
+						.desc_1_1.NumParameters = SDL_arraysize(root_parameters),
 						.desc_1_1.pParameters = root_parameters,
-						//.desc_1_1.NumStaticSamplers = arraysize(static_samplers),
+						//.desc_1_1.NumStaticSamplers = SDL_arraysize(static_samplers),
 						//.desc_1_1.pStaticSamplers = static_samplers,
 					};
 					static IRError* pRootSigError = nullptr;
 					static IRRootSignature* pRootSig = IRRootSignatureCreateFromDescriptor(&desc, &pRootSigError);
 					if (pRootSig == nullptr)
 					{
-						assert(0);
+						WI_SC_ASSERT(0);
 						IRErrorDestroy(pRootSigError);
 					}
 					
@@ -718,7 +982,7 @@ namespace wi::shadercompiler
 					IRObject* pOutIR = IRCompilerAllocCompileAndLink(pCompiler, NULL, pDXIL, &pError);
 					if (pOutIR == nullptr)
 					{
-						assert(0);
+						WI_SC_ASSERT(0);
 						IRErrorDestroy(pError);
 					}
 					IRMetalLibBinary* pMetallib = IRMetalLibBinaryCreate();
@@ -749,13 +1013,14 @@ namespace wi::shadercompiler
 							irstage = IRShaderStageCompute;
 							break;
 						default:
-							assert(0);
+							WI_SC_ASSERT(0);
 							break;
 					}
 					IRObjectGetMetalLibBinary(pOutIR, irstage, pMetallib);
 					size_t metallibSize = IRMetalLibGetBytecodeSize(pMetallib);
-					auto internal_state = wi::allocator::make_shared<wi::vector<uint8_t>>(metallibSize); // lifetime storage of pointer
-					IRMetalLibGetBytecode(pMetallib, internal_state->data());
+						auto internal_state = wi::allocator::make_shared<ByteArray>(); // lifetime storage of pointer
+						internal_state->resize(metallibSize);
+						IRMetalLibGetBytecode(pMetallib, internal_state->data);
 					if (
 						input.stage == ShaderStage::VS ||
 						input.stage == ShaderStage::GS ||
@@ -776,13 +1041,13 @@ namespace wi::shadercompiler
 						// Add the numthreads information to end of the shader:
 						IRShaderReflection* reflection = IRShaderReflectionCreate();
 						bool success = IRObjectGetReflection(pOutIR, irstage, reflection);
-						assert(success);
-						wi::graphics::GraphicsDevice_Metal::ShaderAdditionalData reflection_append = {};
+						WI_SC_ASSERT(success);
+						wi::GraphicsDevice_Metal::ShaderAdditionalData reflection_append = {};
 						if (input.stage == ShaderStage::VS)
 						{
 							IRVersionedVSInfo vs_info = {};
 							success = IRShaderReflectionCopyVertexInfo(reflection, IRReflectionVersion_1_0, &vs_info);
-							assert(success);
+							WI_SC_ASSERT(success);
 							reflection_append.needs_draw_params = vs_info.info_1_0.needs_draw_params ? 1 : 0;
 							reflection_append.vertex_output_size_in_bytes = vs_info.info_1_0.vertex_output_size_in_bytes;
 						}
@@ -790,14 +1055,14 @@ namespace wi::shadercompiler
 						{
 							IRVersionedGSInfo gs_info = {};
 							success = IRShaderReflectionCopyGeometryInfo(reflection, IRReflectionVersion_1_0, &gs_info);
-							assert(success);
+							WI_SC_ASSERT(success);
 							reflection_append.max_input_primitives_per_mesh_threadgroup = gs_info.info_1_0.max_input_primitives_per_mesh_threadgroup;
 						}
 						if (input.stage == ShaderStage::CS)
 						{
 							IRVersionedCSInfo cs_info = {};
 							success = IRShaderReflectionCopyComputeInfo(reflection, IRReflectionVersion_1_0, &cs_info);
-							assert(success);
+							WI_SC_ASSERT(success);
 							reflection_append.numthreads.width = cs_info.info_1_0.tg_size[0];
 							reflection_append.numthreads.height = cs_info.info_1_0.tg_size[1];
 							reflection_append.numthreads.depth = cs_info.info_1_0.tg_size[2];
@@ -806,7 +1071,7 @@ namespace wi::shadercompiler
 						{
 							IRVersionedMSInfo ms_info = {};
 							success = IRShaderReflectionCopyMeshInfo(reflection, IRReflectionVersion_1_0, &ms_info);
-							assert(success);
+							WI_SC_ASSERT(success);
 							reflection_append.numthreads.width = ms_info.info_1_0.num_threads[0];
 							reflection_append.numthreads.height = ms_info.info_1_0.num_threads[1];
 							reflection_append.numthreads.depth = ms_info.info_1_0.num_threads[2];
@@ -815,17 +1080,16 @@ namespace wi::shadercompiler
 						{
 							IRVersionedASInfo as_info = {};
 							success = IRShaderReflectionCopyAmplificationInfo(reflection, IRReflectionVersion_1_0, &as_info);
-							assert(success);
+							WI_SC_ASSERT(success);
 							reflection_append.numthreads.width = as_info.info_1_0.num_threads[0];
 							reflection_append.numthreads.height = as_info.info_1_0.num_threads[1];
 							reflection_append.numthreads.depth = as_info.info_1_0.num_threads[2];
 						}
-						internal_state->resize(internal_state->size() + sizeof(reflection_append));
-						std::memcpy(internal_state->data() + internal_state->size() - sizeof(reflection_append), &reflection_append, sizeof(reflection_append));
+						internal_state->append(reinterpret_cast<const uint8_t*>(&reflection_append), sizeof(reflection_append));
 						IRShaderReflectionDestroy(reflection);
 					}
 					output.internal_state = internal_state;
-					output.shaderdata = internal_state->data();
+						output.shaderdata = internal_state->data;
 					output.shadersize = internal_state->size();
 					IRMetalLibBinaryDestroy(pMetallib);
 					IRObjectDestroy(pDXIL);
@@ -842,17 +1106,16 @@ namespace wi::shadercompiler
 		{
 			ComPtr<IDxcBlob> pHash = nullptr;
 			hr = pResults->GetOutput(DXC_OUT_SHADER_HASH, IID_PPV_ARGS(&pHash), nullptr);
-			assert(SUCCEEDED(hr));
-			if (pHash != nullptr)
-			{
-				DxcShaderHash* pHashBuf = (DxcShaderHash*)pHash->GetBufferPointer();
-				for (int i = 0; i < _countof(pHashBuf->HashDigest); i++)
+			WI_SC_ASSERT(SUCCEEDED(hr));
+				if (pHash != nullptr)
 				{
-					output.shaderhash.push_back(pHashBuf->HashDigest[i]);
+					DxcShaderHash* pHashBuf = (DxcShaderHash*)pHash->GetBufferPointer();
+					output.shaderhash.resize(_countof(pHashBuf->HashDigest));
+					std::memcpy(output.shaderhash.data, pHashBuf->HashDigest, output.shaderhash.size());
 				}
+				}
+				cleanup();
 			}
-		}
-	}
 #endif // SHADERCOMPILER_ENABLED_DXCOMPILER
 
 #ifdef SHADERCOMPILER_ENABLED_D3DCOMPILER
@@ -871,13 +1134,13 @@ namespace wi::shadercompiler
 			HMODULE d3dcompiler = wiLoadLibrary("d3dcompiler_47.dll");
 			if (d3dcompiler != nullptr)
 			{
-				D3DCompile = (PFN_D3DCOMPILE)wiGetProcAddress(d3dcompiler, "D3DCompile");
-				if (D3DCompile != nullptr)
-				{
-					wi::backlog::post("wi::shadercompiler: loaded d3dcompiler_47.dll");
+					D3DCompile = (PFN_D3DCOMPILE)wiGetProcAddress(d3dcompiler, "D3DCompile");
+					if (D3DCompile != nullptr)
+					{
+						SDL_Log("wi::shadercompiler: loaded d3dcompiler_47.dll");
+					}
 				}
 			}
-		}
 	};
 	inline InternalState_D3DCompiler& d3d_compiler()
 	{
@@ -892,15 +1155,16 @@ namespace wi::shadercompiler
 			return;
 		}
 
-		if (input.minshadermodel > ShaderModel::SM_5_0)
+		wi::shadercompiler::ByteArray shadersourcedata;
+		if (!ReadFileBytes(input.shadersourcefilename, shadersourcedata))
 		{
-			output.error_message = "SHADERFORMAT_HLSL5 cannot support specified minshadermodel!";
 			return;
 		}
 
-		wi::vector<uint8_t> shadersourcedata;
-		if (!wi::helper::FileRead(input.shadersourcefilename, shadersourcedata))
+		if (input.minshadermodel > ShaderModel::SM_5_0)
 		{
+			output.error_message = "SHADERFORMAT_HLSL5 cannot support specified minshadermodel!";
+			wi::shadercompiler::Destroy(shadersourcedata);
 			return;
 		}
 
@@ -913,12 +1177,13 @@ namespace wi::shadercompiler
 		const char* target = nullptr;
 		switch (input.stage)
 		{
-		default:
-		case ShaderStage::MS:
-		case ShaderStage::AS:
-		case ShaderStage::LIB:
-			// not applicable
-			return;
+			default:
+			case ShaderStage::MS:
+			case ShaderStage::AS:
+			case ShaderStage::LIB:
+				// not applicable
+				wi::shadercompiler::Destroy(shadersourcedata);
+				return;
 		case ShaderStage::VS:
 			target = "vs_5_0";
 			break;
@@ -939,25 +1204,56 @@ namespace wi::shadercompiler
 			break;
 		}
 
-		struct IncludeHandler final : public ID3DInclude
-		{
-			const CompilerInput* input = nullptr;
-			CompilerOutput* output = nullptr;
-			wi::vector<wi::vector<uint8_t>> filedatas;
+			struct IncludeHandler final : public ID3DInclude
+			{
+				const CompilerInput* input = nullptr;
+				CompilerOutput* output = nullptr;
+				struct FileData
+				{
+					uint8_t* data = nullptr;
+					size_t size = 0;
+				};
+				// stb_ds array storage: included files are tracked in a heap-owned list and released explicitly.
+				FileData* filedatas = nullptr;
+
+				void Destroy()
+				{
+					if (filedatas != nullptr)
+					{
+						const size_t count = arrlenu(filedatas);
+						for (size_t i = 0; i < count; ++i)
+					{
+						delete[] filedatas[i].data;
+					}
+					arrfree(filedatas);
+					filedatas = nullptr;
+				}
+			}
 
 			HRESULT Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFileName, LPCVOID pParentData, LPCVOID* ppData, UINT* pBytes) override
 			{
-				for (auto& x : input->include_directories)
+				for (size_t i = 0; i < input->include_directories.size(); ++i)
 				{
-					std::string filename = x + pFileName;
-					if (!wi::helper::FileExists(filename))
+					std::string filename = input->include_directories[i] + pFileName;
+					if (!FileExistsSDL(filename))
 						continue;
-					wi::vector<uint8_t>& filedata = filedatas.emplace_back();
-					if (wi::helper::FileRead(filename, filedata))
+					wi::shadercompiler::ByteArray filedata;
+					if (ReadFileBytes(filename, filedata))
 					{
+						FileData loaded;
+						loaded.size = filedata.size();
+						// Ownership note: each include copy is heap-owned until Destroy() releases it.
+						loaded.data = loaded.size > 0 ? new uint8_t[loaded.size] : nullptr;
+							if (loaded.size > 0)
+							{
+								std::memcpy(loaded.data, filedata.data, loaded.size);
+							}
+						filedatas = (FileData*)stbds_arrgrowf(filedatas, sizeof(*filedatas), 1, 0);
+						stbds_header(filedatas)->length++;
+						filedatas[stbds_header(filedatas)->length - 1] = loaded;
 						output->dependencies.push_back(filename);
-						*ppData = filedata.data();
-						*pBytes = (UINT)filedata.size();
+						*ppData = loaded.data;
+						*pBytes = (UINT)loaded.size;
 						return S_OK;
 					}
 				}
@@ -980,14 +1276,14 @@ namespace wi::shadercompiler
 		}
 
 
-		ComPtr<ID3DBlob> code;
-		ComPtr<ID3DBlob> errors;
-		HRESULT hr = d3d_compiler().D3DCompile(
-			shadersourcedata.data(),
-			shadersourcedata.size(),
-			input.shadersourcefilename.c_str(),
-			defines,
-			&includehandler, //D3D_COMPILE_STANDARD_FILE_INCLUDE,
+			ComPtr<ID3DBlob> code;
+			ComPtr<ID3DBlob> errors;
+			HRESULT hr = d3d_compiler().D3DCompile(
+				shadersourcedata.data,
+				shadersourcedata.size(),
+				input.shadersourcefilename.c_str(),
+				defines,
+				&includehandler, //D3D_COMPILE_STANDARD_FILE_INCLUDE,
 			input.entrypoint.c_str(),
 			target,
 			Flags1,
@@ -1001,23 +1297,26 @@ namespace wi::shadercompiler
 			output.error_message = (const char*)errors->GetBufferPointer();
 		}
 
-		if (SUCCEEDED(hr))
-		{
-			output.dependencies.push_back(input.shadersourcefilename);
-			output.shaderdata = (const uint8_t*)code->GetBufferPointer();
-			output.shadersize = code->GetBufferSize();
+			if (SUCCEEDED(hr))
+			{
+				output.dependencies.push_back(input.shadersourcefilename);
+				output.shaderdata = (const uint8_t*)code->GetBufferPointer();
+				output.shadersize = code->GetBufferSize();
 
 			// keep the blob alive == keep shader pointer valid!
 			auto internal_state = wi::allocator::make_shared<ComPtr<ID3D10Blob>>();
-			*internal_state = code;
-			output.internal_state = internal_state;
+				*internal_state = code;
+				output.internal_state = internal_state;
+			}
+			includehandler.Destroy();
+			wi::shadercompiler::Destroy(shadersourcedata);
 		}
-	}
 #endif // SHADERCOMPILER_ENABLED_D3DCOMPILER
 
 	void Compile(const CompilerInput& input, CompilerOutput& output)
 	{
-		output = CompilerOutput();
+		wi::shadercompiler::Destroy(output);
+		wi::shadercompiler::Init(output);
 
 #ifdef SHADERCOMPILER_ENABLED
 		switch (input.format)
@@ -1053,26 +1352,34 @@ namespace wi::shadercompiler
 	constexpr const char* shadermetaextension = "wishadermeta";
 	bool SaveShaderAndMetadata(const std::string& shaderfilename, const CompilerOutput& output)
 	{
-#ifdef SHADERCOMPILER_ENABLED
-		wi::helper::DirectoryCreate(wi::helper::GetDirectoryFromPath(shaderfilename));
+	#ifdef SHADERCOMPILER_ENABLED
+		bool success = false;
+		StringList dependencies = wi::shadercompiler::Clone(output.dependencies);
+		DirectoryCreateSDL(GetDirectoryFromPathStd(shaderfilename));
 
-		wi::Archive dependencyLibrary(wi::helper::ReplaceExtension(shaderfilename, shadermetaextension), false);
+		wi::Archive dependencyLibrary(ReplaceExtensionStd(shaderfilename, shadermetaextension), false);
 		if (dependencyLibrary.IsOpen())
 		{
 			std::string rootdir = dependencyLibrary.GetSourceDirectory();
-			wi::vector<std::string> dependencies = output.dependencies;
-			for (auto& x : dependencies)
+			for (size_t i = 0; i < dependencies.size(); ++i)
 			{
-				wi::helper::MakePathRelative(rootdir, x);
+				MakePathRelativeStd(rootdir, dependencies[i]);
 			}
-			dependencyLibrary << dependencies;
+			const uint64_t dependency_count = (uint64_t)dependencies.size();
+			dependencyLibrary << dependency_count;
+			for (size_t i = 0; i < dependencies.size(); ++i)
+			{
+				dependencyLibrary << dependencies[i];
+			}
 		}
 
-		if (wi::helper::FileWrite(shaderfilename, output.shaderdata, output.shadersize))
+		if (FileWriteSDL(shaderfilename, output.shaderdata, output.shadersize))
 		{
-			return true;
+			success = true;
 		}
-#endif // SHADERCOMPILER_ENABLED
+		wi::shadercompiler::Destroy(dependencies);
+		return success;
+	#endif // SHADERCOMPILER_ENABLED
 
 		return false;
 	}
@@ -1080,40 +1387,50 @@ namespace wi::shadercompiler
 	{
 #ifdef SHADERCOMPILER_ENABLED
 		std::string filepath = shaderfilename;
-		wi::helper::MakePathAbsolute(filepath);
-		if (!wi::helper::FileExists(filepath))
+		MakePathAbsoluteStd(filepath);
+		if (!FileExistsSDL(filepath))
 		{
 			return true; // no shader file = outdated shader, apps can attempt to rebuild it
 		}
-		std::string dependencylibrarypath = wi::helper::ReplaceExtension(shaderfilename, shadermetaextension);
-		if (!wi::helper::FileExists(dependencylibrarypath))
+		std::string dependencylibrarypath = ReplaceExtensionStd(shaderfilename, shadermetaextension);
+		if (!FileExistsSDL(dependencylibrarypath))
 		{
 			return false; // no metadata file = no dependency, up to date (for example packaged builds)
 		}
 
-		const uint64_t tim = wi::helper::FileTimestamp(filepath);
+		const uint64_t tim = FileTimestampSDL(filepath);
 
 		wi::Archive dependencyLibrary(dependencylibrarypath);
+		StringList dependencies = {};
 		if (dependencyLibrary.IsOpen())
 		{
 			std::string rootdir = dependencyLibrary.GetSourceDirectory();
-			wi::vector<std::string> dependencies;
-			dependencyLibrary >> dependencies;
-
-			for (auto& x : dependencies)
+			uint64_t dependency_count = 0;
+			dependencyLibrary >> dependency_count;
+			dependencies.reserve((size_t)dependency_count);
+			for (uint64_t i = 0; i < dependency_count; ++i)
 			{
-				std::string dependencypath = rootdir + x;
-				wi::helper::MakePathAbsolute(dependencypath);
-				if (wi::helper::FileExists(dependencypath))
+				std::string dependency;
+				dependencyLibrary >> dependency;
+				dependencies.push_back(std::move(dependency));
+			}
+
+			for (size_t i = 0; i < dependencies.size(); ++i)
+			{
+				std::string dependencypath = rootdir + dependencies[i];
+				MakePathAbsoluteStd(dependencypath);
+				if (FileExistsSDL(dependencypath))
 				{
-					const uint64_t dep_tim = wi::helper::FileTimestamp(dependencypath);
+					const uint64_t dep_tim = FileTimestampSDL(dependencypath);
 
 					if (tim < dep_tim)
 					{
+						wi::shadercompiler::Destroy(dependencies);
 						return true;
 					}
 				}
 			}
+			wi::shadercompiler::Destroy(dependencies);
 		}
 #endif // SHADERCOMPILER_ENABLED
 
@@ -1121,13 +1438,21 @@ namespace wi::shadercompiler
 	}
 
 	std::mutex locker;
-	wi::unordered_set<std::string> registered_shaders;
+	// stb_ds array storage: unique shader filenames are tracked explicitly and freed on teardown.
+	StringList registered_shaders = {};
 	void RegisterShader(const std::string& shaderfilename)
 	{
-#ifdef SHADERCOMPILER_ENABLED
+	#ifdef SHADERCOMPILER_ENABLED
 		std::scoped_lock lock(locker);
-		registered_shaders.insert(shaderfilename);
-#endif // SHADERCOMPILER_ENABLED
+		for (size_t i = 0; i < registered_shaders.size(); ++i)
+		{
+			if (registered_shaders[i] == shaderfilename)
+			{
+				return;
+			}
+		}
+		registered_shaders.push_back(shaderfilename);
+	#endif // SHADERCOMPILER_ENABLED
 	}
 	size_t GetRegisteredShaderCount()
 	{
@@ -1136,16 +1461,25 @@ namespace wi::shadercompiler
 	}
 	bool CheckRegisteredShadersOutdated()
 	{
-#ifdef SHADERCOMPILER_ENABLED
+	#ifdef SHADERCOMPILER_ENABLED
 		std::scoped_lock lock(locker);
-		for (auto& x : registered_shaders)
+		for (size_t i = 0; i < registered_shaders.size(); ++i)
 		{
-			if (IsShaderOutdated(x))
+			if (IsShaderOutdated(registered_shaders[i]))
 			{
 				return true;
 			}
 		}
-#endif // SHADERCOMPILER_ENABLED
+	#endif // SHADERCOMPILER_ENABLED
 		return false;
 	}
+	void DestroyRegisteredShaders()
+	{
+		std::scoped_lock lock(locker);
+		wi::shadercompiler::Destroy(registered_shaders);
+	}
 }
+
+#define STB_DS_IMPLEMENTATION
+#include "../stb_ds.h"
+#undef STB_DS_IMPLEMENTATION

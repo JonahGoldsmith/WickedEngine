@@ -9,7 +9,7 @@
 #include "wiInput.h"
 
 using namespace wi::enums;
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi::image
 {
@@ -47,7 +47,7 @@ namespace wi::image
 
 	void Draw(const Texture* texture, const Params& params, CommandList cmd)
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		const Sampler* sampler = &samplers[SAMPLER_LINEAR_CLAMP];
 
@@ -432,7 +432,7 @@ namespace wi::image
 		wi::renderer::LoadShader(ShaderStage::VS, vertexShader, "imageVS.cso");
 		wi::renderer::LoadShader(ShaderStage::PS, pixelShader, "imagePS.cso");
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		PipelineStateDesc desc;
 		desc.vs = &vertexShader;
@@ -474,11 +474,11 @@ namespace wi::image
 	{
 		wi::Timer timer;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		RasterizerState rs;
 		rs.fill_mode = FillMode::SOLID;
-		rs.cull_mode = CullMode::NONE;
+		rs.cull_mode = CullMode::CULL_NONE;
 		rs.front_counter_clockwise = false;
 		rs.depth_bias = 0;
 		rs.depth_bias_clamp = 0;
@@ -496,7 +496,7 @@ namespace wi::image
 			for (int d = 0; d < DEPTH_TEST_MODE_COUNT; ++d)
 			{
 				DepthStencilState dsd;
-				dsd.depth_write_mask = DepthWriteMask::ZERO;
+				dsd.depth_write_mask = DepthWriteMask::DEPTH_WRITE_ZERO;
 
 				switch (d)
 				{

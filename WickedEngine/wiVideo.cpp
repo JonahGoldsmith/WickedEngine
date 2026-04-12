@@ -9,7 +9,7 @@
 //#define DEBUG_DUMP_H264
 static const int dump_frame_count = 100;
 
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi::video
 {
@@ -482,7 +482,7 @@ namespace wi::video
 				{
 					Video::FrameInfo& frame_info = video->frame_infos.emplace_back();
 					frame_info.offset = nal_offset;
-					frame_info.type = wi::graphics::VideoFrameType::Predictive;
+					frame_info.type = wi::VideoFrameType::Predictive;
 					frame_info.reference_priority = nal.idc;
 					h264::SliceHeader slice_header = {};
 					h264::read_slice_header(&slice_header, &nal, (const h264::PPS*)video->pps_datas.data(), (const h264::SPS*)video->sps_datas.data(), &bs);
@@ -495,7 +495,7 @@ namespace wi::video
 				{
 					Video::FrameInfo& frame_info = video->frame_infos.emplace_back();
 					frame_info.offset = nal_offset;
-					frame_info.type = wi::graphics::VideoFrameType::Intra;
+					frame_info.type = wi::VideoFrameType::Intra;
 					frame_info.reference_priority = nal.idc;
 					h264::SliceHeader slice_header = {};
 					h264::read_slice_header(&slice_header, &nal, (const h264::PPS*)video->pps_datas.data(), (const h264::SPS*)video->sps_datas.data(), &bs);
@@ -630,7 +630,7 @@ namespace wi::video
 		td.array_size = video->num_dpb_slots;
 		if (has_flag(instance->decoder.support, VideoDecoderSupportFlags::DPB_AND_OUTPUT_COINCIDE))
 		{
-			td.bind_flags = BindFlag::SHADER_RESOURCE;
+			td.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			td.misc_flags = ResourceMiscFlag::VIDEO_DECODE;
 			td.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
 		}
@@ -792,7 +792,7 @@ namespace wi::video
 				{
 					td.mip_levels = GetMipCount(td.width, td.height);
 				}
-				td.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+				td.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 				td.misc_flags = ResourceMiscFlag::TYPED_FORMAT_CASTING;
 				td.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
 				bool success = device->CreateTexture(&td, nullptr, &output.texture);
@@ -828,7 +828,7 @@ namespace wi::video
 					td.height = video->padded_height;
 					td.format = Format::NV12;
 					td.mip_levels = 1;
-					td.bind_flags = BindFlag::SHADER_RESOURCE;
+					td.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 					td.misc_flags = ResourceMiscFlag::VIDEO_DECODE_OUTPUT_ONLY;
 					td.misc_flags |= ResourceMiscFlag::VIDEO_COMPATIBILITY_H264;
 					td.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
@@ -927,8 +927,8 @@ namespace wi::video
 					// Ensure that current DPB slot is in DST state:
 					if (instance->dpb.resource_states[instance->dpb.current_slot] != ResourceState::VIDEO_DECODE_DPB)
 					{
-						wi::renderer::PushBarrier(GPUBarrier::Image(&instance->dpb.texture, instance->dpb.resource_states[instance->dpb.current_slot], ResourceState::VIDEO_DECODE_DPB, 0, instance->dpb.current_slot, &aspect_luma));
-						wi::renderer::PushBarrier(GPUBarrier::Image(&instance->dpb.texture, instance->dpb.resource_states[instance->dpb.current_slot], ResourceState::VIDEO_DECODE_DPB, 0, instance->dpb.current_slot, &aspect_chroma));
+						wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&instance->dpb.texture, instance->dpb.resource_states[instance->dpb.current_slot], ResourceState::VIDEO_DECODE_DPB, 0, instance->dpb.current_slot, &aspect_luma));
+						wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&instance->dpb.texture, instance->dpb.resource_states[instance->dpb.current_slot], ResourceState::VIDEO_DECODE_DPB, 0, instance->dpb.current_slot, &aspect_chroma));
 						instance->dpb.resource_states[instance->dpb.current_slot] = ResourceState::VIDEO_DECODE_DPB;
 					}
 					// Ensure that reference frame DPB slots are in SRC state:
@@ -937,8 +937,8 @@ namespace wi::video
 						uint8_t ref = instance->dpb.reference_usage[i];
 						if (instance->dpb.resource_states[ref] != ResourceState::VIDEO_DECODE_SRC)
 						{
-							wi::renderer::PushBarrier(GPUBarrier::Image(&instance->dpb.texture, instance->dpb.resource_states[ref], ResourceState::VIDEO_DECODE_SRC, 0, ref, &aspect_luma));
-							wi::renderer::PushBarrier(GPUBarrier::Image(&instance->dpb.texture, instance->dpb.resource_states[ref], ResourceState::VIDEO_DECODE_SRC, 0, ref, &aspect_chroma));
+							wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&instance->dpb.texture, instance->dpb.resource_states[ref], ResourceState::VIDEO_DECODE_SRC, 0, ref, &aspect_luma));
+							wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&instance->dpb.texture, instance->dpb.resource_states[ref], ResourceState::VIDEO_DECODE_SRC, 0, ref, &aspect_chroma));
 							instance->dpb.resource_states[ref] = ResourceState::VIDEO_DECODE_SRC;
 						}
 					}
@@ -947,8 +947,8 @@ namespace wi::video
 				{
 					// if DPB_AND_OUTPUT_COINCIDE is NOT supported, then DPB is kept always in DPB state, and only the output tex is ever a shader resource:
 					decode_operation.output = &decode.src;
-					wi::renderer::PushBarrier(GPUBarrier::Image(&decode.src, decode.src.desc.layout, ResourceState::VIDEO_DECODE_DST, -1, -1, &aspect_luma));
-					wi::renderer::PushBarrier(GPUBarrier::Image(&decode.src, decode.src.desc.layout, ResourceState::VIDEO_DECODE_DST, -1, -1, &aspect_chroma));
+					wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&decode.src, decode.src.desc.layout, ResourceState::VIDEO_DECODE_DST, -1, -1, &aspect_luma));
+					wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierImage(&decode.src, decode.src.desc.layout, ResourceState::VIDEO_DECODE_DST, -1, -1, &aspect_chroma));
 				}
 				wi::renderer::FlushBarriers(cmd);
 
@@ -961,8 +961,8 @@ namespace wi::video
 					if (instance->dpb.resource_states[instance->dpb.current_slot] != ResourceState::SHADER_RESOURCE_COMPUTE)
 					{
 						GPUBarrier barriers[] = {
-							GPUBarrier::Image(&instance->dpb.texture, instance->dpb.resource_states[instance->dpb.current_slot], ResourceState::SHADER_RESOURCE_COMPUTE, 0, instance->dpb.current_slot, &aspect_luma),
-							GPUBarrier::Image(&instance->dpb.texture, instance->dpb.resource_states[instance->dpb.current_slot], ResourceState::SHADER_RESOURCE_COMPUTE, 0, instance->dpb.current_slot, &aspect_chroma),
+							wiGraphicsCreateGPUBarrierImage(&instance->dpb.texture, instance->dpb.resource_states[instance->dpb.current_slot], ResourceState::SHADER_RESOURCE_COMPUTE, 0, instance->dpb.current_slot, &aspect_luma),
+							wiGraphicsCreateGPUBarrierImage(&instance->dpb.texture, instance->dpb.resource_states[instance->dpb.current_slot], ResourceState::SHADER_RESOURCE_COMPUTE, 0, instance->dpb.current_slot, &aspect_chroma),
 						};
 						device->Barrier(barriers, arraysize(barriers), cmd);
 						instance->dpb.resource_states[instance->dpb.current_slot] = ResourceState::SHADER_RESOURCE_COMPUTE;
@@ -972,8 +972,8 @@ namespace wi::video
 				{
 					// if DPB_AND_OUTPUT_COINCIDE is NOT supported, then DPB is kept always in DPB state, and only the output tex is ever a shader resource:
 					GPUBarrier barriers[] = {
-						GPUBarrier::Image(&decode.src, ResourceState::VIDEO_DECODE_DST, decode.src.desc.layout, -1, -1, &aspect_luma),
-						GPUBarrier::Image(&decode.src, ResourceState::VIDEO_DECODE_DST, decode.src.desc.layout, -1, -1, &aspect_chroma),
+						wiGraphicsCreateGPUBarrierImage(&decode.src, ResourceState::VIDEO_DECODE_DST, decode.src.desc.layout, -1, -1, &aspect_luma),
+						wiGraphicsCreateGPUBarrierImage(&decode.src, ResourceState::VIDEO_DECODE_DST, decode.src.desc.layout, -1, -1, &aspect_chroma),
 					};
 					device->Barrier(barriers, arraysize(barriers), cmd);
 				}
@@ -1043,7 +1043,7 @@ namespace wi::video
 		for (size_t i = 0; i < video->frame_infos.size(); ++i)
 		{
 			auto& frame_info = video->frame_infos[i];
-			if (frame_info.type == wi::graphics::VideoFrameType::Intra)
+			if (frame_info.type == wi::VideoFrameType::Intra)
 			{
 				max_iframe = (int)i;
 			}

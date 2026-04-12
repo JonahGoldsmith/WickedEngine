@@ -4,10 +4,14 @@
 #include "wiPlatform.h"
 #include "wiAllocator.h"
 #include "wiGraphicsDevice.h"
-#include "wiUnorderedMap.h"
+#include "../stb_ds.h"
 
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
+
+#if __has_include(<SDL3/SDL_stdinc.h>)
+#include <SDL3/SDL_stdinc.h>
+#endif
 
 #define IR_RUNTIME_METALCPP
 #include <metal_irconverter_runtime/metal_irconverter_runtime.h>
@@ -15,10 +19,14 @@
 #include <mutex>
 #include <deque>
 
+#if !defined(SDL_arraysize)
+#define SDL_arraysize(array) (sizeof(array) / sizeof((array)[0]))
+#endif
+
 // There are crashes with this in graphics debugger, so this can be disabled:
 //#define USE_TEXTURE_VIEW_POOL
 
-namespace wi::graphics
+namespace wi
 {
 	class GraphicsDevice_Metal final : public GraphicsDevice
 	{
@@ -32,9 +40,9 @@ namespace wi::graphics
 		};
 		struct ResourceTable
 		{
-			IRDescriptorTableEntry cbvs[arraysize(DescriptorBindingTable::CBV) - arraysize(RootLayout::root_cbvs)];
-			IRDescriptorTableEntry srvs[arraysize(DescriptorBindingTable::SRV)];
-			IRDescriptorTableEntry uavs[arraysize(DescriptorBindingTable::UAV)];
+			IRDescriptorTableEntry cbvs[SDL_arraysize(DescriptorBindingTable::CBV) - SDL_arraysize(RootLayout::root_cbvs)];
+			IRDescriptorTableEntry srvs[SDL_arraysize(DescriptorBindingTable::SRV)];
+			IRDescriptorTableEntry uavs[SDL_arraysize(DescriptorBindingTable::UAV)];
 		};
 		NS::SharedPtr<MTL::SamplerState> static_samplers[STATIC_SAMPLER_COUNT];
 		struct StaticSamplerDescriptors
@@ -43,7 +51,7 @@ namespace wi::graphics
 		} static_sampler_descriptors;
 		struct SamplerTable
 		{
-			IRDescriptorTableEntry samplers[arraysize(DescriptorBindingTable::SAM)];
+			IRDescriptorTableEntry samplers[SDL_arraysize(DescriptorBindingTable::SAM)];
 			StaticSamplerDescriptors static_samplers;
 		};
 		
@@ -64,35 +72,35 @@ namespace wi::graphics
 		
 		struct Semaphore
 		{
-			NS::SharedPtr<MTL::Event> event;
+			MTL::Event* event = nullptr;
 			uint64_t fenceValue = 0;
 		};
 		
 		struct CommandQueue
 		{
 			NS::SharedPtr<MTL4::CommandQueue> queue;
-			wi::vector<MTL4::CommandBuffer*> submit_cmds;
+			MTL4::CommandBuffer** submit_cmds = nullptr;
 			
 			void signal(const Semaphore& sema)
 			{
 				if (queue.get() == nullptr)
 					return;
-				queue->signalEvent(sema.event.get(), sema.fenceValue);
+				queue->signalEvent(sema.event, sema.fenceValue);
 			}
 			void wait(const Semaphore& sema)
 			{
 				if (queue.get() == nullptr)
 					return;
-				queue->wait(sema.event.get(), sema.fenceValue);
+				queue->wait(sema.event, sema.fenceValue);
 			}
 			void submit()
 			{
 				if (queue.get() == nullptr)
 					return;
-				if (submit_cmds.empty())
+				if (submit_cmds == nullptr || arrlenu(submit_cmds) == 0)
 					return;
-				queue->commit(submit_cmds.data(), submit_cmds.size());
-				submit_cmds.clear();
+				queue->commit(submit_cmds, arrlenu(submit_cmds));
+				arrsetlen(submit_cmds, 0);
 			}
 		} queues[QUEUE_COUNT];
 		
@@ -101,31 +109,37 @@ namespace wi::graphics
 		
 		NS::SharedPtr<MTL4::ArgumentTableDescriptor> argument_table_desc;
 		
-		wi::vector<Semaphore> semaphore_pool;
+		Semaphore* semaphore_pool = nullptr;
 		std::mutex semaphore_pool_locker;
 		Semaphore new_semaphore()
 		{
 			std::scoped_lock lck(semaphore_pool_locker);
-			if (semaphore_pool.empty())
+			if (semaphore_pool == nullptr || arrlenu(semaphore_pool) == 0)
 			{
-				Semaphore& sema = semaphore_pool.emplace_back();
-				sema.event = NS::TransferPtr(device->newEvent());
+				Semaphore sema = {};
+				sema.event = device->newEvent();
+				arrput(semaphore_pool, sema);
 			}
-			Semaphore sema = semaphore_pool.back();
-			semaphore_pool.pop_back();
+			Semaphore sema = arrpop(semaphore_pool);
 			sema.fenceValue++;
 			return sema;
 		}
 		void free_semaphore(const Semaphore& sema)
 		{
 			std::scoped_lock lck(semaphore_pool_locker);
-			semaphore_pool.push_back(sema);
+			arrput(semaphore_pool, sema);
 		}
 		
 		struct JustInTimePSO
 		{
-			NS::SharedPtr<MTL::RenderPipelineState> pipeline;
-			NS::SharedPtr<MTL::DepthStencilState> depth_stencil_state;
+			MTL::RenderPipelineState* pipeline = nullptr;
+			MTL::DepthStencilState* depth_stencil_state = nullptr;
+		};
+
+		struct PipelineGlobalEntry
+		{
+			PipelineHash key = {};
+			JustInTimePSO value = {};
 		};
 		
 		struct CommandList_Metal
@@ -141,14 +155,14 @@ namespace wi::graphics
 			bool dirty_pso = false;
 			bool dirty_cs = false;
 			const Shader* active_cs = nullptr;
-			wi::vector<NS::SharedPtr<CA::MetalDrawable>> presents;
+			CA::MetalDrawable** presents = nullptr;
 			NS::SharedPtr<MTL4::RenderCommandEncoder> render_encoder;
 			NS::SharedPtr<MTL4::ComputeCommandEncoder> compute_encoder;
 			MTL::PrimitiveType primitive_type = MTL::PrimitiveTypeTriangle;
 			IRRuntimePrimitiveType ir_primitive_type = IRRuntimePrimitiveTypeTriangle;
 			MTL4::BufferRange index_buffer = {};
 			MTL::IndexType index_type = MTL::IndexTypeUInt32;
-			wi::vector<std::pair<PipelineHash, JustInTimePSO>> pipelines_worker;
+			PipelineGlobalEntry* pipelines_worker = nullptr;
 			PipelineHash pipeline_hash;
 			DescriptorBindingTable binding_table;
 			bool dirty_root = false;
@@ -163,14 +177,19 @@ namespace wi::graphics
 			bool dirty_viewport = false;
 			uint32_t viewport_count = 0;
 			MTL::Viewport viewports[16] = {};
-			wi::vector<Semaphore> waits;
-			wi::vector<Semaphore> signals;
+			Semaphore* waits = nullptr;
+			Semaphore* signals = nullptr;
 			bool drawargs_required = false;
 			bool dirty_drawargs = false;
 			MTL::Size numthreads_as = {};
 			MTL::Size numthreads_ms = {};
 			IRGeometryEmulationPipelineDescriptor gs_desc = {};
-			wi::vector<std::pair<NS::SharedPtr<MTL::Texture>, uint32_t>> texture_clears;
+			struct TextureClearEntry
+			{
+				MTL::Texture* texture = nullptr;
+				uint32_t value = 0;
+			};
+			TextureClearEntry* texture_clears = nullptr;
 			
 			struct VertexBufferBinding
 			{
@@ -179,8 +198,8 @@ namespace wi::graphics
 			};
 			VertexBufferBinding vertex_buffers[16];
 			bool dirty_vb = false;
-			
-			wi::vector<GPUBarrier> barriers;
+
+			GPUBarrier* barriers = nullptr;
 
 			void reset(uint32_t bufferindex)
 			{
@@ -192,14 +211,14 @@ namespace wi::graphics
 				active_cs = nullptr;
 				dirty_pso = false;
 				dirty_cs = false;
-				presents.clear();
+				arrsetlen(presents, 0);
 				render_encoder.reset();
 				compute_encoder.reset();
 				primitive_type = MTL::PrimitiveTypeTriangle;
 				ir_primitive_type = IRRuntimePrimitiveTypeTriangle;
 				index_buffer = {};
 				index_type = MTL::IndexTypeUInt32;
-				pipelines_worker.clear();
+				arrsetlen(pipelines_worker, 0);
 				pipeline_hash = {};
 				binding_table = {};
 				dirty_root = true;
@@ -225,9 +244,9 @@ namespace wi::graphics
 				{
 					x = {};
 				}
-				assert(barriers.empty());
-				assert(waits.empty());
-				assert(signals.empty());
+				SDL_assert(barriers == nullptr || arrlenu(barriers) == 0);
+				SDL_assert(waits == nullptr || arrlenu(waits) == 0);
+				SDL_assert(signals == nullptr || arrlenu(signals) == 0);
 				drawargs_required = false;
 				dirty_drawargs = false;
 				numthreads_as = {};
@@ -235,11 +254,11 @@ namespace wi::graphics
 			}
 		};
 		wi::allocator::BlockAllocator<CommandList_Metal, 64> cmd_allocator;
-		wi::vector<CommandList_Metal*> commandlists;
+		CommandList_Metal** commandlists = nullptr;
 		uint32_t cmd_count = 0;
 		wi::SpinLock cmd_locker;
 		
-		wi::unordered_map<PipelineHash, JustInTimePSO> pipelines_global;
+		PipelineGlobalEntry* pipelines_global = nullptr;
 		
 		NS::SharedPtr<MTL::Buffer> descriptor_heap_res;
 		NS::SharedPtr<MTL::Buffer> descriptor_heap_sam;
@@ -254,11 +273,11 @@ namespace wi::graphics
 		void barrier_flush(CommandList cmd);
 		void clear_flush(CommandList cmd);
 
-		constexpr CommandList_Metal& GetCommandList(CommandList cmd) const
-		{
-			assert(cmd.IsValid());
-			return *(CommandList_Metal*)cmd.internal_state;
-		}
+			CommandList_Metal& GetCommandList(CommandList cmd) const
+			{
+				SDL_assert(wiGraphicsCommandListIsValid(cmd));
+				return *(CommandList_Metal*)cmd.internal_state;
+			}
 		
 		void pso_validate(CommandList cmd);
 		void predraw(CommandList cmd);
@@ -337,8 +356,8 @@ namespace wi::graphics
 
 		void WaitCommandList(CommandList cmd, CommandList wait_for) override;
 		void RenderPassBegin(const SwapChain* swapchain, CommandList cmd) override;
-		void RenderPassBegin(const RenderPassImage* images, uint32_t image_count, CommandList cmd, RenderPassFlags flags = RenderPassFlags::NONE) override { RenderPassBegin(images, image_count, nullptr, cmd, flags); };
-		void RenderPassBegin(const RenderPassImage* images, uint32_t image_count, const GPUQueryHeap* occlusionqueries, CommandList cmd, RenderPassFlags flags = RenderPassFlags::NONE) override;
+		void RenderPassBegin(const RenderPassImage* images, uint32_t image_count, CommandList cmd, RenderPassFlags flags = RenderPassFlags::RENDER_PASS_FLAG_NONE) override { RenderPassBegin(images, image_count, nullptr, cmd, flags); };
+		void RenderPassBegin(const RenderPassImage* images, uint32_t image_count, const GPUQueryHeap* occlusionqueries, CommandList cmd, RenderPassFlags flags = RenderPassFlags::RENDER_PASS_FLAG_NONE) override;
 		void RenderPassEnd(CommandList cmd) override;
 		void BindScissorRects(uint32_t numRects, const Rect* rects, CommandList cmd) override;
 		void BindViewports(uint32_t NumViewports, const Viewport *pViewports, CommandList cmd) override;
@@ -415,8 +434,8 @@ namespace wi::graphics
 			std::deque<std::pair<NS::SharedPtr<CA::MetalDrawable>, uint64_t>> destroyer_drawables;
 			std::deque<std::pair<int, uint64_t>> destroyer_bindless_res;
 			std::deque<std::pair<int, uint64_t>> destroyer_bindless_sam;
-			wi::vector<int> free_bindless_res;
-			wi::vector<int> free_bindless_sam;
+			int* free_bindless_res = nullptr;
+			int* free_bindless_sam = nullptr;
 
 			void Update(uint64_t FRAMECOUNT, uint32_t BUFFERCOUNT)
 			{
@@ -470,12 +489,12 @@ namespace wi::graphics
 				}
 				while (!destroyer_bindless_res.empty() && destroyer_bindless_res.front().second + BUFFERCOUNT < FRAMECOUNT)
 				{
-					free_bindless_res.push_back(destroyer_bindless_res.front().first);
+					arrput(free_bindless_res, destroyer_bindless_res.front().first);
 					destroyer_bindless_res.pop_front();
 				}
 				while (!destroyer_bindless_sam.empty() && destroyer_bindless_sam.front().second + BUFFERCOUNT < FRAMECOUNT)
 				{
-					free_bindless_sam.push_back(destroyer_bindless_sam.front().first);
+					arrput(free_bindless_sam, destroyer_bindless_sam.front().first);
 					destroyer_bindless_sam.pop_front();
 				}
 			}
@@ -483,19 +502,17 @@ namespace wi::graphics
 			int allocate_resource_index()
 			{
 				std::scoped_lock lck(destroylocker);
-				if (free_bindless_res.empty())
+				if (free_bindless_res == nullptr || arrlenu(free_bindless_res) == 0)
 					return -1;
-				int index = free_bindless_res.back();
-				free_bindless_res.pop_back();
+				int index = arrpop(free_bindless_res);
 				return index;
 			}
 			int allocate_sampler_index()
 			{
 				std::scoped_lock lck(destroylocker);
-				if (free_bindless_sam.empty())
+				if (free_bindless_sam == nullptr || arrlenu(free_bindless_sam) == 0)
 					return -1;
-				int index = free_bindless_sam.back();
-				free_bindless_sam.pop_back();
+				int index = arrpop(free_bindless_sam);
 				return index;
 			}
 			

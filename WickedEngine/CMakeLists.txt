@@ -32,6 +32,48 @@ else()
     message(STATUS "Building WickedEngine as a static library")
 endif()
 
+set(WICKED_FULL_MMGR_ROOT_DIR "${WICKED_ROOT_DIR}/forge-mmgr/FluidStudios/MemoryManager")
+set(WICKED_FULL_MMGR_GLOBALS_CPP "${WICKED_FULL_MMGR_ROOT_DIR}/mmgr_new_delete.cpp")
+set(WICKED_FULL_MMGR_RUNTIME_OBJECT_TARGET "")
+set(WICKED_FULL_MMGR_COVERAGE_MODE "disabled")
+
+if(WICKED_FULL_ENABLE_MMGR)
+    if(NOT EXISTS "${WICKED_FULL_MMGR_ROOT_DIR}/mmgr.h")
+        message(FATAL_ERROR "WICKED_FULL_ENABLE_MMGR is ON but mmgr header is missing: ${WICKED_FULL_MMGR_ROOT_DIR}/mmgr.h")
+    endif()
+    if(NOT EXISTS "${WICKED_FULL_MMGR_ROOT_DIR}/mmgr.c")
+        message(FATAL_ERROR "WICKED_FULL_ENABLE_MMGR is ON but mmgr implementation is missing: ${WICKED_FULL_MMGR_ROOT_DIR}/mmgr.c")
+    endif()
+    if(NOT EXISTS "${WICKED_FULL_MMGR_GLOBALS_CPP}")
+        message(FATAL_ERROR "WICKED_FULL_ENABLE_MMGR is ON but global operator override source is missing: ${WICKED_FULL_MMGR_GLOBALS_CPP}")
+    endif()
+
+    add_library(wicked_full_mmgr_obj OBJECT
+        "${WICKED_FULL_MMGR_ROOT_DIR}/mmgr.c"
+        "${WICKED_FULL_MMGR_GLOBALS_CPP}"
+    )
+    target_include_directories(wicked_full_mmgr_obj PRIVATE
+        "${WICKED_FULL_MMGR_ROOT_DIR}"
+    )
+    if(MSVC)
+        target_compile_options(wicked_full_mmgr_obj PRIVATE
+            "$<$<COMPILE_LANGUAGE:CXX>:/EHsc>"
+        )
+    else()
+        target_compile_options(wicked_full_mmgr_obj PRIVATE
+            -fdeclspec
+            -fms-extensions
+            "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions>"
+        )
+    endif()
+
+    set(WICKED_FULL_MMGR_RUNTIME_OBJECT_TARGET wicked_full_mmgr_obj)
+    set(WICKED_FULL_MMGR_COVERAGE_MODE "runtime-object")
+    message(STATUS "Wicked full-engine MMGR is enabled: runtime object mode is active for global new/delete overrides.")
+    message(STATUS "Wicked full-engine MMGR runtime object sources: ${WICKED_FULL_MMGR_ROOT_DIR}/mmgr.c, ${WICKED_FULL_MMGR_GLOBALS_CPP}")
+endif()
+message(STATUS "Wicked full-engine MMGR coverage mode: ${WICKED_FULL_MMGR_COVERAGE_MODE}")
+
 if (WIN32)
     if (MSVC)
         add_compile_options(
@@ -166,6 +208,12 @@ target_include_directories(WickedEngine_common SYSTEM PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/WickedEngine>
 )
 
+if(DEFINED WICKED_VULKAN_PLATFORM_COMPILE_DEFINITIONS)
+    target_compile_definitions(WickedEngine_common PUBLIC
+        ${WICKED_VULKAN_PLATFORM_COMPILE_DEFINITIONS}
+    )
+endif()
+
 set(WICKEDENGINE_STATIC_LIBRARIES
     Jolt
     LUA
@@ -228,9 +276,6 @@ elseif ("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "x86_64" OR "${CMAKE_SYSTEM_PROCESS
     target_compile_options(WickedEngine_common PUBLIC -mfpmath=sse)
 endif()
 
-target_compile_definitions(WickedEngine_common PUBLIC WICKED_CMAKE_BUILD)
-
-
 if (WIN32)
     target_compile_definitions(WickedEngine_common PUBLIC
         UNICODE _UNICODE
@@ -260,10 +305,6 @@ else ()
 endif()
 
 target_link_libraries(WickedEngine_common PUBLIC ${WICKEDENGINE_STATIC_LIBRARIES})
-
-if (PLATFORM MATCHES "SDL2")
-    target_compile_definitions(WickedEngine_common PUBLIC SDL2=1)
-endif()
 
 add_library(dxcompiler SHARED IMPORTED)
 set_property(TARGET dxcompiler PROPERTY
@@ -325,6 +366,19 @@ add_custom_command(
 
 target_link_libraries(WickedEngine_ext_shaders WickedEngine_common)
 target_link_libraries(WickedEngine_emb_shaders WickedEngine_common)
+
+if(WICKED_FULL_ENABLE_MMGR)
+    target_include_directories(WickedEngine_common PUBLIC
+        "${WICKED_FULL_MMGR_ROOT_DIR}"
+    )
+    target_sources(WickedEngine_ext_shaders PRIVATE
+        $<TARGET_OBJECTS:${WICKED_FULL_MMGR_RUNTIME_OBJECT_TARGET}>
+    )
+    target_sources(WickedEngine_emb_shaders PRIVATE
+        $<TARGET_OBJECTS:${WICKED_FULL_MMGR_RUNTIME_OBJECT_TARGET}>
+    )
+    message(STATUS "Wicked full-engine MMGR runtime object linked into WickedEngine_ext_shaders and WickedEngine_emb_shaders.")
+endif()
 
 target_link_libraries(offlineshadercompiler
     PUBLIC WickedEngine_ext_shaders

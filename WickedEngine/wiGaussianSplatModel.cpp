@@ -9,7 +9,7 @@
 #include "wiProfiler.h"
 
 using namespace wi::math;
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::primitive;
 
 namespace wi
@@ -34,7 +34,7 @@ namespace wi
 		}
 
 		GPUBufferDesc desc;
-		desc.bind_flags = BindFlag::SHADER_RESOURCE;
+		desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 		desc.misc_flags = ResourceMiscFlag::TYPED_FORMAT_CASTING | ResourceMiscFlag::NO_DEFAULT_DESCRIPTORS;
 
 		const uint64_t alignment = device->GetMinOffsetAlignment(&desc);
@@ -217,7 +217,7 @@ namespace wi
 		GraphicsDevice* device = GetDevice();
 
 		depthStencilState.depth_enable = true;
-		depthStencilState.depth_write_mask = DepthWriteMask::ZERO;
+		depthStencilState.depth_write_mask = DepthWriteMask::DEPTH_WRITE_ZERO;
 		depthStencilState.depth_func = ComparisonFunc::GREATER;
 
 		rasterizerState.cull_mode = CullMode::BACK;
@@ -295,7 +295,7 @@ namespace wi
 			GPUBufferDesc desc;
 			desc.stride = sizeof(IndirectDrawArgsInstanced);
 			desc.size = desc.stride;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED | ResourceMiscFlag::INDIRECT_ARGS;
 			bool success = device->CreateBuffer(&desc, nullptr, &indirectBuffer);
 			assert(success);
@@ -309,7 +309,7 @@ namespace wi
 			GPUBufferDesc desc;
 			desc.stride = sizeof(uint32_t);
 			desc.size = splat_capacity * desc.stride;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			bool success = device->CreateBuffer(&desc, nullptr, &sortedIndexBuffer);
 			assert(success);
@@ -317,7 +317,7 @@ namespace wi
 
 			desc.stride = sizeof(uint32_t);
 			desc.size = splat_capacity * desc.stride;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			success = device->CreateBuffer(&desc, nullptr, &distanceBuffer);
 			assert(success);
@@ -325,7 +325,7 @@ namespace wi
 
 			desc.stride = sizeof(uint2);
 			desc.size = splat_capacity * desc.stride;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			success = device->CreateBuffer(&desc, nullptr, &splatLookupBuffer);
 			assert(success);
@@ -339,7 +339,7 @@ namespace wi
 			GPUBufferDesc desc;
 			desc.stride = sizeof(ShaderGaussianSplatModel);
 			desc.size = model_capacity * desc.stride;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			bool success = device->CreateBuffer(&desc, nullptr, &modelBuffer);
 			assert(success);
@@ -411,8 +411,8 @@ namespace wi
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Buffer(&modelBuffer, ResourceState::COPY_DST, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&indirectBuffer, ResourceState::COPY_DST, ResourceState::UNORDERED_ACCESS),
+				wiGraphicsCreateGPUBarrierBuffer(&modelBuffer, ResourceState::COPY_DST, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&indirectBuffer, ResourceState::COPY_DST, ResourceState::UNORDERED_ACCESS),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -453,10 +453,10 @@ namespace wi
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Memory(&sortedIndexBuffer),
-				GPUBarrier::Memory(&distanceBuffer),
-				GPUBarrier::Buffer(&indirectBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&splatLookupBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierMemory(&sortedIndexBuffer),
+				wiGraphicsCreateGPUBarrierMemory(&distanceBuffer),
+				wiGraphicsCreateGPUBarrierBuffer(&indirectBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&splatLookupBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -466,8 +466,8 @@ namespace wi
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Buffer(&sortedIndexBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&distanceBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&sortedIndexBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&distanceBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -478,13 +478,13 @@ namespace wi
 			device->BindComputeShader(&computeShader_indirect, cmd);
 			device->BindUAV(&indirectBuffer, 0, cmd);
 			device->PushConstants(&camera_count, sizeof(camera_count), cmd);
-			device->Barrier(GPUBarrier::Buffer(&indirectBuffer, ResourceState::SHADER_RESOURCE, ResourceState::UNORDERED_ACCESS), cmd);
+			device->Barrier(wiGraphicsCreateGPUBarrierBuffer(&indirectBuffer, ResourceState::SHADER_RESOURCE, ResourceState::UNORDERED_ACCESS), cmd);
 			device->Dispatch(1, 1, 1, cmd);
-			device->Barrier(GPUBarrier::Buffer(&indirectBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT), cmd);
+			device->Barrier(wiGraphicsCreateGPUBarrierBuffer(&indirectBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT), cmd);
 		}
 		else
 		{
-			device->Barrier(GPUBarrier::Buffer(&indirectBuffer, ResourceState::SHADER_RESOURCE, ResourceState::INDIRECT_ARGUMENT), cmd);
+			device->Barrier(wiGraphicsCreateGPUBarrierBuffer(&indirectBuffer, ResourceState::SHADER_RESOURCE, ResourceState::INDIRECT_ARGUMENT), cmd);
 		}
 
 		device->EventEnd(cmd);

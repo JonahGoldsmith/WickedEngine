@@ -12,7 +12,7 @@
 
 //#define BVH_VALIDATE // slow but great for debug!
 
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::scene;
 using namespace wi::ecs;
 
@@ -30,7 +30,7 @@ namespace wi
 
 	void GPUBVH::Update(const wi::scene::Scene& scene)
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		// Pre-gather scene properties:
 		uint totalTriangles = 0;
@@ -63,7 +63,7 @@ namespace wi
 		if (totalTriangles > 0 && !primitiveCounterBuffer.IsValid())
 		{
 			GPUBufferDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			desc.stride = sizeof(uint);
 			desc.size = desc.stride;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
@@ -83,7 +83,7 @@ namespace wi
 
 			GPUBufferDesc desc;
 
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.stride = sizeof(BVHNode);
 			desc.size = desc.stride * primitiveCapacity * 2;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_RAW;
@@ -91,7 +91,7 @@ namespace wi
 			device->CreateBuffer(&desc, nullptr, &bvhNodeBuffer);
 			device->SetName(&bvhNodeBuffer, "GPUBVH::BVHNodeBuffer");
 
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.stride = sizeof(uint);
 			desc.size = desc.stride * primitiveCapacity * 2;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
@@ -99,7 +99,7 @@ namespace wi
 			device->CreateBuffer(&desc, nullptr, &bvhParentBuffer);
 			device->SetName(&bvhParentBuffer, "GPUBVH::BVHParentBuffer");
 
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.stride = sizeof(uint);
 			desc.size = desc.stride * (((primitiveCapacity - 1) + 31) / 32); // bitfield for internal nodes
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
@@ -107,7 +107,7 @@ namespace wi
 			device->CreateBuffer(&desc, nullptr, &bvhFlagBuffer);
 			device->SetName(&bvhFlagBuffer, "GPUBVH::BVHFlagBuffer");
 
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.stride = sizeof(uint);
 			desc.size = desc.stride * primitiveCapacity;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
@@ -115,7 +115,7 @@ namespace wi
 			device->CreateBuffer(&desc, nullptr, &primitiveIDBuffer);
 			device->SetName(&primitiveIDBuffer, "GPUBVH::primitiveIDBuffer");
 
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.stride = sizeof(BVHPrimitive);
 			desc.size = desc.stride * primitiveCapacity;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_RAW;
@@ -123,7 +123,7 @@ namespace wi
 			device->CreateBuffer(&desc, nullptr, &primitiveBuffer);
 			device->SetName(&primitiveBuffer, "GPUBVH::primitiveBuffer");
 
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.stride = sizeof(uint);
 			desc.size = desc.stride * primitiveCapacity;
 			desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
@@ -134,7 +134,7 @@ namespace wi
 	}
 	void GPUBVH::Build(const Scene& scene, CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		auto range = wi::profiler::BeginRangeGPU("BVH Rebuild", cmd);
 
@@ -236,17 +236,17 @@ namespace wi
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Buffer(&primitiveBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Memory(&primitiveIDBuffer),
-				GPUBarrier::Memory(&primitiveMortonBuffer),
-				GPUBarrier::Buffer(&primitiveCounterBuffer, ResourceState::SHADER_RESOURCE, ResourceState::COPY_DST),
+				wiGraphicsCreateGPUBarrierBuffer(&primitiveBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierMemory(&primitiveIDBuffer),
+				wiGraphicsCreateGPUBarrierMemory(&primitiveMortonBuffer),
+				wiGraphicsCreateGPUBarrierBuffer(&primitiveCounterBuffer, ResourceState::SHADER_RESOURCE, ResourceState::COPY_DST),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
 		device->UpdateBuffer(&primitiveCounterBuffer, &primitiveCount, cmd);
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Buffer(&primitiveCounterBuffer, ResourceState::COPY_DST, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&primitiveCounterBuffer, ResourceState::COPY_DST, ResourceState::SHADER_RESOURCE),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -259,8 +259,8 @@ namespace wi
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Buffer(&primitiveIDBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&primitiveMortonBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&primitiveIDBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&primitiveMortonBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -289,9 +289,9 @@ namespace wi
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Memory(&bvhNodeBuffer),
-				GPUBarrier::Memory(&bvhFlagBuffer),
-				GPUBarrier::Buffer(&bvhParentBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierMemory(&bvhNodeBuffer),
+				wiGraphicsCreateGPUBarrierMemory(&bvhFlagBuffer),
+				wiGraphicsCreateGPUBarrierBuffer(&bvhParentBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -320,8 +320,8 @@ namespace wi
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Buffer(&bvhNodeBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&bvhFlagBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&bvhNodeBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&bvhFlagBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}

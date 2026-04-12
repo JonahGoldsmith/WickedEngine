@@ -21,7 +21,7 @@ namespace wi
 	class Application
 	{
 	protected:
-		std::unique_ptr<wi::graphics::GraphicsDevice> graphicsDevice;
+		std::unique_ptr<wi::GraphicsDevice> graphicsDevice;
 		wi::eventhandler::Handle swapChainVsyncChangeEvent;
 
 		RenderPath* activePath = nullptr;
@@ -42,7 +42,7 @@ namespace wi
 
 		std::string infodisplay_str;
 
-		wi::graphics::Texture rendertargetPreHDR10;
+		wi::Texture rendertargetPreHDR10;
 
 		uint32_t renderWidth = 0;
 		uint32_t renderHeight = 0;
@@ -52,11 +52,11 @@ namespace wi
 
 		bool is_window_active = true;
 		bool allow_hdr = true;
-		wi::graphics::SwapChain swapChain;
+		wi::SwapChain swapChain;
 		wi::Canvas canvas;
 		wi::platform::window_type window;
 
-		wi::graphics::Texture splash_screen;
+		wi::Texture splash_screen;
 		int splash_screen_subresource = -1;
 
 		// Runs the main engine loop
@@ -89,7 +89,7 @@ namespace wi
 		//  RenderPath::Render is also called from here for the active component
 		virtual void Render();
 		// This is where the application will render to the screen (backbuffer). It must render to the provided command list.
-		virtual void Compose(wi::graphics::CommandList cmd);
+		virtual void Compose(wi::CommandList cmd);
 		// This is where the application about to exit.
 		virtual void Exit();
 
@@ -135,7 +135,7 @@ namespace wi
 			// mouse position and button informations
 			bool mouse_info = false;
 			// rect to specify where to render the information
-			wi::graphics::Rect rect;
+			wi::Rect rect;
 		};
 		// display all-time engine information text
 		InfoDisplayer infoDisplay;

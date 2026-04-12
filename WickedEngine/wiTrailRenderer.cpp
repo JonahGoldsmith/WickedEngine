@@ -6,7 +6,7 @@
 #include "wiTextureHelper.h"
 #include "wiScene.h"
 
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::enums;
 using namespace wi::scene;
 
@@ -307,7 +307,7 @@ namespace wi
 				{ "COLOR", 0, Format::R16G16B16A16_FLOAT, 0, InputLayout::APPEND_ALIGNED_ELEMENT, InputClassification::PER_VERTEX_DATA },
 			};
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			for (int i = 0; i < BLENDMODE_COUNT; ++i)
 			{
@@ -342,7 +342,7 @@ namespace wi
 
 		RasterizerState rs;
 		rs.fill_mode = FillMode::SOLID;
-		rs.cull_mode = CullMode::NONE;
+		rs.cull_mode = CullMode::CULL_NONE;
 		rs.front_counter_clockwise = true;
 		rs.depth_bias = 0;
 		rs.depth_bias_clamp = 0;
@@ -354,7 +354,7 @@ namespace wi
 
 
 		rs.fill_mode = FillMode::WIREFRAME;
-		rs.cull_mode = CullMode::NONE;
+		rs.cull_mode = CullMode::CULL_NONE;
 		rs.front_counter_clockwise = true;
 		rs.depth_bias = 0;
 		rs.depth_bias_clamp = 0;
@@ -367,7 +367,7 @@ namespace wi
 
 		DepthStencilState dsd;
 		dsd.depth_enable = true;
-		dsd.depth_write_mask = DepthWriteMask::ZERO;
+		dsd.depth_write_mask = DepthWriteMask::DEPTH_WRITE_ZERO;
 		dsd.depth_func = ComparisonFunc::GREATER_EQUAL;
 		dsd.stencil_enable = false;
 		depthStencilState = dsd;

@@ -188,7 +188,7 @@ namespace wi
 		return fileName;
 	}
 
-	wi::graphics::Texture Archive::CreateThumbnailTexture() const
+	wi::Texture Archive::CreateThumbnailTexture() const
 	{
 		if (header.properties.bits.thumbnail_data_size == 0)
 			return {};
@@ -198,13 +198,13 @@ namespace wi
 		uint8_t* rgba = stbi_load_from_memory(get_thumbnail_data(), (int)header.properties.bits.thumbnail_data_size, &width, &height, &channels, 4);
 		if (rgba == nullptr)
 			return {};
-		wi::graphics::Texture texture;
+		wi::Texture texture;
 		wi::texturehelper::CreateTexture(texture, rgba, (uint32_t)width, (uint32_t)height);
 		stbi_image_free(rgba);
 		return texture;
 	}
 
-	void Archive::SetThumbnailAndResetPos(const wi::graphics::Texture& texture)
+	void Archive::SetThumbnailAndResetPos(const wi::Texture& texture)
 	{
 		wi::vector<uint8_t> thumbnail_data;
 		wi::helper::saveTextureToMemoryFile(texture, "JPG", thumbnail_data);
@@ -214,7 +214,7 @@ namespace wi
 		thumbnail_data_ptr_write = nullptr;
 	}
 
-	wi::graphics::Texture Archive::PeekThumbnail(const std::string& filename, Header* out_header)
+	wi::Texture Archive::PeekThumbnail(const std::string& filename, Header* out_header)
 	{
 		wi::vector<uint8_t> filedata;
 

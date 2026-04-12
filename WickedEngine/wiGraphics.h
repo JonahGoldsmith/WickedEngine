@@ -1,21 +1,81 @@
 #pragma once
 #include "CommonInclude.h"
-#include "wiVector.h"
 #include "wiAllocator.h"
-
 #include <cassert>
-#include <memory>
-#include <string>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
+#include <memory>
+#include <new>
+#include <type_traits>
+#include "../stb_ds.h"
 
-namespace wi::graphics
+#ifndef WI_STB_ARRAY_HELPERS_DEFINED
+#define WI_STB_ARRAY_HELPERS_DEFINED
+
+#undef arrlen
+#undef arrlenu
+#undef arrcap
+#undef arrsetcap
+#undef arrsetlen
+#undef arrput
+#undef arrpop
+
+#define wi_stb_arrlen(a) ((a) != nullptr ? stbds_header(a)->length : 0u)
+#define wi_stb_arrcap(a) ((a) != nullptr ? stbds_header(a)->capacity : 0u)
+
+#if defined(__cplusplus)
+#define WI_STB_ARRAY_CAST(a, value) reinterpret_cast<std::remove_reference_t<decltype(a)>>(value)
+#else
+#define WI_STB_ARRAY_CAST(a, value) (value)
+#endif
+
+#define arrlen(a) wi_stb_arrlen(a)
+#define arrlenu(a) wi_stb_arrlen(a)
+#define arrcap(a) wi_stb_arrcap(a)
+#define arrsetcap(a, n) (wi_stb_arrcap(a) < (size_t)(n) ? ((a) = WI_STB_ARRAY_CAST((a), stbds_arrgrowf((a), sizeof(*(a)), 0, (size_t)(n))), 0) : 0)
+#define arrsetlen(a, n) (arrsetcap((a), (n)), ((a) != nullptr ? (stbds_header(a)->length = (size_t)(n)) : 0))
+#define arrput(a, v) (arrsetlen((a), wi_stb_arrlen(a) + 1), (a)[wi_stb_arrlen(a) - 1] = v)
+#define arrpop(a) ((a)[--stbds_header(a)->length])
+#endif // WI_STB_ARRAY_HELPERS_DEFINED
+
+namespace wi
 {
+	inline char* CloneCString(const char* value)
+	{
+		if (value == nullptr)
+		{
+			return nullptr;
+		}
+		const size_t len = std::strlen(value);
+		char* copy = static_cast<char*>(std::malloc(len + 1));
+		if (copy == nullptr)
+		{
+			return nullptr;
+		}
+		std::memcpy(copy, value, len + 1);
+		return copy;
+	}
+	inline void DestroyCString(char*& value)
+	{
+		if (value != nullptr)
+		{
+			std::free(value);
+			value = nullptr;
+		}
+	}
+	inline void SetCString(char*& dst, const char* src)
+	{
+		DestroyCString(dst);
+		dst = CloneCString(src);
+	}
+
 	struct Shader;
 	struct GPUResource;
 	struct GPUBuffer;
 	struct Texture;
 
-	enum class ValidationMode : uint8_t
+	enum ValidationMode : uint8_t
 	{
 		Disabled,	// No validation is enabled
 		Enabled,	// CPU command validation
@@ -23,7 +83,7 @@ namespace wi::graphics
 		Verbose		// Print all warnings, errors and info messages
 	};
 
-	enum class AdapterType : uint8_t
+	enum AdapterType : uint8_t
 	{
 		Other,
 		IntegratedGpu,
@@ -32,7 +92,7 @@ namespace wi::graphics
 		Cpu,
 	};
 
-	enum class GPUPreference : uint8_t
+	enum GPUPreference : uint8_t
 	{
 		Discrete,
 		Integrated,
@@ -41,7 +101,7 @@ namespace wi::graphics
 		AMD,
 	};
 
-	enum class ShaderStage : uint8_t
+	enum ShaderStage : uint8_t
 	{
 		MS,		// Mesh Shader
 		AS,		// Amplification Shader
@@ -54,9 +114,9 @@ namespace wi::graphics
 		LIB,	// Shader Library
 		Count,
 	};
-	enum class ShaderFormat : uint8_t
+	enum ShaderFormat : uint8_t
 	{
-		NONE,		// Not used
+		SHADER_FORMAT_NONE,		// Not used
 		HLSL5,		// DXBC
 		HLSL6,		// DXIL
 		SPIRV,		// SPIR-V
@@ -64,7 +124,7 @@ namespace wi::graphics
 		PS5,		// Playstation 5
 		METAL,		// Apple Metal
 	};
-	enum class ShaderModel : uint8_t
+	enum ShaderModel : uint8_t
 	{
 		SM_5_0,
 		SM_6_0,
@@ -76,9 +136,9 @@ namespace wi::graphics
 		SM_6_6,
 		SM_6_7,
 	};
-	enum class PrimitiveTopology : uint8_t
+	enum PrimitiveTopology : uint8_t
 	{
-		UNDEFINED,
+		PRIMITIVE_UNDEFINED,
 		TRIANGLELIST,
 		TRIANGLESTRIP,
 		POINTLIST,
@@ -86,7 +146,7 @@ namespace wi::graphics
 		LINESTRIP,
 		PATCHLIST,
 	};
-	enum class ComparisonFunc : uint8_t
+	enum ComparisonFunc : uint8_t
 	{
 		NEVER,
 		LESS,
@@ -97,15 +157,15 @@ namespace wi::graphics
 		GREATER_EQUAL,
 		ALWAYS,
 	};
-	enum class DepthWriteMask : uint8_t
+	enum DepthWriteMask : uint8_t
 	{
-		ZERO,	// Disables depth write
+		DEPTH_WRITE_ZERO,	// Disables depth write
 		ALL,	// Enables depth write
 	};
-	enum class StencilOp : uint8_t
+	enum StencilOp : uint8_t
 	{
 		KEEP,
-		ZERO,
+		STENCIL_ZERO,
 		REPLACE,
 		INCR_SAT,
 		DECR_SAT,
@@ -113,7 +173,7 @@ namespace wi::graphics
 		INCR,
 		DECR,
 	};
-	enum class Blend : uint8_t
+	enum Blend : uint8_t
 	{
 		ZERO,
 		ONE,
@@ -133,7 +193,7 @@ namespace wi::graphics
 		SRC1_ALPHA,
 		INV_SRC1_ALPHA,
 	}; 
-	enum class BlendOp : uint8_t
+	enum BlendOp : uint8_t
 	{
 		ADD,
 		SUBTRACT,
@@ -141,29 +201,29 @@ namespace wi::graphics
 		MIN,
 		MAX,
 	};
-	enum class FillMode : uint8_t
+	enum FillMode : uint8_t
 	{
 		WIREFRAME,
 		SOLID,
 	};
-	enum class CullMode : uint8_t
+	enum CullMode : uint8_t
 	{
-		NONE,
+		CULL_NONE,
 		FRONT,
 		BACK,
 	};
-	enum class InputClassification : uint8_t
+	enum InputClassification : uint8_t
 	{
 		PER_VERTEX_DATA,
 		PER_INSTANCE_DATA,
 	};
-	enum class Usage : uint8_t
+	enum Usage : uint8_t
 	{
 		DEFAULT,	// CPU no access, GPU read/write
 		UPLOAD,	    // CPU write, GPU read
 		READBACK,	// CPU read, GPU write
 	};
-	enum class TextureAddressMode : uint8_t
+	enum TextureAddressMode : uint8_t
 	{
 		WRAP,
 		MIRROR,
@@ -171,7 +231,7 @@ namespace wi::graphics
 		BORDER,
 		MIRROR_ONCE,
 	};
-	enum class Filter : uint8_t
+	enum Filter : uint8_t
 	{
 		MIN_MAG_MIP_POINT,
 		MIN_MAG_POINT_MIP_LINEAR,
@@ -210,13 +270,13 @@ namespace wi::graphics
 		MAXIMUM_MIN_MAG_MIP_LINEAR,
 		MAXIMUM_ANISOTROPIC,
 	};
-	enum class SamplerBorderColor : uint8_t
+	enum SamplerBorderColor : uint8_t
 	{
 		TRANSPARENT_BLACK,
 		OPAQUE_BLACK,
 		OPAQUE_WHITE,
 	};
-	enum class Format : uint8_t
+	enum Format : uint8_t
 	{
 		UNKNOWN,
 
@@ -296,18 +356,18 @@ namespace wi::graphics
 
 		NV12,				// video YUV420; SRV Luminance aspect: R8_UNORM, SRV Chrominance aspect: R8G8_UNORM
 	};
-	enum class GpuQueryType : uint8_t
+	enum GpuQueryType : uint8_t
 	{
 		TIMESTAMP,			// retrieve time point of gpu execution
 		OCCLUSION,			// how many samples passed depth test?
 		OCCLUSION_BINARY,	// depth test passed or not?
 	};
-	enum class IndexBufferFormat : uint8_t
+	enum IndexBufferFormat : uint8_t
 	{
 		UINT16,
 		UINT32,
 	};
-	enum class SubresourceType : uint8_t
+	enum SubresourceType : uint8_t
 	{
 		SRV, // shader resource view
 		UAV, // unordered access view
@@ -315,7 +375,7 @@ namespace wi::graphics
 		DSV, // depth stencil view
 	};
 
-	enum class ShadingRate : uint8_t
+	enum ShadingRate : uint8_t
 	{
 		RATE_1X1,	// Default/full shading rate
 		RATE_1X2,
@@ -328,13 +388,13 @@ namespace wi::graphics
 		RATE_INVALID
 	};
 
-	enum class PredicationOp : uint8_t
+	enum PredicationOp : uint8_t
 	{
 		EQUAL_ZERO,
 		NOT_EQUAL_ZERO,
 	};
 
-	enum class ImageAspect : uint8_t
+	enum ImageAspect : uint8_t
 	{
 		COLOR,
 		DEPTH,
@@ -343,29 +403,29 @@ namespace wi::graphics
 		CHROMINANCE,
 	};
 
-	enum class VideoFrameType : uint8_t
+	enum VideoFrameType : uint8_t
 	{
 		Intra,
 		Predictive,
 	};
 
-	enum class VideoProfile : uint8_t
+	enum VideoProfile : uint8_t
 	{
 		H264,	// AVC
 		H265,	// HEVC
 	};
 
-	enum class ComponentSwizzle : uint8_t
+	enum ComponentSwizzle : uint8_t
 	{
 		R,
 		G,
 		B,
 		A,
-		ZERO,
-		ONE,
+		SWIZZLE_ZERO,
+		SWIZZLE_ONE,
 	};
 
-	enum class ColorSpace : uint8_t
+	enum ColorSpace : uint8_t
 	{
 		SRGB,			// SDR color space (8 or 10 bits per channel)
 		HDR10_ST2084,	// HDR10 color space (10 bits per channel)
@@ -374,7 +434,7 @@ namespace wi::graphics
 
 	// Flags ////////////////////////////////////////////
 
-	enum class ColorWrite
+	enum ColorWrite
 	{
 		DISABLE = 0,
 		ENABLE_RED = 1 << 0,
@@ -384,28 +444,28 @@ namespace wi::graphics
 		ENABLE_ALL = ~0,
 	};
 
-	enum class BindFlag : uint8_t
+	enum BindFlag : uint8_t
 	{
-		NONE = 0,
-		VERTEX_BUFFER = 1 << 0,
-		INDEX_BUFFER = 1 << 1,
-		CONSTANT_BUFFER = 1 << 2,
-		SHADER_RESOURCE = 1 << 3,
+		BIND_NONE = 0,
+		BIND_VERTEX_BUFFER = 1 << 0,
+		BIND_INDEX_BUFFER = 1 << 1,
+		BIND_CONSTANT_BUFFER = 1 << 2,
+		BIND_SHADER_RESOURCE = 1 << 3,
 		RENDER_TARGET = 1 << 4,
 		DEPTH_STENCIL = 1 << 5,
-		UNORDERED_ACCESS = 1 << 6,
+		BIND_UNORDERED_ACCESS = 1 << 6,
 		SHADING_RATE = 1 << 7,
 	};
 
-	enum class ResourceMiscFlag
+	enum ResourceMiscFlag
 	{
-		NONE = 0,
+		RESOURCE_MISC_NONE = 0,
 		TEXTURECUBE = 1 << 0,
 		INDIRECT_ARGS = 1 << 1,
 		BUFFER_RAW = 1 << 2,
 		BUFFER_STRUCTURED = 1 << 3,
 		RAY_TRACING = 1 << 4,
-		PREDICATION = 1 << 5,
+		RESOURCE_MISC_PREDICATION = 1 << 5,
 		TRANSIENT_ATTACHMENT = 1 << 6,	// hint: used in renderpass, without needing to write content to memory (VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT)
 		SPARSE = 1 << 7,	// sparse resource without backing memory allocation
 		ALIASING_BUFFER = 1 << 8,			// memory allocation will be suitable for buffers
@@ -430,9 +490,9 @@ namespace wi::graphics
 		SPARSE_TILE_POOL = ALIASING,
 	};
 
-	enum class GraphicsDeviceCapability
+	enum GraphicsDeviceCapability
 	{
-		NONE = 0,
+		GRAPHICS_DEVICE_CAPABILITY_NONE = 0,
 		TESSELLATION = 1 << 0,
 		CONSERVATIVE_RASTERIZATION = 1 << 1,
 		RASTERIZER_ORDERED_VIEWS = 1 << 2,
@@ -442,7 +502,7 @@ namespace wi::graphics
 		VARIABLE_RATE_SHADING_TIER2 = 1 << 6,
 		MESH_SHADER = 1 << 7,
 		RAYTRACING = 1 << 8,
-		PREDICATION = 1 << 9,
+		GRAPHICS_DEVICE_CAPABILITY_PREDICATION = 1 << 9,
 		SAMPLER_MINMAX = 1 << 10,
 		DEPTH_BOUNDS_TEST = 1 << 11,
 		SPARSE_BUFFER = 1 << 12,
@@ -462,7 +522,7 @@ namespace wi::graphics
 		GENERIC_SPARSE_TILE_POOL = ALIASING_GENERIC,
 	};
 
-	enum class ResourceState
+	enum ResourceState
 	{
 		// Common resource states:
 		UNDEFINED = 0,						// invalid state (don't preserve contents)
@@ -493,17 +553,17 @@ namespace wi::graphics
 		SWAPCHAIN = 1 << 18,				// resource state of swap chain's back buffer texture when it's not rendering
 	};
 
-	enum class RenderPassFlags
+	enum RenderPassFlags
 	{
-		NONE = 0,
+		RENDER_PASS_FLAG_NONE = 0,
 		ALLOW_UAV_WRITES = 1 << 0,			// allows UAV writes to happen within render pass
 		SUSPENDING = 1 << 1,				// suspends the renderpass to be continued in the next submitted command list
 		RESUMING = 1 << 2,					// resumes the renderpass that was suspended in the previously submitted command list
 	};
 
-	enum class VideoDecoderSupportFlags
+	enum VideoDecoderSupportFlags
 	{
-		NONE = 0,
+		VIDEO_DECODER_SUPPORT_NONE = 0,
 		DPB_AND_OUTPUT_COINCIDE = 1 << 0,				// the video decoder supports using the DPB texture as output shader resource. If not supported, then DPB_AND_OUTPUT_DISTINCT must be supported.
 		DPB_AND_OUTPUT_DISTINCT = 1 << 1,				// the video decoder supports outputting to a texture that is not part of the DPB as part of the decode operation. If not supported, then DPB_AND_OUTPUT_COINCIDE must be supported.
 		DPB_INDIVIDUAL_TEXTURES_SUPPORTED = 1 << 2,		// the video decoder supports using a DPB that is not an array texture, so each slot can be an individually allocated texture
@@ -528,15 +588,71 @@ namespace wi::graphics
 
 		struct Element
 		{
-			std::string semantic_name;
+			char* semantic_name = nullptr;
 			uint32_t semantic_index = 0;
 			Format format = Format::UNKNOWN;
 			uint32_t input_slot = 0;
 			uint32_t aligned_byte_offset = APPEND_ALIGNED_ELEMENT;
 			InputClassification input_slot_class = InputClassification::PER_VERTEX_DATA;
 		};
-		wi::vector<Element> elements;
+		Element* elements = nullptr; // stb_ds-backed input layout element array
 	};
+
+	inline void InitInputLayoutElement(InputLayout::Element& element)
+	{
+		element.semantic_name = nullptr;
+		element.semantic_index = 0;
+		element.format = Format::UNKNOWN;
+		element.input_slot = 0;
+		element.aligned_byte_offset = InputLayout::APPEND_ALIGNED_ELEMENT;
+		element.input_slot_class = InputClassification::PER_VERTEX_DATA;
+	}
+	inline void DestroyInputLayoutElement(InputLayout::Element& element)
+	{
+		DestroyCString(element.semantic_name);
+		InitInputLayoutElement(element);
+	}
+	inline void CloneInputLayoutElement(InputLayout::Element& dst, const InputLayout::Element& src)
+	{
+		DestroyInputLayoutElement(dst);
+		dst.semantic_name = CloneCString(src.semantic_name);
+		dst.semantic_index = src.semantic_index;
+		dst.format = src.format;
+		dst.input_slot = src.input_slot;
+		dst.aligned_byte_offset = src.aligned_byte_offset;
+		dst.input_slot_class = src.input_slot_class;
+	}
+	inline void InitInputLayout(InputLayout& input_layout)
+	{
+		input_layout.elements = nullptr;
+	}
+	inline void DestroyInputLayout(InputLayout& input_layout)
+	{
+		if (input_layout.elements != nullptr)
+		{
+			for (size_t i = 0; i < arrlenu(input_layout.elements); ++i)
+			{
+				DestroyInputLayoutElement(input_layout.elements[i]);
+			}
+		}
+		arrfree(input_layout.elements);
+		InitInputLayout(input_layout);
+	}
+	inline void CloneInputLayout(InputLayout& dst, const InputLayout& src)
+	{
+		if (&dst == &src)
+		{
+			return;
+		}
+		DestroyInputLayout(dst);
+		const size_t count = arrlenu(src.elements);
+		arrsetlen(dst.elements, count);
+		for (size_t i = 0; i < count; ++i)
+		{
+			InitInputLayoutElement(dst.elements[i]);
+			CloneInputLayoutElement(dst.elements[i], src.elements[i]);
+		}
+	}
 
 	union ClearValue
 	{
@@ -558,7 +674,7 @@ namespace wi::graphics
 
 	struct TextureDesc
 	{
-		enum class Type : uint8_t
+		enum Type : uint8_t
 		{
 			TEXTURE_1D,
 			TEXTURE_2D,
@@ -566,7 +682,7 @@ namespace wi::graphics
 		} type = Type::TEXTURE_2D;
 		Format format = Format::UNKNOWN;
 		Usage usage = Usage::DEFAULT;
-		BindFlag bind_flags = BindFlag::NONE;
+		BindFlag bind_flags = BindFlag::BIND_NONE;
 		uint32_t width = 1;
 		uint32_t height = 1;
 		uint32_t depth = 1;
@@ -575,7 +691,7 @@ namespace wi::graphics
 		uint32_t sample_count = 1;
 		ClearValue clear = {};
 		Swizzle swizzle;
-		ResourceMiscFlag misc_flags = ResourceMiscFlag::NONE;
+		ResourceMiscFlag misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 		ResourceState layout = ResourceState::SHADER_RESOURCE;
 	};
 
@@ -596,7 +712,7 @@ namespace wi::graphics
 	struct RasterizerState
 	{
 		FillMode fill_mode = FillMode::SOLID;
-		CullMode cull_mode = CullMode::NONE;
+		CullMode cull_mode = CullMode::CULL_NONE;
 		bool front_counter_clockwise = false;
 		int32_t depth_bias = 0;
 		float depth_bias_clamp = 0;
@@ -607,12 +723,25 @@ namespace wi::graphics
 		bool conservative_rasterization_enable = false;
 		uint32_t forced_sample_count = 0;
 	};
-	inline static constexpr RasterizerState default_rasterizerstate;
+	inline void InitRasterizerState(RasterizerState& state)
+	{
+		state.fill_mode = FillMode::SOLID;
+		state.cull_mode = CullMode::CULL_NONE;
+		state.front_counter_clockwise = false;
+		state.depth_bias = 0;
+		state.depth_bias_clamp = 0;
+		state.slope_scaled_depth_bias = 0;
+		state.depth_clip_enable = false;
+		state.multisample_enable = false;
+		state.antialiased_line_enable = false;
+		state.conservative_rasterization_enable = false;
+		state.forced_sample_count = 0;
+	}
 
 	struct DepthStencilState
 	{
 		bool depth_enable = false;
-		DepthWriteMask depth_write_mask = DepthWriteMask::ZERO;
+		DepthWriteMask depth_write_mask = DepthWriteMask::DEPTH_WRITE_ZERO;
 		ComparisonFunc depth_func = ComparisonFunc::NEVER;
 		bool stencil_enable = false;
 		uint8_t stencil_read_mask = 0xff;
@@ -629,7 +758,25 @@ namespace wi::graphics
 		DepthStencilOp back_face;
 		bool depth_bounds_test_enable = false;
 	};
-	inline static constexpr DepthStencilState default_depthstencilstate;
+	inline void InitDepthStencilOp(DepthStencilState::DepthStencilOp& op)
+	{
+		op.stencil_fail_op = StencilOp::KEEP;
+		op.stencil_depth_fail_op = StencilOp::KEEP;
+		op.stencil_pass_op = StencilOp::KEEP;
+		op.stencil_func = ComparisonFunc::NEVER;
+	}
+	inline void InitDepthStencilState(DepthStencilState& state)
+	{
+		state.depth_enable = false;
+		state.depth_write_mask = DepthWriteMask::DEPTH_WRITE_ZERO;
+		state.depth_func = ComparisonFunc::NEVER;
+		state.stencil_enable = false;
+		state.stencil_read_mask = 0xff;
+		state.stencil_write_mask = 0xff;
+		InitDepthStencilOp(state.front_face);
+		InitDepthStencilOp(state.back_face);
+		state.depth_bounds_test_enable = false;
+	}
 
 	struct BlendState
 	{
@@ -649,7 +796,26 @@ namespace wi::graphics
 		};
 		RenderTargetBlendState render_target[8];
 	};
-	inline static constexpr BlendState default_blendstate;
+	inline void InitRenderTargetBlendState(BlendState::RenderTargetBlendState& state)
+	{
+		state.blend_enable = false;
+		state.src_blend = Blend::SRC_ALPHA;
+		state.dest_blend = Blend::INV_SRC_ALPHA;
+		state.blend_op = BlendOp::ADD;
+		state.src_blend_alpha = Blend::ONE;
+		state.dest_blend_alpha = Blend::ONE;
+		state.blend_op_alpha = BlendOp::ADD;
+		state.render_target_write_mask = ColorWrite::ENABLE_ALL;
+	}
+	inline void InitBlendState(BlendState& state)
+	{
+		state.alpha_to_coverage_enable = false;
+		state.independent_blend_enable = false;
+		for (auto& rt : state.render_target)
+		{
+			InitRenderTargetBlendState(rt);
+		}
+	}
 
 	struct GPUBufferDesc
 	{
@@ -658,8 +824,8 @@ namespace wi::graphics
 		uint32_t alignment = 0; // needed for tile pools
 		Usage usage = Usage::DEFAULT;
 		Format format = Format::UNKNOWN; // only needed for typed buffer!
-		BindFlag bind_flags = BindFlag::NONE;
-		ResourceMiscFlag misc_flags = ResourceMiscFlag::NONE;
+		BindFlag bind_flags = BindFlag::BIND_NONE;
+		ResourceMiscFlag misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 	};
 
 	struct GPUQueryHeapDesc
@@ -687,11 +853,11 @@ namespace wi::graphics
 		uint32_t sample_mask = 0xFFFFFFFF;
 	};
 
-	struct GPUBarrier
-	{
-		enum class Type
+		struct GPUBarrier
 		{
-			MEMORY,		// UAV accesses
+			enum Type
+			{
+				MEMORY,		// UAV accesses
 			IMAGE,		// image layout transition
 			BUFFER,		// buffer state transition
 			ALIASING,	// memory aliasing transition
@@ -721,26 +887,31 @@ namespace wi::graphics
 			const GPUResource* resource_before;
 			const GPUResource* resource_after;
 		};
-		union
-		{
-			Memory memory;
-			Image image;
-			Buffer buffer;
-			Aliasing aliasing;
+			union
+			{
+				Memory memory;
+				Image image;
+				Buffer buffer;
+				Aliasing aliasing;
+			};
 		};
-
-		static GPUBarrier Memory(const GPUResource* resource = nullptr)
+		inline GPUBarrier wiGraphicsCreateGPUBarrierMemory(const GPUResource* resource = nullptr)
 		{
-			GPUBarrier barrier;
-			barrier.type = Type::MEMORY;
+			GPUBarrier barrier = {};
+			barrier.type = GPUBarrier::Type::MEMORY;
 			barrier.memory.resource = resource;
 			return barrier;
 		}
-		static GPUBarrier Image(const Texture* texture, ResourceState before, ResourceState after,
-			int mip = -1, int slice = -1, const ImageAspect* aspect = nullptr)
+		inline GPUBarrier wiGraphicsCreateGPUBarrierImage(
+			const Texture* texture,
+			ResourceState before,
+			ResourceState after,
+			int mip = -1,
+			int slice = -1,
+			const ImageAspect* aspect = nullptr)
 		{
-			GPUBarrier barrier;
-			barrier.type = Type::IMAGE;
+			GPUBarrier barrier = {};
+			barrier.type = GPUBarrier::Type::IMAGE;
 			barrier.image.texture = texture;
 			barrier.image.layout_before = before;
 			barrier.image.layout_after = after;
@@ -749,24 +920,23 @@ namespace wi::graphics
 			barrier.image.aspect = aspect;
 			return barrier;
 		}
-		static GPUBarrier Buffer(const GPUBuffer* buffer, ResourceState before, ResourceState after)
+		inline GPUBarrier wiGraphicsCreateGPUBarrierBuffer(const GPUBuffer* buffer, ResourceState before, ResourceState after)
 		{
-			GPUBarrier barrier;
-			barrier.type = Type::BUFFER;
+			GPUBarrier barrier = {};
+			barrier.type = GPUBarrier::Type::BUFFER;
 			barrier.buffer.buffer = buffer;
 			barrier.buffer.state_before = before;
 			barrier.buffer.state_after = after;
 			return barrier;
 		}
-		static GPUBarrier Aliasing(const GPUResource* before, const GPUResource* after)
+		inline GPUBarrier wiGraphicsCreateGPUBarrierAliasing(const GPUResource* before, const GPUResource* after)
 		{
-			GPUBarrier barrier;
-			barrier.type = Type::ALIASING;
+			GPUBarrier barrier = {};
+			barrier.type = GPUBarrier::Type::ALIASING;
 			barrier.aliasing.resource_before = before;
 			barrier.aliasing.resource_after = after;
 			return barrier;
 		}
-	};
 
 	struct SwapChainDesc
 	{
@@ -787,21 +957,24 @@ namespace wi::graphics
 		uint32_t slice_pitch = 0;		// bytes between two depth slices of a texture (3D textures only)
 	};
 
-	struct Rect
-	{
-		int32_t left = 0;	// start width
-		int32_t top = 0;	// start height
-		int32_t right = 0;	// end width
-		int32_t bottom = 0;	// end height
-
-		constexpr void from_viewport(const Viewport& vp)
+		struct Rect
 		{
-			left = int32_t(vp.top_left_x);
-			right = int32_t(vp.top_left_x + vp.width);
-			top = int32_t(vp.top_left_y);
-			bottom = int32_t(vp.top_left_y + vp.height);
+			int32_t left = 0;	// start width
+			int32_t top = 0;	// start height
+			int32_t right = 0;	// end width
+			int32_t bottom = 0;	// end height
+		};
+		inline void wiGraphicsRectFromViewport(Rect* rect, const Viewport* vp)
+		{
+			if (rect == nullptr || vp == nullptr)
+			{
+				return;
+			}
+			rect->left = int32_t(vp->top_left_x);
+			rect->right = int32_t(vp->top_left_x + vp->width);
+			rect->top = int32_t(vp->top_left_y);
+			rect->bottom = int32_t(vp->top_left_y + vp->height);
 		}
-	};
 
 	struct Box
 	{
@@ -845,17 +1018,13 @@ namespace wi::graphics
 	struct Sampler
 	{
 		wi::allocator::shared_ptr<void> internal_state;
-		constexpr bool IsValid() const { return internal_state.IsValid(); }
 
 		SamplerDesc desc;
-
-		const SamplerDesc& GetDesc() const { return desc; }
 	};
 
 	struct Shader
 	{
 		wi::allocator::shared_ptr<void> internal_state;
-		constexpr bool IsValid() const { return internal_state.IsValid(); }
 
 		ShaderStage stage = ShaderStage::Count;
 	};
@@ -863,7 +1032,6 @@ namespace wi::graphics
 	struct GPUResource
 	{
 		wi::allocator::shared_ptr<void> internal_state;
-		constexpr bool IsValid() const { return internal_state.IsValid(); }
 
 		// These are only valid if the resource was created with CPU access (USAGE::UPLOAD or USAGE::READBACK)
 		void* mapped_data = nullptr;	// for buffers, it is a pointer to the buffer data; for textures, it is a pointer to texture data with linear tiling;
@@ -871,32 +1039,19 @@ namespace wi::graphics
 
 		uint32_t sparse_page_size = 0;	// specifies the required alignment of backing allocation for sparse tile pool
 
-		enum class Type : uint8_t
+		enum Type : uint8_t
 		{
 			BUFFER,
 			TEXTURE,
 			RAYTRACING_ACCELERATION_STRUCTURE,
 			UNKNOWN_TYPE,
 		} type = Type::UNKNOWN_TYPE;
-		constexpr bool IsTexture() const { return type == Type::TEXTURE; }
-		constexpr bool IsBuffer() const { return type == Type::BUFFER; }
-		constexpr bool IsAccelerationStructure() const { return type == Type::RAYTRACING_ACCELERATION_STRUCTURE; }
 	};
 
-	struct GPUBuffer final : public GPUResource
-	{
-		GPUBufferDesc desc;
-
-		constexpr const GPUBufferDesc& GetDesc() const { return desc; }
-
-		// Dynamic allocation and destruction of this object is not allowed because virtual table is not used. Placement new is allowed.
-		static void* operator new (size_t) = delete;
-		static void* operator new[](size_t) = delete;
-		static void  operator delete (void*) = delete;
-		static void  operator delete[](void*) = delete;
-		static void* operator new(size_t, void* p) noexcept { return p; }
-		static void* operator new[](size_t, void* p) noexcept { return p; }
-	};
+		struct GPUBuffer final : public GPUResource
+		{
+			GPUBufferDesc desc;
+		};
 
 	struct Texture final : public GPUResource
 	{
@@ -909,31 +1064,19 @@ namespace wi::graphics
 		// These are only valid if texture was created with ResourceMiscFlag::SPARSE flag:
 		const SparseTextureProperties* sparse_properties = nullptr;
 
-#if defined(_WIN32)
-		void* shared_handle = nullptr; /* HANDLE */
-#else
-		int shared_handle = 0;
-#endif
-
-		constexpr const TextureDesc& GetDesc() const { return desc; }
-
-		// Dynamic allocation and destruction of this object is not allowed because virtual table is not used. Placement new is allowed.
-		static void* operator new (size_t) = delete;
-		static void* operator new[](size_t) = delete;
-		static void  operator delete (void*) = delete;
-		static void  operator delete[](void*) = delete;
-		static void* operator new(size_t, void* p) noexcept { return p; }
-		static void* operator new[](size_t, void* p) noexcept { return p; }
-	};
+	#if defined(_WIN32)
+			void* shared_handle = nullptr; /* HANDLE */
+	#else
+			int shared_handle = 0;
+	#endif
+		};
 
 	struct VideoDecoder
 	{
 		wi::allocator::shared_ptr<void> internal_state;
-		constexpr bool IsValid() const { return internal_state.IsValid(); }
 
 		VideoDesc desc;
-		constexpr const VideoDesc& GetDesc() const { return desc; }
-		VideoDecoderSupportFlags support = VideoDecoderSupportFlags::NONE;
+		VideoDecoderSupportFlags support = VideoDecoderSupportFlags::VIDEO_DECODER_SUPPORT_NONE;
 	};
 
 	struct VideoDecodeOperation
@@ -962,10 +1105,54 @@ namespace wi::graphics
 		const Texture* DPB = nullptr; // DPB texture with arraysize = num_references + 1
 		const Texture* output = nullptr; // output of the operation, it should be nullptr if DPB_AND_OUTPUT_COINCIDE is used (because in that case the DPB will be used as output instead of a separate output)
 	};
-
-	struct RenderPassImage
+	inline bool wiGraphicsSamplerIsValid(const Sampler* sampler)
 	{
-		enum class Type
+		return sampler != nullptr && sampler->internal_state.IsValid();
+	}
+	inline const SamplerDesc* wiGraphicsSamplerGetDesc(const Sampler* sampler)
+	{
+		return sampler != nullptr ? &sampler->desc : nullptr;
+	}
+	inline bool wiGraphicsShaderIsValid(const Shader* shader)
+	{
+		return shader != nullptr && shader->internal_state.IsValid();
+	}
+	inline bool wiGraphicsGPUResourceIsValid(const GPUResource* resource)
+	{
+		return resource != nullptr && resource->internal_state.IsValid();
+	}
+	inline bool wiGraphicsGPUResourceIsTexture(const GPUResource* resource)
+	{
+		return resource != nullptr && resource->type == GPUResource::Type::TEXTURE;
+	}
+	inline bool wiGraphicsGPUResourceIsBuffer(const GPUResource* resource)
+	{
+		return resource != nullptr && resource->type == GPUResource::Type::BUFFER;
+	}
+	inline bool wiGraphicsGPUResourceIsAccelerationStructure(const GPUResource* resource)
+	{
+		return resource != nullptr && resource->type == GPUResource::Type::RAYTRACING_ACCELERATION_STRUCTURE;
+	}
+	inline const GPUBufferDesc* wiGraphicsGPUBufferGetDesc(const GPUBuffer* buffer)
+	{
+		return buffer != nullptr ? &buffer->desc : nullptr;
+	}
+	inline const TextureDesc* wiGraphicsTextureGetDesc(const Texture* texture)
+	{
+		return texture != nullptr ? &texture->desc : nullptr;
+	}
+	inline bool wiGraphicsVideoDecoderIsValid(const VideoDecoder* video_decoder)
+	{
+		return video_decoder != nullptr && video_decoder->internal_state.IsValid();
+	}
+	inline const VideoDesc* wiGraphicsVideoDecoderGetDesc(const VideoDecoder* video_decoder)
+	{
+		return video_decoder != nullptr ? &video_decoder->desc : nullptr;
+	}
+
+		struct RenderPassImage
+		{
+		enum Type
 		{
 			RENDERTARGET,
 			DEPTH_STENCIL,
@@ -973,39 +1160,38 @@ namespace wi::graphics
 			RESOLVE_DEPTH,
 			SHADING_RATE_SOURCE
 		} type = Type::RENDERTARGET;
-		enum class LoadOp
+		enum LoadOp
 		{
 			LOAD,
 			CLEAR,
-			DONTCARE,
+			LOADOP_DONTCARE,
 		} loadop = LoadOp::LOAD;
 		const Texture* texture = nullptr;
 		int subresource = -1;
-		enum class StoreOp
+		enum StoreOp
 		{
 			STORE,
-			DONTCARE,
+			STOREOP_DONTCARE,
 		} storeop = StoreOp::STORE;
 		ResourceState layout_before = ResourceState::UNDEFINED;	// layout before the render pass
 		ResourceState layout = ResourceState::UNDEFINED;	// layout within the render pass
 		ResourceState layout_after = ResourceState::UNDEFINED;	// layout after the render pass
-		enum class DepthResolveMode
-		{
-			Min,
-			Max,
-		} depth_resolve_mode = DepthResolveMode::Min;
-
-		static RenderPassImage RenderTarget(
+			enum DepthResolveMode
+			{
+				Min,
+				Max,
+			} depth_resolve_mode = DepthResolveMode::Min;
+		};
+		inline RenderPassImage wiGraphicsCreateRenderPassImageRenderTarget(
 			const Texture* resource,
-			LoadOp load_op = LoadOp::LOAD,
-			StoreOp store_op = StoreOp::STORE,
+			RenderPassImage::LoadOp load_op = RenderPassImage::LoadOp::LOAD,
+			RenderPassImage::StoreOp store_op = RenderPassImage::StoreOp::STORE,
 			ResourceState layout_before = ResourceState::SHADER_RESOURCE,
 			ResourceState layout_after = ResourceState::SHADER_RESOURCE,
-			int subresource_RTV = -1
-		)
+			int subresource_RTV = -1)
 		{
-			RenderPassImage image;
-			image.type = Type::RENDERTARGET;
+			RenderPassImage image = {};
+			image.type = RenderPassImage::Type::RENDERTARGET;
 			image.texture = resource;
 			image.loadop = load_op;
 			image.storeop = store_op;
@@ -1015,19 +1201,17 @@ namespace wi::graphics
 			image.subresource = subresource_RTV;
 			return image;
 		}
-
-		static RenderPassImage DepthStencil(
+		inline RenderPassImage wiGraphicsCreateRenderPassImageDepthStencil(
 			const Texture* resource,
-			LoadOp load_op = LoadOp::LOAD,
-			StoreOp store_op = StoreOp::STORE,
+			RenderPassImage::LoadOp load_op = RenderPassImage::LoadOp::LOAD,
+			RenderPassImage::StoreOp store_op = RenderPassImage::StoreOp::STORE,
 			ResourceState layout_before = ResourceState::DEPTHSTENCIL,
 			ResourceState layout = ResourceState::DEPTHSTENCIL,
 			ResourceState layout_after = ResourceState::DEPTHSTENCIL,
-			int subresource_DSV = -1
-		)
+			int subresource_DSV = -1)
 		{
-			RenderPassImage image;
-			image.type = Type::DEPTH_STENCIL;
+			RenderPassImage image = {};
+			image.type = RenderPassImage::Type::DEPTH_STENCIL;
 			image.texture = resource;
 			image.loadop = load_op;
 			image.storeop = store_op;
@@ -1037,16 +1221,14 @@ namespace wi::graphics
 			image.subresource = subresource_DSV;
 			return image;
 		}
-
-		static RenderPassImage Resolve(
+		inline RenderPassImage wiGraphicsCreateRenderPassImageResolve(
 			const Texture* resource,
 			ResourceState layout_before = ResourceState::SHADER_RESOURCE,
 			ResourceState layout_after = ResourceState::SHADER_RESOURCE,
-			int subresource_SRV = -1
-		)
+			int subresource_SRV = -1)
 		{
-			RenderPassImage image;
-			image.type = Type::RESOLVE;
+			RenderPassImage image = {};
+			image.type = RenderPassImage::Type::RESOLVE;
 			image.texture = resource;
 			image.layout_before = layout_before;
 			image.layout = ResourceState::COPY_DST;
@@ -1054,17 +1236,15 @@ namespace wi::graphics
 			image.subresource = subresource_SRV;
 			return image;
 		}
-
-		static RenderPassImage ResolveDepth(
+		inline RenderPassImage wiGraphicsCreateRenderPassImageResolveDepth(
 			const Texture* resource,
-			DepthResolveMode depth_resolve_mode = DepthResolveMode::Min,
+			RenderPassImage::DepthResolveMode depth_resolve_mode = RenderPassImage::DepthResolveMode::Min,
 			ResourceState layout_before = ResourceState::SHADER_RESOURCE,
 			ResourceState layout_after = ResourceState::SHADER_RESOURCE,
-			int subresource_SRV = -1
-		)
+			int subresource_SRV = -1)
 		{
-			RenderPassImage image;
-			image.type = Type::RESOLVE_DEPTH;
+			RenderPassImage image = {};
+			image.type = RenderPassImage::Type::RESOLVE_DEPTH;
 			image.texture = resource;
 			image.layout_before = layout_before;
 			image.layout = ResourceState::COPY_DST;
@@ -1073,28 +1253,25 @@ namespace wi::graphics
 			image.depth_resolve_mode = depth_resolve_mode;
 			return image;
 		}
-
-		static RenderPassImage ShadingRateSource(
+		inline RenderPassImage wiGraphicsCreateRenderPassImageShadingRateSource(
 			const Texture* resource,
 			ResourceState layout_before = ResourceState::SHADING_RATE_SOURCE,
-			ResourceState layout_after = ResourceState::SHADING_RATE_SOURCE
-		)
+			ResourceState layout_after = ResourceState::SHADING_RATE_SOURCE)
 		{
-			RenderPassImage image;
-			image.type = Type::SHADING_RATE_SOURCE;
+			RenderPassImage image = {};
+			image.type = RenderPassImage::Type::SHADING_RATE_SOURCE;
 			image.texture = resource;
 			image.layout_before = layout_before;
 			image.layout = ResourceState::SHADING_RATE_SOURCE;
 			image.layout_after = layout_after;
 			return image;
 		}
-	};
 
-	struct RenderPassInfo
-	{
-		Format rt_formats[8] = {};
-		uint32_t rt_count = 0;
-		Format ds_format = Format::UNKNOWN;
+		struct RenderPassInfo
+		{
+			Format rt_formats[8] = {};
+			uint32_t rt_count = 0;
+			Format ds_format = Format::UNKNOWN;
 		uint32_t sample_count = 1;
 
 		constexpr uint64_t get_hash() const
@@ -1126,70 +1303,92 @@ namespace wi::graphics
 			hasher.bits.rt_format_6 = (uint64_t)rt_formats[6];
 			hasher.bits.rt_format_7 = (uint64_t)rt_formats[7];
 			hasher.bits.ds_format = (uint64_t)ds_format;
-			hasher.bits.sample_count = (uint64_t)sample_count;
-			return hasher.value;
-		}
-		static constexpr RenderPassInfo from(const RenderPassImage* images, uint32_t image_count)
+				hasher.bits.sample_count = (uint64_t)sample_count;
+				return hasher.value;
+			}
+		};
+		inline RenderPassInfo wiGraphicsCreateRenderPassInfoFromImages(const RenderPassImage* images, uint32_t image_count)
 		{
-			RenderPassInfo info;
-			for (uint32_t i = 0; i < image_count; ++i)
+			RenderPassInfo info = {};
+		for (uint32_t i = 0; i < image_count; ++i)
+		{
+			const RenderPassImage& image = images[i];
+			const TextureDesc* desc = wiGraphicsTextureGetDesc(image.texture);
+			if (desc == nullptr)
 			{
-				const RenderPassImage& image = images[i];
-				const TextureDesc& desc = image.texture->GetDesc();
-				switch (image.type)
-				{
-				case RenderPassImage::Type::RENDERTARGET:
-					info.rt_formats[info.rt_count++] = desc.format;
-					info.sample_count = desc.sample_count;
-					break;
-				case RenderPassImage::Type::DEPTH_STENCIL:
-					info.ds_format = desc.format;
-					info.sample_count = desc.sample_count;
-					break;
-				default:
-					break;
+				continue;
+			}
+			switch (image.type)
+			{
+			case RenderPassImage::Type::RENDERTARGET:
+				info.rt_formats[info.rt_count++] = desc->format;
+				info.sample_count = desc->sample_count;
+				break;
+			case RenderPassImage::Type::DEPTH_STENCIL:
+				info.ds_format = desc->format;
+				info.sample_count = desc->sample_count;
+				break;
+			default:
+				break;
 				}
 			}
 			return info;
 		}
-		static constexpr RenderPassInfo from(const SwapChainDesc& swapchain_desc)
+		inline RenderPassInfo wiGraphicsCreateRenderPassInfoFromSwapChainDesc(const SwapChainDesc* swapchain_desc)
 		{
-			RenderPassInfo info;
-			info.rt_count = 1;
-			info.rt_formats[0] = swapchain_desc.format;
+			RenderPassInfo info = {};
+			if (swapchain_desc != nullptr)
+			{
+				info.rt_count = 1;
+				info.rt_formats[0] = swapchain_desc->format;
+			}
 			return info;
 		}
-	};
 
 	struct GPUQueryHeap
 	{
 		wi::allocator::shared_ptr<void> internal_state;
-		constexpr bool IsValid() const { return internal_state.IsValid(); }
 
 		GPUQueryHeapDesc desc;
-
-		constexpr const GPUQueryHeapDesc& GetDesc() const { return desc; }
 	};
+	inline bool wiGraphicsGPUQueryHeapIsValid(const GPUQueryHeap* query_heap)
+	{
+		return query_heap != nullptr && query_heap->internal_state.IsValid();
+	}
+	inline const GPUQueryHeapDesc* wiGraphicsGPUQueryHeapGetDesc(const GPUQueryHeap* query_heap)
+	{
+		return query_heap != nullptr ? &query_heap->desc : nullptr;
+	}
 
 	struct PipelineState
 	{
 		wi::allocator::shared_ptr<void> internal_state;
-		constexpr bool IsValid() const { return internal_state.IsValid(); }
 
 		PipelineStateDesc desc;
-
-		constexpr const PipelineStateDesc& GetDesc() const { return desc; }
 	};
+	inline bool wiGraphicsPipelineStateIsValid(const PipelineState* pipeline_state)
+	{
+		return pipeline_state != nullptr && pipeline_state->internal_state.IsValid();
+	}
+	inline const PipelineStateDesc* wiGraphicsPipelineStateGetDesc(const PipelineState* pipeline_state)
+	{
+		return pipeline_state != nullptr ? &pipeline_state->desc : nullptr;
+	}
 
 	struct SwapChain
 	{
 		wi::allocator::shared_ptr<void> internal_state;
-		constexpr bool IsValid() const { return internal_state.IsValid(); }
 
 		SwapChainDesc desc;
-
-		constexpr const SwapChainDesc& GetDesc() const { return desc; }
 	};
+	inline bool wiGraphicsSwapChainIsValid(const SwapChain* swapchain)
+	{
+		return swapchain != nullptr && swapchain->internal_state.IsValid();
+	}
+	inline const SwapChainDesc* wiGraphicsSwapChainGetDesc(const SwapChain* swapchain)
+	{
+		return swapchain != nullptr ? &swapchain->desc : nullptr;
+	}
 
 	struct RaytracingAccelerationStructureDesc
 	{
@@ -1204,7 +1403,7 @@ namespace wi::graphics
 		};
 		uint32_t flags = FLAG_EMPTY;
 
-		enum class Type
+		enum Type
 		{
 			BOTTOMLEVEL,
 			TOPLEVEL,
@@ -1223,7 +1422,7 @@ namespace wi::graphics
 				};
 				uint32_t flags = FLAG_EMPTY;
 
-				enum class Type
+				enum Type
 				{
 					TRIANGLES,
 					PROCEDURAL_AABBS,
@@ -1252,7 +1451,7 @@ namespace wi::graphics
 				} aabbs;
 
 			};
-			wi::vector<Geometry> geometries;
+			Geometry* geometries = nullptr; // stb_ds-backed geometry array
 		} bottom_level;
 
 		struct TopLevel
@@ -1279,26 +1478,20 @@ namespace wi::graphics
 			uint32_t count = 0;
 		} top_level;
 	};
-	struct RaytracingAccelerationStructure final : public GPUResource
+		struct RaytracingAccelerationStructure final : public GPUResource
+		{
+			RaytracingAccelerationStructureDesc desc;
+
+			size_t size = 0;
+		};
+	inline const RaytracingAccelerationStructureDesc* wiGraphicsRaytracingAccelerationStructureGetDesc(const RaytracingAccelerationStructure* acceleration_structure)
 	{
-		RaytracingAccelerationStructureDesc desc;
-
-		size_t size = 0;
-
-		constexpr const RaytracingAccelerationStructureDesc& GetDesc() const { return desc; }
-
-		// Dynamic allocation and destruction of this object is not allowed because virtual table is not used. Placement new is allowed.
-		static void* operator new (size_t) = delete;
-		static void* operator new[](size_t) = delete;
-		static void  operator delete (void*) = delete;
-		static void  operator delete[](void*) = delete;
-		static void* operator new(size_t, void* p) noexcept { return p; }
-		static void* operator new[](size_t, void* p) noexcept { return p; }
-	};
+		return acceleration_structure != nullptr ? &acceleration_structure->desc : nullptr;
+	}
 
 	struct ShaderLibrary
 	{
-		enum class Type
+		enum Type
 		{
 			RAYGENERATION,
 			MISS,
@@ -1307,39 +1500,169 @@ namespace wi::graphics
 			INTERSECTION,
 		} type = Type::RAYGENERATION;
 		const Shader* shader = nullptr;
-		std::string function_name;
+		char* function_name = nullptr;
 	};
 	struct ShaderHitGroup
 	{
-		enum class Type
+		enum Type
 		{
 			GENERAL, // raygen or miss
 			TRIANGLES,
 			PROCEDURAL,
 		} type = Type::TRIANGLES;
-		std::string name;
+		char* name = nullptr;
 		uint32_t general_shader = ~0u;
 		uint32_t closest_hit_shader = ~0u;
 		uint32_t any_hit_shader = ~0u;
 		uint32_t intersection_shader = ~0u;
 	};
+	inline void InitRaytracingAccelerationStructureDesc(RaytracingAccelerationStructureDesc& desc)
+	{
+		desc.flags = RaytracingAccelerationStructureDesc::FLAG_EMPTY;
+		desc.type = RaytracingAccelerationStructureDesc::Type::BOTTOMLEVEL;
+		desc.bottom_level.geometries = nullptr;
+		desc.top_level = {};
+	}
+	inline void InitShaderLibrary(ShaderLibrary& desc)
+	{
+		desc.type = ShaderLibrary::Type::RAYGENERATION;
+		desc.shader = nullptr;
+		desc.function_name = nullptr;
+	}
+	inline void DestroyShaderLibrary(ShaderLibrary& desc)
+	{
+		DestroyCString(desc.function_name);
+		InitShaderLibrary(desc);
+	}
+	inline void CloneShaderLibrary(ShaderLibrary& dst, const ShaderLibrary& src)
+	{
+		DestroyShaderLibrary(dst);
+		dst.type = src.type;
+		dst.shader = src.shader;
+		dst.function_name = CloneCString(src.function_name);
+	}
+	inline void InitShaderHitGroup(ShaderHitGroup& desc)
+	{
+		desc.type = ShaderHitGroup::Type::TRIANGLES;
+		desc.name = nullptr;
+		desc.general_shader = ~0u;
+		desc.closest_hit_shader = ~0u;
+		desc.any_hit_shader = ~0u;
+		desc.intersection_shader = ~0u;
+	}
+	inline void DestroyShaderHitGroup(ShaderHitGroup& desc)
+	{
+		DestroyCString(desc.name);
+		InitShaderHitGroup(desc);
+	}
+	inline void CloneShaderHitGroup(ShaderHitGroup& dst, const ShaderHitGroup& src)
+	{
+		DestroyShaderHitGroup(dst);
+		dst.type = src.type;
+		dst.name = CloneCString(src.name);
+		dst.general_shader = src.general_shader;
+		dst.closest_hit_shader = src.closest_hit_shader;
+		dst.any_hit_shader = src.any_hit_shader;
+		dst.intersection_shader = src.intersection_shader;
+	}
+	inline void DestroyRaytracingAccelerationStructureDesc(RaytracingAccelerationStructureDesc& desc)
+	{
+		arrfree(desc.bottom_level.geometries);
+		InitRaytracingAccelerationStructureDesc(desc);
+	}
+	inline void CloneRaytracingAccelerationStructureDesc(RaytracingAccelerationStructureDesc& dst, const RaytracingAccelerationStructureDesc& src)
+	{
+		if (&dst == &src)
+		{
+			return;
+		}
+		DestroyRaytracingAccelerationStructureDesc(dst);
+		dst.flags = src.flags;
+		dst.type = src.type;
+		dst.top_level = src.top_level;
+		const size_t geometry_count = arrlenu(src.bottom_level.geometries);
+		arrsetlen(dst.bottom_level.geometries, geometry_count);
+		for (size_t i = 0; i < geometry_count; ++i)
+		{
+			dst.bottom_level.geometries[i] = src.bottom_level.geometries[i];
+		}
+	}
+
 	struct RaytracingPipelineStateDesc
 	{
-		wi::vector<ShaderLibrary> shader_libraries;
-		wi::vector<ShaderHitGroup> hit_groups;
+		ShaderLibrary* shader_libraries = nullptr; // stb_ds-backed shader library array
+		ShaderHitGroup* hit_groups = nullptr; // stb_ds-backed hit group array
 		uint32_t max_trace_recursion_depth = 1;
 		uint32_t max_attribute_size_in_bytes = 0;
 		uint32_t max_payload_size_in_bytes = 0;
 	};
+	inline void InitRaytracingPipelineStateDesc(RaytracingPipelineStateDesc& desc)
+	{
+		desc.shader_libraries = nullptr;
+		desc.hit_groups = nullptr;
+		desc.max_trace_recursion_depth = 1;
+		desc.max_attribute_size_in_bytes = 0;
+		desc.max_payload_size_in_bytes = 0;
+	}
+	inline void DestroyRaytracingPipelineStateDesc(RaytracingPipelineStateDesc& desc)
+	{
+		if (desc.shader_libraries != nullptr)
+		{
+			for (size_t i = 0; i < arrlenu(desc.shader_libraries); ++i)
+			{
+				DestroyShaderLibrary(desc.shader_libraries[i]);
+			}
+		}
+		if (desc.hit_groups != nullptr)
+		{
+			for (size_t i = 0; i < arrlenu(desc.hit_groups); ++i)
+			{
+				DestroyShaderHitGroup(desc.hit_groups[i]);
+			}
+		}
+		arrfree(desc.shader_libraries);
+		arrfree(desc.hit_groups);
+		InitRaytracingPipelineStateDesc(desc);
+	}
+	inline void CloneRaytracingPipelineStateDesc(RaytracingPipelineStateDesc& dst, const RaytracingPipelineStateDesc& src)
+	{
+		if (&dst == &src)
+		{
+			return;
+		}
+		DestroyRaytracingPipelineStateDesc(dst);
+		const size_t shader_library_count = arrlenu(src.shader_libraries);
+		arrsetlen(dst.shader_libraries, shader_library_count);
+		for (size_t i = 0; i < shader_library_count; ++i)
+		{
+			InitShaderLibrary(dst.shader_libraries[i]);
+			CloneShaderLibrary(dst.shader_libraries[i], src.shader_libraries[i]);
+		}
+		const size_t hit_group_count = arrlenu(src.hit_groups);
+		arrsetlen(dst.hit_groups, hit_group_count);
+		for (size_t i = 0; i < hit_group_count; ++i)
+		{
+			InitShaderHitGroup(dst.hit_groups[i]);
+			CloneShaderHitGroup(dst.hit_groups[i], src.hit_groups[i]);
+		}
+		dst.max_trace_recursion_depth = src.max_trace_recursion_depth;
+		dst.max_attribute_size_in_bytes = src.max_attribute_size_in_bytes;
+		dst.max_payload_size_in_bytes = src.max_payload_size_in_bytes;
+	}
 	struct RaytracingPipelineState
 	{
 		wi::allocator::shared_ptr<void> internal_state;
-		constexpr bool IsValid() const { return internal_state.IsValid(); }
 
 		RaytracingPipelineStateDesc desc;
-
-		constexpr const RaytracingPipelineStateDesc& GetDesc() const { return desc; }
 	};
+	inline bool wiGraphicsRaytracingPipelineStateIsValid(const RaytracingPipelineState* rtpso)
+	{
+		return rtpso != nullptr && rtpso->internal_state.IsValid();
+	}
+	inline const RaytracingPipelineStateDesc* wiGraphicsRaytracingPipelineStateGetDesc(const RaytracingPipelineState* rtpso)
+	{
+		return rtpso != nullptr ? &rtpso->desc : nullptr;
+	}
 
 	struct PipelineHash
 	{
@@ -1395,7 +1718,7 @@ namespace wi::graphics
 		uint32_t height = 1;	// number of tiles to be mapped in Y dimension (texture only)
 		uint32_t depth = 1;		// number of tiles to be mapped in Z dimension (3D texture only)
 	};
-	enum class TileRangeFlags
+	enum TileRangeFlags
 	{
 		None = 0,		// map page to tile memory
 		Null = 1 << 0,	// set page to null
@@ -1654,137 +1977,137 @@ namespace wi::graphics
 	{
 		switch (format)
 		{
-		case wi::graphics::Format::UNKNOWN:
+		case wi::Format::UNKNOWN:
 			return "UNKNOWN";
-		case wi::graphics::Format::R32G32B32A32_FLOAT:
+		case wi::Format::R32G32B32A32_FLOAT:
 			return "R32G32B32A32_FLOAT";
-		case wi::graphics::Format::R32G32B32A32_UINT:
+		case wi::Format::R32G32B32A32_UINT:
 			return "R32G32B32A32_UINT";
-		case wi::graphics::Format::R32G32B32A32_SINT:
+		case wi::Format::R32G32B32A32_SINT:
 			return "R32G32B32A32_SINT";
-		case wi::graphics::Format::R32G32B32_FLOAT:
+		case wi::Format::R32G32B32_FLOAT:
 			return "R32G32B32_FLOAT";
-		case wi::graphics::Format::R32G32B32_UINT:
+		case wi::Format::R32G32B32_UINT:
 			return "R32G32B32_UINT";
-		case wi::graphics::Format::R32G32B32_SINT:
+		case wi::Format::R32G32B32_SINT:
 			return "R32G32B32_SINT";
-		case wi::graphics::Format::R16G16B16A16_FLOAT:
+		case wi::Format::R16G16B16A16_FLOAT:
 			return "R16G16B16A16_FLOAT";
-		case wi::graphics::Format::R16G16B16A16_UNORM:
+		case wi::Format::R16G16B16A16_UNORM:
 			return "R16G16B16A16_UNORM";
-		case wi::graphics::Format::R16G16B16A16_UINT:
+		case wi::Format::R16G16B16A16_UINT:
 			return "R16G16B16A16_UINT";
-		case wi::graphics::Format::R16G16B16A16_SNORM:
+		case wi::Format::R16G16B16A16_SNORM:
 			return "R16G16B16A16_SNORM";
-		case wi::graphics::Format::R16G16B16A16_SINT:
+		case wi::Format::R16G16B16A16_SINT:
 			return "R16G16B16A16_SINT";
-		case wi::graphics::Format::R32G32_FLOAT:
+		case wi::Format::R32G32_FLOAT:
 			return "R32G32_FLOAT";
-		case wi::graphics::Format::R32G32_UINT:
+		case wi::Format::R32G32_UINT:
 			return "R32G32_UINT";
-		case wi::graphics::Format::R32G32_SINT:
+		case wi::Format::R32G32_SINT:
 			return "R32G32_SINT";
-		case wi::graphics::Format::D32_FLOAT_S8X24_UINT:
+		case wi::Format::D32_FLOAT_S8X24_UINT:
 			return "D32_FLOAT_S8X24_UINT";
-		case wi::graphics::Format::R10G10B10A2_UNORM:
+		case wi::Format::R10G10B10A2_UNORM:
 			return "R10G10B10A2_UNORM";
-		case wi::graphics::Format::R10G10B10A2_UINT:
+		case wi::Format::R10G10B10A2_UINT:
 			return "R10G10B10A2_UINT";
-		case wi::graphics::Format::R11G11B10_FLOAT:
+		case wi::Format::R11G11B10_FLOAT:
 			return "R11G11B10_FLOAT";
-		case wi::graphics::Format::R8G8B8A8_UNORM:
+		case wi::Format::R8G8B8A8_UNORM:
 			return "R8G8B8A8_UNORM";
-		case wi::graphics::Format::R8G8B8A8_UNORM_SRGB:
+		case wi::Format::R8G8B8A8_UNORM_SRGB:
 			return "R8G8B8A8_UNORM_SRGB";
-		case wi::graphics::Format::R8G8B8A8_UINT:
+		case wi::Format::R8G8B8A8_UINT:
 			return "R8G8B8A8_UINT";
-		case wi::graphics::Format::R8G8B8A8_SNORM:
+		case wi::Format::R8G8B8A8_SNORM:
 			return "R8G8B8A8_SNORM";
-		case wi::graphics::Format::R8G8B8A8_SINT:
+		case wi::Format::R8G8B8A8_SINT:
 			return "R8G8B8A8_SINT";
-		case wi::graphics::Format::B8G8R8A8_UNORM:
+		case wi::Format::B8G8R8A8_UNORM:
 			return "B8G8R8A8_UNORM";
-		case wi::graphics::Format::B8G8R8A8_UNORM_SRGB:
+		case wi::Format::B8G8R8A8_UNORM_SRGB:
 			return "B8G8R8A8_UNORM_SRGB";
-		case wi::graphics::Format::R16G16_FLOAT:
+		case wi::Format::R16G16_FLOAT:
 			return "R16G16_FLOAT";
-		case wi::graphics::Format::R16G16_UNORM:
+		case wi::Format::R16G16_UNORM:
 			return "R16G16_UNORM";
-		case wi::graphics::Format::R16G16_UINT:
+		case wi::Format::R16G16_UINT:
 			return "R16G16_UINT";
-		case wi::graphics::Format::R16G16_SNORM:
+		case wi::Format::R16G16_SNORM:
 			return "R16G16_SNORM";
-		case wi::graphics::Format::R16G16_SINT:
+		case wi::Format::R16G16_SINT:
 			return "R16G16_SINT";
-		case wi::graphics::Format::D32_FLOAT:
+		case wi::Format::D32_FLOAT:
 			return "D32_FLOAT";
-		case wi::graphics::Format::R32_FLOAT:
+		case wi::Format::R32_FLOAT:
 			return "R32_FLOAT";
-		case wi::graphics::Format::R32_UINT:
+		case wi::Format::R32_UINT:
 			return "R32_UINT";
-		case wi::graphics::Format::R32_SINT:
+		case wi::Format::R32_SINT:
 			return "R32_SINT";
-		case wi::graphics::Format::D24_UNORM_S8_UINT:
+		case wi::Format::D24_UNORM_S8_UINT:
 			return "D24_UNORM_S8_UINT";
-		case wi::graphics::Format::R9G9B9E5_SHAREDEXP:
+		case wi::Format::R9G9B9E5_SHAREDEXP:
 			return "R9G9B9E5_SHAREDEXP";
-		case wi::graphics::Format::R8G8_UNORM:
+		case wi::Format::R8G8_UNORM:
 			return "R8G8_UNORM";
-		case wi::graphics::Format::R8G8_UINT:
+		case wi::Format::R8G8_UINT:
 			return "R8G8_UINT";
-		case wi::graphics::Format::R8G8_SNORM:
+		case wi::Format::R8G8_SNORM:
 			return "R8G8_SNORM";
-		case wi::graphics::Format::R8G8_SINT:
+		case wi::Format::R8G8_SINT:
 			return "R8G8_SINT";
-		case wi::graphics::Format::R16_FLOAT:
+		case wi::Format::R16_FLOAT:
 			return "R16_FLOAT";
-		case wi::graphics::Format::D16_UNORM:
+		case wi::Format::D16_UNORM:
 			return "D16_UNORM";
-		case wi::graphics::Format::R16_UNORM:
+		case wi::Format::R16_UNORM:
 			return "R16_UNORM";
-		case wi::graphics::Format::R16_UINT:
+		case wi::Format::R16_UINT:
 			return "R16_UINT";
-		case wi::graphics::Format::R16_SNORM:
+		case wi::Format::R16_SNORM:
 			return "R16_SNORM";
-		case wi::graphics::Format::R16_SINT:
+		case wi::Format::R16_SINT:
 			return "R16_SINT";
-		case wi::graphics::Format::R8_UNORM:
+		case wi::Format::R8_UNORM:
 			return "R8_UNORM";
-		case wi::graphics::Format::R8_UINT:
+		case wi::Format::R8_UINT:
 			return "R8_UINT";
-		case wi::graphics::Format::R8_SNORM:
+		case wi::Format::R8_SNORM:
 			return "R8_SNORM";
-		case wi::graphics::Format::R8_SINT:
+		case wi::Format::R8_SINT:
 			return "R8_SINT";
-		case wi::graphics::Format::BC1_UNORM:
+		case wi::Format::BC1_UNORM:
 			return "BC1_UNORM";
-		case wi::graphics::Format::BC1_UNORM_SRGB:
+		case wi::Format::BC1_UNORM_SRGB:
 			return "BC1_UNORM_SRGB";
-		case wi::graphics::Format::BC2_UNORM:
+		case wi::Format::BC2_UNORM:
 			return "BC2_UNORM";
-		case wi::graphics::Format::BC2_UNORM_SRGB:
+		case wi::Format::BC2_UNORM_SRGB:
 			return "BC2_UNORM_SRGB";
-		case wi::graphics::Format::BC3_UNORM:
+		case wi::Format::BC3_UNORM:
 			return "BC3_UNORM";
-		case wi::graphics::Format::BC3_UNORM_SRGB:
+		case wi::Format::BC3_UNORM_SRGB:
 			return "BC3_UNORM_SRGB";
-		case wi::graphics::Format::BC4_UNORM:
+		case wi::Format::BC4_UNORM:
 			return "BC4_UNORM";
-		case wi::graphics::Format::BC4_SNORM:
+		case wi::Format::BC4_SNORM:
 			return "BC4_SNORM";
-		case wi::graphics::Format::BC5_UNORM:
+		case wi::Format::BC5_UNORM:
 			return "BC5_UNORM";
-		case wi::graphics::Format::BC5_SNORM:
+		case wi::Format::BC5_SNORM:
 			return "BC5_SNORM";
-		case wi::graphics::Format::BC6H_UF16:
+		case wi::Format::BC6H_UF16:
 			return "BC6H_UF16";
-		case wi::graphics::Format::BC6H_SF16:
+		case wi::Format::BC6H_SF16:
 			return "BC6H_SF16";
-		case wi::graphics::Format::BC7_UNORM:
+		case wi::Format::BC7_UNORM:
 			return "BC7_UNORM";
-		case wi::graphics::Format::BC7_UNORM_SRGB:
+		case wi::Format::BC7_UNORM_SRGB:
 			return "BC7_UNORM_SRGB";
-		case wi::graphics::Format::NV12:
+		case wi::Format::NV12:
 			return "NV12";
 		default:
 			return "";
@@ -1836,17 +2159,17 @@ namespace wi::graphics
 		switch (value)
 		{
 		default:
-		case wi::graphics::ComponentSwizzle::R:
+		case wi::ComponentSwizzle::R:
 			return 'R';
-		case wi::graphics::ComponentSwizzle::G:
+		case wi::ComponentSwizzle::G:
 			return 'G';
-		case wi::graphics::ComponentSwizzle::B:
+		case wi::ComponentSwizzle::B:
 			return 'B';
-		case wi::graphics::ComponentSwizzle::A:
+		case wi::ComponentSwizzle::A:
 			return 'A';
-		case wi::graphics::ComponentSwizzle::ZERO:
+		case wi::ComponentSwizzle::SWIZZLE_ZERO:
 			return '0';
-		case wi::graphics::ComponentSwizzle::ONE:
+		case wi::ComponentSwizzle::SWIZZLE_ONE:
 			return '1';
 		}
 	}
@@ -1900,10 +2223,10 @@ namespace wi::graphics
 				*comp = ComponentSwizzle::A;
 				break;
 			case '0':
-				*comp = ComponentSwizzle::ZERO;
+				*comp = ComponentSwizzle::SWIZZLE_ZERO;
 				break;
 			case '1':
-				*comp = ComponentSwizzle::ONE;
+				*comp = ComponentSwizzle::SWIZZLE_ONE;
 				break;
 			case 0:
 				return swizzle;
@@ -1940,12 +2263,12 @@ namespace wi::graphics
 	{
 		switch (aspect)
 		{
-		case wi::graphics::ImageAspect::COLOR:
-		case wi::graphics::ImageAspect::DEPTH:
-		case wi::graphics::ImageAspect::LUMINANCE:
+		case wi::ImageAspect::COLOR:
+		case wi::ImageAspect::DEPTH:
+		case wi::ImageAspect::LUMINANCE:
 			return 0;
-		case wi::graphics::ImageAspect::STENCIL:
-		case wi::graphics::ImageAspect::CHROMINANCE:
+		case wi::ImageAspect::STENCIL:
+		case wi::ImageAspect::CHROMINANCE:
 			return 1;
 		default:
 			assert(0); // invalid aspect
@@ -2021,12 +2344,12 @@ namespace wi::graphics
 
 	// Creates texture SubresourceData array
 	//	alignment	: it can be used to force GPU-specific rowpitch alignment for linear tile mode (in bytes)
-	inline void CreateTextureSubresourceDatas(const TextureDesc& desc, void* data_ptr, wi::vector<SubresourceData>& subresource_datas, uint32_t alignment = 1)
+	inline void CreateTextureSubresourceDatas(const TextureDesc& desc, void* data_ptr, SubresourceData*& subresource_datas, uint32_t alignment = 1)
 	{
 		const uint32_t bytes_per_block = GetFormatStride(desc.format);
 		const uint32_t pixels_per_block = GetFormatBlockSize(desc.format);
 		const uint32_t mips = GetMipCount(desc);
-		subresource_datas.resize(GetTextureSubresourceCount(desc));
+		arrsetlen(subresource_datas, GetTextureSubresourceCount(desc));
 		size_t subresource_index = 0;
 		size_t subresource_data_offset = 0;
 		for (uint32_t layer = 0; layer < desc.array_size; ++layer)
@@ -2049,9 +2372,9 @@ namespace wi::graphics
 
 
 	// Deprecated, kept for back-compat:
-	struct RenderPassAttachment
-	{
-		enum class Type
+		struct RenderPassAttachment
+		{
+		enum Type
 		{
 			RENDERTARGET,
 			DEPTH_STENCIL,
@@ -2059,40 +2382,39 @@ namespace wi::graphics
 			RESOLVE_DEPTH,
 			SHADING_RATE_SOURCE
 		} type = Type::RENDERTARGET;
-		enum class LoadOp
+		enum LoadOp
 		{
 			LOAD,
 			CLEAR,
-			DONTCARE,
+			LOADOP_DONTCARE,
 		} loadop = LoadOp::LOAD;
 		Texture texture;
 		int subresource = -1;
-		enum class StoreOp
+		enum StoreOp
 		{
 			STORE,
-			DONTCARE,
+			STOREOP_DONTCARE,
 		} storeop = StoreOp::STORE;
 		ResourceState initial_layout = ResourceState::UNDEFINED;	// layout before the render pass
 		ResourceState subpass_layout = ResourceState::UNDEFINED;	// layout within the render pass
 		ResourceState final_layout = ResourceState::UNDEFINED;		// layout after the render pass
-		enum class DepthResolveMode
-		{
-			Min,
-			Max,
-		} depth_resolve_mode = DepthResolveMode::Min;
-
-		static RenderPassAttachment RenderTarget(
+			enum DepthResolveMode
+			{
+				Min,
+				Max,
+			} depth_resolve_mode = DepthResolveMode::Min;
+		};
+		inline RenderPassAttachment wiGraphicsCreateRenderPassAttachmentRenderTarget(
 			const Texture& resource,
-			LoadOp load_op = LoadOp::LOAD,
-			StoreOp store_op = StoreOp::STORE,
+			RenderPassAttachment::LoadOp load_op = RenderPassAttachment::LoadOp::LOAD,
+			RenderPassAttachment::StoreOp store_op = RenderPassAttachment::StoreOp::STORE,
 			ResourceState initial_layout = ResourceState::SHADER_RESOURCE,
 			ResourceState subpass_layout = ResourceState::RENDERTARGET,
 			ResourceState final_layout = ResourceState::SHADER_RESOURCE,
-			int subresource_RTV = -1
-		)
+			int subresource_RTV = -1)
 		{
-			RenderPassAttachment attachment;
-			attachment.type = Type::RENDERTARGET;
+			RenderPassAttachment attachment = {};
+			attachment.type = RenderPassAttachment::Type::RENDERTARGET;
 			attachment.texture = resource;
 			attachment.loadop = load_op;
 			attachment.storeop = store_op;
@@ -2102,19 +2424,17 @@ namespace wi::graphics
 			attachment.subresource = subresource_RTV;
 			return attachment;
 		}
-
-		static RenderPassAttachment DepthStencil(
+		inline RenderPassAttachment wiGraphicsCreateRenderPassAttachmentDepthStencil(
 			const Texture& resource,
-			LoadOp load_op = LoadOp::LOAD,
-			StoreOp store_op = StoreOp::STORE,
+			RenderPassAttachment::LoadOp load_op = RenderPassAttachment::LoadOp::LOAD,
+			RenderPassAttachment::StoreOp store_op = RenderPassAttachment::StoreOp::STORE,
 			ResourceState initial_layout = ResourceState::DEPTHSTENCIL,
 			ResourceState subpass_layout = ResourceState::DEPTHSTENCIL,
 			ResourceState final_layout = ResourceState::DEPTHSTENCIL,
-			int subresource_DSV = -1
-		)
+			int subresource_DSV = -1)
 		{
-			RenderPassAttachment attachment;
-			attachment.type = Type::DEPTH_STENCIL;
+			RenderPassAttachment attachment = {};
+			attachment.type = RenderPassAttachment::Type::DEPTH_STENCIL;
 			attachment.texture = resource;
 			attachment.loadop = load_op;
 			attachment.storeop = store_op;
@@ -2124,33 +2444,29 @@ namespace wi::graphics
 			attachment.subresource = subresource_DSV;
 			return attachment;
 		}
-
-		static RenderPassAttachment Resolve(
+		inline RenderPassAttachment wiGraphicsCreateRenderPassAttachmentResolve(
 			const Texture& resource,
 			ResourceState initial_layout = ResourceState::SHADER_RESOURCE,
 			ResourceState final_layout = ResourceState::SHADER_RESOURCE,
-			int subresource_SRV = -1
-		)
+			int subresource_SRV = -1)
 		{
-			RenderPassAttachment attachment;
-			attachment.type = Type::RESOLVE;
+			RenderPassAttachment attachment = {};
+			attachment.type = RenderPassAttachment::Type::RESOLVE;
 			attachment.texture = resource;
 			attachment.initial_layout = initial_layout;
 			attachment.final_layout = final_layout;
 			attachment.subresource = subresource_SRV;
 			return attachment;
 		}
-
-		static RenderPassAttachment ResolveDepth(
+		inline RenderPassAttachment wiGraphicsCreateRenderPassAttachmentResolveDepth(
 			const Texture& resource,
-			DepthResolveMode depth_resolve_mode = DepthResolveMode::Min,
+			RenderPassAttachment::DepthResolveMode depth_resolve_mode = RenderPassAttachment::DepthResolveMode::Min,
 			ResourceState initial_layout = ResourceState::SHADER_RESOURCE,
 			ResourceState final_layout = ResourceState::SHADER_RESOURCE,
-			int subresource_SRV = -1
-		)
+			int subresource_SRV = -1)
 		{
-			RenderPassAttachment attachment;
-			attachment.type = Type::RESOLVE_DEPTH;
+			RenderPassAttachment attachment = {};
+			attachment.type = RenderPassAttachment::Type::RESOLVE_DEPTH;
 			attachment.texture = resource;
 			attachment.initial_layout = initial_layout;
 			attachment.final_layout = final_layout;
@@ -2158,55 +2474,56 @@ namespace wi::graphics
 			attachment.depth_resolve_mode = depth_resolve_mode;
 			return attachment;
 		}
-
-		static RenderPassAttachment ShadingRateSource(
+		inline RenderPassAttachment wiGraphicsCreateRenderPassAttachmentShadingRateSource(
 			const Texture& resource,
 			ResourceState initial_layout = ResourceState::SHADING_RATE_SOURCE,
-			ResourceState final_layout = ResourceState::SHADING_RATE_SOURCE
-		)
+			ResourceState final_layout = ResourceState::SHADING_RATE_SOURCE)
 		{
-			RenderPassAttachment attachment;
-			attachment.type = Type::SHADING_RATE_SOURCE;
+			RenderPassAttachment attachment = {};
+			attachment.type = RenderPassAttachment::Type::SHADING_RATE_SOURCE;
 			attachment.texture = resource;
 			attachment.initial_layout = initial_layout;
 			attachment.subpass_layout = ResourceState::SHADING_RATE_SOURCE;
 			attachment.final_layout = final_layout;
 			return attachment;
 		}
-
-		constexpr operator RenderPassImage() const
+		inline RenderPassImage wiGraphicsConvertRenderPassAttachmentToImage(const RenderPassAttachment* attachment)
 		{
-			RenderPassImage image;
-			switch (type)
+			RenderPassImage image = {};
+			if (attachment == nullptr)
+			{
+				return image;
+			}
+			switch (attachment->type)
 			{
 			default:
-			case Type::RENDERTARGET:
+			case RenderPassAttachment::Type::RENDERTARGET:
 				image.type = RenderPassImage::Type::RENDERTARGET;
 				break;
-			case Type::DEPTH_STENCIL:
+			case RenderPassAttachment::Type::DEPTH_STENCIL:
 				image.type = RenderPassImage::Type::DEPTH_STENCIL;
 				break;
-			case Type::RESOLVE:
+			case RenderPassAttachment::Type::RESOLVE:
 				image.type = RenderPassImage::Type::RESOLVE;
 				break;
-			case Type::RESOLVE_DEPTH:
+			case RenderPassAttachment::Type::RESOLVE_DEPTH:
 				image.type = RenderPassImage::Type::RESOLVE_DEPTH;
 				break;
-			case Type::SHADING_RATE_SOURCE:
+			case RenderPassAttachment::Type::SHADING_RATE_SOURCE:
 				image.type = RenderPassImage::Type::SHADING_RATE_SOURCE;
 				break;
 			}
-			switch (depth_resolve_mode)
+			switch (attachment->depth_resolve_mode)
 			{
 			default:
-			case DepthResolveMode::Min:
+			case RenderPassAttachment::DepthResolveMode::Min:
 				image.depth_resolve_mode = RenderPassImage::DepthResolveMode::Min;
 				break;
-			case DepthResolveMode::Max:
+			case RenderPassAttachment::DepthResolveMode::Max:
 				image.depth_resolve_mode = RenderPassImage::DepthResolveMode::Max;
 				break;
 			}
-			switch (loadop)
+			switch (attachment->loadop)
 			{
 			case RenderPassAttachment::LoadOp::LOAD:
 				image.loadop = RenderPassImage::LoadOp::LOAD;
@@ -2214,92 +2531,122 @@ namespace wi::graphics
 			case RenderPassAttachment::LoadOp::CLEAR:
 				image.loadop = RenderPassImage::LoadOp::CLEAR;
 				break;
-			case RenderPassAttachment::LoadOp::DONTCARE:
-				image.loadop = RenderPassImage::LoadOp::DONTCARE;
+			case RenderPassAttachment::LoadOp::LOADOP_DONTCARE:
+				image.loadop = RenderPassImage::LoadOp::LOADOP_DONTCARE;
 				break;
 			default:
 				break;
 			}
-			switch (storeop)
+			switch (attachment->storeop)
 			{
 			case RenderPassAttachment::StoreOp::STORE:
 				image.storeop = RenderPassImage::StoreOp::STORE;
 				break;
-			case RenderPassAttachment::StoreOp::DONTCARE:
-				image.storeop = RenderPassImage::StoreOp::DONTCARE;
+			case RenderPassAttachment::StoreOp::STOREOP_DONTCARE:
+				image.storeop = RenderPassImage::StoreOp::STOREOP_DONTCARE;
 				break;
 			default:
 				break;
 			}
-			image.layout_before = initial_layout;
-			image.layout = subpass_layout;
-			image.layout_after = final_layout;
-			image.texture = &texture;
-			image.subresource = subresource;
+			image.layout_before = attachment->initial_layout;
+			image.layout = attachment->subpass_layout;
+			image.layout_after = attachment->final_layout;
+			image.texture = &attachment->texture;
+			image.subresource = attachment->subresource;
 			return image;
 		}
-	};
 	// Deprecated, kept for back-compat:
 	struct RenderPassDesc
 	{
-		enum class Flags
+		enum Flags
 		{
 			EMPTY = 0,
 			ALLOW_UAV_WRITES = 1 << 0,
 		};
 		Flags flags = Flags::EMPTY;
-		wi::vector<RenderPassAttachment> attachments;
+		RenderPassAttachment* attachments = nullptr; // stb_ds-backed render pass attachment array
 	};
 	// Deprecated, kept for back-compat:
 	struct RenderPass
 	{
 		bool valid = false;
 		RenderPassDesc desc;
-
-		constexpr const RenderPassDesc& GetDesc() const { return desc; }
-		constexpr bool IsValid() const { return valid; }
 	};
+	inline const RenderPassDesc* wiGraphicsRenderPassGetDesc(const RenderPass* renderpass)
+	{
+		return renderpass != nullptr ? &renderpass->desc : nullptr;
+	}
+	inline bool wiGraphicsRenderPassIsValid(const RenderPass* renderpass)
+	{
+		return renderpass != nullptr && renderpass->valid;
+	}
+
+	inline void InitRenderPassDesc(RenderPassDesc& desc)
+	{
+		desc.flags = RenderPassDesc::Flags::EMPTY;
+		desc.attachments = nullptr;
+	}
+	inline void DestroyRenderPassDesc(RenderPassDesc& desc)
+	{
+		arrfree(desc.attachments);
+		InitRenderPassDesc(desc);
+	}
+	inline void CloneRenderPassDesc(RenderPassDesc& dst, const RenderPassDesc& src)
+	{
+		if (&dst == &src)
+		{
+			return;
+		}
+		DestroyRenderPassDesc(dst);
+		dst.flags = src.flags;
+		const size_t attachment_count = arrlenu(src.attachments);
+		arrsetlen(dst.attachments, attachment_count);
+		for (size_t i = 0; i < attachment_count; ++i)
+		{
+			dst.attachments[i] = src.attachments[i];
+		}
+	}
 }
 
 template<>
-struct enable_bitmask_operators<wi::graphics::ColorWrite> {
+struct enable_bitmask_operators<wi::ColorWrite> {
 	static const bool enable = true;
 };
 template<>
-struct enable_bitmask_operators<wi::graphics::BindFlag> {
+struct enable_bitmask_operators<wi::BindFlag> {
 	static const bool enable = true;
 };
 template<>
-struct enable_bitmask_operators<wi::graphics::ResourceMiscFlag> {
+struct enable_bitmask_operators<wi::ResourceMiscFlag> {
 	static const bool enable = true;
 };
 template<>
-struct enable_bitmask_operators<wi::graphics::GraphicsDeviceCapability> {
+struct enable_bitmask_operators<wi::GraphicsDeviceCapability> {
 	static const bool enable = true;
 };
 template<>
-struct enable_bitmask_operators<wi::graphics::ResourceState> {
+struct enable_bitmask_operators<wi::ResourceState> {
 	static const bool enable = true;
 };
 template<>
-struct enable_bitmask_operators<wi::graphics::RenderPassDesc::Flags> {
+struct enable_bitmask_operators<wi::RenderPassDesc::Flags> {
 	static const bool enable = true;
 };
 template<>
-struct enable_bitmask_operators<wi::graphics::RenderPassFlags> {
+struct enable_bitmask_operators<wi::RenderPassFlags> {
 	static const bool enable = true;
 };
 template<>
-struct enable_bitmask_operators<wi::graphics::VideoDecoderSupportFlags> {
+struct enable_bitmask_operators<wi::VideoDecoderSupportFlags> {
 	static const bool enable = true;
 };
 
 namespace std
 {
 	template <>
-	struct hash<wi::graphics::PipelineHash>
+	struct hash<wi::PipelineHash>
 	{
-		inline uint64_t operator()(const wi::graphics::PipelineHash& hash) const
+		inline uint64_t operator()(const wi::PipelineHash& hash) const
 		{
 			return hash.get_hash();
 		}

@@ -456,7 +456,7 @@ namespace wi::lua
 
 	int Application_BindLua::IsHDRSupported(lua_State* L)
 	{
-		wi::lua::SSetBool(L, wi::graphics::GetDevice()->IsSwapChainSupportsHDR(&component->swapChain));
+		wi::lua::SSetBool(L, wi::GetDevice()->IsSwapChainSupportsHDR(&component->swapChain));
 		return 1;
 	}
 	int Application_BindLua::SetHDR(lua_State* L)
@@ -471,7 +471,7 @@ namespace wi::lua
 		{
 			component->allow_hdr = wi::lua::SGetBool(L, 1);
 			component->swapChain.desc.allow_hdr = component->allow_hdr;
-			bool success = wi::graphics::GetDevice()->CreateSwapChain(&component->swapChain.desc, nullptr, &component->swapChain);
+			bool success = wi::GetDevice()->CreateSwapChain(&component->swapChain.desc, nullptr, &component->swapChain);
 			assert(success);
 		}
 		else

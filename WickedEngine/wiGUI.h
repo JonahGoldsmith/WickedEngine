@@ -237,7 +237,7 @@ namespace wi::gui
 	public:
 
 		void Update(const wi::Canvas& canvas, float dt);
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const;
 
 		void AddWidget(Widget* widget);
 		void RemoveWidget(Widget* widget);
@@ -327,8 +327,8 @@ namespace wi::gui
 
 		virtual void ResizeLayout() {};
 		virtual void Update(const wi::Canvas& canvas, float dt);
-		virtual void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const;
-		virtual void RenderTooltip(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const;
+		virtual void Render(const wi::Canvas& canvas, wi::CommandList cmd) const;
+		virtual void RenderTooltip(const wi::Canvas& canvas, wi::CommandList cmd) const;
 
 		// last param default: set color for all states
 		//	you can specify a WIDGET_ID here, or your own custom ID if you use your own widget type
@@ -345,7 +345,7 @@ namespace wi::gui
 		XMFLOAT3 scale = XMFLOAT3(1, 1, 1);
 
 		wi::primitive::Hitbox2D hitBox;
-		wi::graphics::Rect scissorRect;
+		wi::Rect scissorRect;
 
 		Widget* parent = nullptr;
 		void AttachTo(Widget* parent);
@@ -354,7 +354,7 @@ namespace wi::gui
 		virtual void Activate();
 		virtual void Deactivate();
 
-		void ApplyScissor(const wi::Canvas& canvas, const wi::graphics::Rect rect, wi::graphics::CommandList cmd, bool constrain_to_parent = true) const;
+		void ApplyScissor(const wi::Canvas& canvas, const wi::Rect rect, wi::CommandList cmd, bool constrain_to_parent = true) const;
 		wi::primitive::Hitbox2D GetPointerHitbox(bool constrained = true) const;
 		XMFLOAT2 GetPointerHighlightPos(const wi::Canvas& canvas) const;
 
@@ -397,7 +397,7 @@ namespace wi::gui
 		void Create(const std::string& name);
 
 		void Update(const wi::Canvas& canvas, float dt) override;
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const override;
 		void SetTheme(const Theme& theme, int id = -1) override;
 		const char* GetWidgetTypeName() const override { return "Button"; }
 
@@ -420,7 +420,7 @@ namespace wi::gui
 	public:
 		void Create(const std::string& name);
 
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const override;
 		const char* GetWidgetTypeName() const override { return "Image"; }
 	};
 
@@ -477,7 +477,7 @@ namespace wi::gui
 		XMFLOAT2 knob_inset_border = {};
 
 		void Update(const wi::Canvas& canvas, float dt) override;
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const override;
 		void SetColor(wi::Color color, int id = -1) override;
 		void SetTheme(const Theme& theme, int id = -1) override;
 		const char* GetWidgetTypeName() const override { return "ScrollBar"; }
@@ -496,7 +496,7 @@ namespace wi::gui
 		void Create(const std::string& name);
 
 		void Update(const wi::Canvas& canvas, float dt) override;
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const override;
 		void SetColor(wi::Color color, int id = -1) override;
 		void SetTheme(const Theme& theme, int id = -1) override;
 		const char* GetWidgetTypeName() const override { return "Label"; }
@@ -551,7 +551,7 @@ namespace wi::gui
 		void SetEnabled(bool val) override;
 		void SetVisible(bool val) override;
 		void Update(const wi::Canvas& canvas, float dt) override;
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const override;
 		void SetColor(wi::Color color, int id = -1) override;
 		void SetTheme(const Theme& theme, int id = -1) override;
 		const char* GetWidgetTypeName() const override { return "TextInputField"; }
@@ -592,8 +592,8 @@ namespace wi::gui
 		void SetRange(float start, float end);
 
 		void Update(const wi::Canvas& canvas, float dt) override;
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
-		void RenderTooltip(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const override;
+		void RenderTooltip(const wi::Canvas& canvas, wi::CommandList cmd) const override;
 		void SetColor(wi::Color color, int id = -1) override;
 		void SetTheme(const Theme& theme, int id = -1) override;
 		const char* GetWidgetTypeName() const override { return "Slider"; }
@@ -619,7 +619,7 @@ namespace wi::gui
 		bool GetCheck() const;
 
 		void Update(const wi::Canvas& canvas, float dt) override;
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const override;
 		const char* GetWidgetTypeName() const override { return "CheckBox"; }
 
 		void OnClick(std::function<void(const EventArgs& args)> func);
@@ -695,7 +695,7 @@ namespace wi::gui
 		void SetInvalidSelectionText(const std::string& text);
 
 		void Update(const wi::Canvas& canvas, float dt) override;
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const override;
 		void SetColor(wi::Color color, int id = -1) override;
 		void SetTheme(const Theme& theme, int id = -1) override;
 		const char* GetWidgetTypeName() const override { return "ComboBox"; }
@@ -834,8 +834,8 @@ namespace wi::gui
 				const wi::Resource& res = widget.sprites[widget.GetState()].textureResource;
 				if (res.IsValid())
 				{
-					const wi::graphics::Texture& tex = res.GetTexture();
-					if (has_flag(tex.desc.misc_flags, wi::graphics::ResourceMiscFlag::TEXTURECUBE))
+					const wi::Texture& tex = res.GetTexture();
+					if (has_flag(tex.desc.misc_flags, wi::ResourceMiscFlag::TEXTURECUBE))
 					{
 						// fixed aspect for cubemap cross:
 						h_aspect = 3.0f / 4.0f;
@@ -933,8 +933,8 @@ namespace wi::gui
 
 		void ResizeLayout() override;
 		void Update(const wi::Canvas& canvas, float dt) override;
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
-		void RenderTooltip(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const override;
+		void RenderTooltip(const wi::Canvas& canvas, wi::CommandList cmd) const override;
 		void SetColor(wi::Color color, int id = -1) override;
 		void SetImage(wi::Resource resource, int id = -1) override;
 		void SetShadowColor(wi::Color color) override;
@@ -970,7 +970,7 @@ namespace wi::gui
 		void ExportLocalization(wi::Localization& localization) const override;
 		void ImportLocalization(const wi::Localization& localization) override;
 
-		wi::graphics::Texture background_overlay;
+		wi::Texture background_overlay;
 	};
 
 	// HSV-Color Picker
@@ -993,7 +993,7 @@ namespace wi::gui
 		void Create(const std::string& name, WindowControls window_controls = WindowControls::ALL);
 
 		void Update(const wi::Canvas& canvas, float dt) override;
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const override;
 		void ResizeLayout() override;
 		void SetColor(wi::Color color, int id = -1) override;
 		void SetImage(wi::Resource resource, int id = -1) override;
@@ -1070,7 +1070,7 @@ namespace wi::gui
 		const Item& GetItem(int index) const;
 
 		void Update(const wi::Canvas& canvas, float dt) override;
-		void Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const override;
+		void Render(const wi::Canvas& canvas, wi::CommandList cmd) const override;
 		void SetColor(wi::Color color, int id = -1) override;
 		void SetTheme(const Theme& theme, int id = -1) override;
 		const char* GetWidgetTypeName() const override { return "TreeList"; }

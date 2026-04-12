@@ -92,6 +92,6 @@ namespace wi
 		XMFLOAT3 debugstartnode = XMFLOAT3(0, 0, 0);
 		XMFLOAT3 debuggoalnode = XMFLOAT3(0, 0, 0);
 		bool debug_waypoints = false; // if true, waypoint voxels will be drawn. Blue = waypoint, Pink = simplified waypoint
-		void debugdraw(const XMFLOAT4X4& ViewProjection, wi::graphics::CommandList cmd) const;
+		void debugdraw(const XMFLOAT4X4& ViewProjection, wi::CommandList cmd) const;
 	};
 }

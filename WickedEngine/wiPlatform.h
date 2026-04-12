@@ -1,5 +1,6 @@
 #pragma once
 // This file includes platform, os specific libraries and supplies common platform specific resources
+#include "EngineConfig.h"
 
 #ifdef _WIN32
 
@@ -35,7 +36,10 @@
 #define PLATFORM_LINUX
 #endif // _WIN32
 
-#ifdef SDL2
+#if defined(SDL3)
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
+#elif defined(SDL2)
 #include <SDL2/SDL.h>
 #include <SDL_vulkan.h>
 #include "sdl2.h"
@@ -54,7 +58,7 @@ namespace wi::platform
 #ifdef _WIN32
 	using window_type = HWND;
 	using error_type = HRESULT;
-#elif defined(SDL2)
+#elif defined(SDL3) || defined(SDL2)
 	using window_type = SDL_Window*;
 	using error_type = int;
 #elif defined(__APPLE__)
@@ -69,6 +73,10 @@ namespace wi::platform
 	{
 #if defined(_WIN32)
 		PostQuitMessage(0);
+#elif defined(SDL3)
+		SDL_Event quit_event;
+		quit_event.type = SDL_EVENT_QUIT;
+		SDL_PushEvent(&quit_event);
 #elif defined(SDL2)
 		SDL_Event quit_event;
 		quit_event.type = SDL_QUIT;
@@ -105,7 +113,11 @@ namespace wi::platform
 #ifdef PLATFORM_LINUX
 		int window_width, window_height;
 		SDL_GetWindowSize(window, &window_width, &window_height);
+#if defined(SDL3)
+		SDL_GetWindowSizeInPixels(window, &dest->width, &dest->height);
+#else
 		SDL_Vulkan_GetDrawableSize(window, &dest->width, &dest->height);
+#endif
 		dest->dpi = ((float)dest->width / (float)window_width) * 96.f;
 #endif // PLATFORM_LINUX
 		
@@ -152,7 +164,11 @@ namespace wi::platform
 		}
 
 #elif defined(PLATFORM_LINUX)
+#if defined(SDL3)
+		SDL_SetWindowFullscreen(window, fullscreen);
+#else
 		SDL_SetWindowFullscreen(window, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+#endif
 #elif defined(__APPLE__)
 		wi::apple::SetWindowFullScreen(window, fullscreen);
 #endif // PLATFORM_WINDOWS_DESKTOP
@@ -164,12 +180,19 @@ namespace wi::platform
 		return (GetWindowLong(window, GWL_STYLE) & WS_OVERLAPPEDWINDOW) == 0;
 #elif defined(PLATFORM_LINUX)
 		auto flags = SDL_GetWindowFlags(window);
+#if defined(SDL3)
+		if (flags & SDL_WINDOW_FULLSCREEN)
+			return true;
+		else
+			return false;
+#else
 		if (flags & SDL_WINDOW_FULLSCREEN_DESKTOP)
 			return true;
 		else if (flags & SDL_WINDOW_FULLSCREEN)
 			return true;
 		else
 			return false;
+#endif
 #elif defined(__APPLE__)
 		return wi::apple::IsWindowFullScreen(window);
 #else

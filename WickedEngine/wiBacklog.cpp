@@ -22,7 +22,7 @@
 #include <fstream>
 #include <chrono>
 
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi::backlog
 {
@@ -463,7 +463,7 @@ namespace wi::backlog
 		}
 		inputField.Render(canvas, cmd);
 
-		wi::graphics::Rect rect;
+		wi::Rect rect;
 		rect.left = 0;
 		rect.right = (int32_t)canvas.GetPhysicalWidth();
 		rect.top = 0;

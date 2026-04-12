@@ -31,7 +31,7 @@ namespace wi
 
 		virtual void FixedUpdate();
 		virtual void Update(float dt);
-		virtual void Draw(wi::graphics::CommandList cmd) const;
+		virtual void Draw(wi::CommandList cmd) const;
 
 		constexpr void SetHidden(bool value = true) { if (value) { _flags |= HIDDEN; } else { _flags &= ~HIDDEN; } }
 		constexpr bool IsHidden() const { return _flags & HIDDEN; }
@@ -48,7 +48,7 @@ namespace wi
 		wi::Resource maskResource;
 		wi::Resource backgroundResource;
 
-		const wi::graphics::Texture* GetTexture() const;
+		const wi::Texture* GetTexture() const;
 
 		struct Anim
 		{
@@ -114,7 +114,7 @@ namespace wi
 		};
 		Anim anim;
 
-		const wi::graphics::Texture* getTexture() const
+		const wi::Texture* getTexture() const
 		{
 			if (textureResource.IsValid())
 			{

@@ -1,0 +1,140 @@
+#pragma once
+
+// Global engine build/config toggles.
+// Edit values in this file to change behavior without passing custom CMake -D definitions.
+
+// Enable memory manager integration hooks in Wicked graphics/shader codepaths.
+#ifndef WI_ENGINECONFIG_ENABLE_MMGR
+#define WI_ENGINECONFIG_ENABLE_MMGR 0
+#endif
+
+// SDL selection used by engine headers:
+#ifndef WI_ENGINECONFIG_USE_SDL3
+#define WI_ENGINECONFIG_USE_SDL3 1
+#endif
+
+#ifndef WI_ENGINECONFIG_USE_SDL2
+#if WI_ENGINECONFIG_USE_SDL3
+#define WI_ENGINECONFIG_USE_SDL2 0
+#else
+#define WI_ENGINECONFIG_USE_SDL2 1
+#endif
+#endif
+
+#if WI_ENGINECONFIG_USE_SDL2 && WI_ENGINECONFIG_USE_SDL3
+#error "EngineConfig.h: WI_ENGINECONFIG_USE_SDL2 and WI_ENGINECONFIG_USE_SDL3 cannot both be 1."
+#endif
+
+// Legacy subset demo backend toggle kept for compatibility:
+#ifndef WI_ENGINECONFIG_SUBSET_USE_DX12
+#define WI_ENGINECONFIG_SUBSET_USE_DX12 0
+#endif
+
+// Subset cube demo backend choice:
+// 0 = Vulkan (including MoltenVK on Apple)
+// 1 = DX12
+// 2 = Metal
+// -1 = Auto (Apple->Metal, Windows+DX12 toggle->DX12, else Vulkan)
+// If you override WI_ENGINECONFIG_SUBSET_BACKEND manually, use a numeric literal.
+// Example: #define WI_ENGINECONFIG_SUBSET_BACKEND 0
+#ifndef WI_ENGINECONFIG_SUBSET_BACKEND_VULKAN
+#define WI_ENGINECONFIG_SUBSET_BACKEND_VULKAN 0
+#endif
+#ifndef WI_ENGINECONFIG_SUBSET_BACKEND_DX12
+#define WI_ENGINECONFIG_SUBSET_BACKEND_DX12 1
+#endif
+#ifndef WI_ENGINECONFIG_SUBSET_BACKEND_METAL
+#define WI_ENGINECONFIG_SUBSET_BACKEND_METAL 2
+#endif
+#ifndef WI_ENGINECONFIG_SUBSET_BACKEND_AUTO
+#define WI_ENGINECONFIG_SUBSET_BACKEND_AUTO -1
+#endif
+
+#ifndef WI_ENGINECONFIG_SUBSET_BACKEND
+#define WI_ENGINECONFIG_SUBSET_BACKEND 0
+#endif
+
+#if WI_ENGINECONFIG_SUBSET_BACKEND < WI_ENGINECONFIG_SUBSET_BACKEND_AUTO || \
+	WI_ENGINECONFIG_SUBSET_BACKEND > WI_ENGINECONFIG_SUBSET_BACKEND_METAL
+#error "EngineConfig.h: WI_ENGINECONFIG_SUBSET_BACKEND must be -1 (Auto), 0 (Vulkan), 1 (DX12), or 2 (Metal)."
+#endif
+
+// Keep CMake-build behavior enabled by default for local builds.
+#ifndef WI_ENGINECONFIG_WICKED_CMAKE_BUILD
+#define WI_ENGINECONFIG_WICKED_CMAKE_BUILD 1
+#endif
+
+// MMGR validation helper:
+// 1 = intentionally leak a small Metal backend allocation so MMGR should assert at shutdown.
+// Set to 0 after verification.
+#ifndef WI_ENGINECONFIG_MMGR_METAL_TEST_LEAK
+#define WI_ENGINECONFIG_MMGR_METAL_TEST_LEAK 0
+#endif
+
+// Subset sample teardown behavior when MMGR is enabled:
+// 1 = skip SDL_Quit() in app shutdown to avoid close-time stalls in platform teardown.
+#ifndef WI_ENGINECONFIG_SUBSET_SKIP_SDL_QUIT
+#define WI_ENGINECONFIG_SUBSET_SKIP_SDL_QUIT 0
+#endif
+
+#if WI_ENGINECONFIG_WICKED_CMAKE_BUILD
+#ifndef WICKED_CMAKE_BUILD
+#define WICKED_CMAKE_BUILD 1
+#endif
+#endif
+
+#if WI_ENGINECONFIG_ENABLE_MMGR
+#ifndef WICKED_MMGR_ENABLED
+#define WICKED_MMGR_ENABLED 1
+#endif
+#endif
+
+#if WI_ENGINECONFIG_USE_SDL3
+#ifndef SDL3
+#define SDL3 1
+#endif
+#endif
+
+#if WI_ENGINECONFIG_USE_SDL2
+#ifndef SDL2
+#define SDL2 1
+#endif
+#endif
+
+#ifndef WICKED_SUBSET_USE_DX12
+#define WICKED_SUBSET_USE_DX12 (WI_ENGINECONFIG_SUBSET_BACKEND == WI_ENGINECONFIG_SUBSET_BACKEND_DX12)
+#endif
+
+#ifndef WICKED_SUBSET_BACKEND_VULKAN
+#define WICKED_SUBSET_BACKEND_VULKAN WI_ENGINECONFIG_SUBSET_BACKEND_VULKAN
+#endif
+
+#ifndef WICKED_SUBSET_BACKEND_DX12
+#define WICKED_SUBSET_BACKEND_DX12 WI_ENGINECONFIG_SUBSET_BACKEND_DX12
+#endif
+
+#ifndef WICKED_SUBSET_BACKEND_METAL
+#define WICKED_SUBSET_BACKEND_METAL WI_ENGINECONFIG_SUBSET_BACKEND_METAL
+#endif
+
+#ifndef WICKED_SUBSET_BACKEND
+#if WI_ENGINECONFIG_SUBSET_BACKEND == WI_ENGINECONFIG_SUBSET_BACKEND_AUTO
+#if defined(__APPLE__)
+#define WICKED_SUBSET_BACKEND WI_ENGINECONFIG_SUBSET_BACKEND_METAL
+#elif WI_ENGINECONFIG_SUBSET_USE_DX12
+#define WICKED_SUBSET_BACKEND WI_ENGINECONFIG_SUBSET_BACKEND_DX12
+#else
+#define WICKED_SUBSET_BACKEND WI_ENGINECONFIG_SUBSET_BACKEND_VULKAN
+#endif
+#else
+#define WICKED_SUBSET_BACKEND WI_ENGINECONFIG_SUBSET_BACKEND
+#endif
+#endif
+
+#ifndef WICKED_SUBSET_USE_METAL
+#define WICKED_SUBSET_USE_METAL (WICKED_SUBSET_BACKEND == WICKED_SUBSET_BACKEND_METAL)
+#endif
+
+#ifndef WICKED_SUBSET_USE_VULKAN
+#define WICKED_SUBSET_USE_VULKAN (WICKED_SUBSET_BACKEND == WICKED_SUBSET_BACKEND_VULKAN)
+#endif

@@ -5,7 +5,7 @@
 #include "wiTextureHelper.h"
 #include "wiProfiler.h"
 
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::enums;
 using namespace wi::scene;
 using namespace wi::ecs;
@@ -88,7 +88,7 @@ namespace wi
 		first_frame = true;
 		DeleteGPUResources();
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		XMUINT2 internalResolution = GetInternalResolution();
 		camera->width = (float)internalResolution.x;
@@ -99,7 +99,7 @@ namespace wi
 		{
 			TextureDesc desc;
 			desc.format = wi::renderer::format_rendertarget_main;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
 			desc.sample_count = 1;
@@ -109,7 +109,7 @@ namespace wi
 			if (getMSAASampleCount() > 1)
 			{
 				desc.sample_count = getMSAASampleCount();
-				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 
 				device->CreateTexture(&desc, nullptr, &rtMain_render);
 				device->SetName(&rtMain_render, "rtMain_render");
@@ -125,10 +125,10 @@ namespace wi
 		{
 			TextureDesc desc;
 			desc.format = wi::renderer::format_idbuffer;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 			if (getMSAASampleCount() > 1)
 			{
-				desc.bind_flags |= BindFlag::UNORDERED_ACCESS;
+				desc.bind_flags |= BindFlag::BIND_UNORDERED_ACCESS;
 			}
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -141,8 +141,8 @@ namespace wi
 			if (getMSAASampleCount() > 1)
 			{
 				desc.sample_count = getMSAASampleCount();
-				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
-				desc.misc_flags = ResourceMiscFlag::NONE;
+				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
+				desc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 				device->CreateTexture(&desc, nullptr, &rtPrimitiveID_render);
 				device->SetName(&rtPrimitiveID_render, "rtPrimitiveID_render");
 			}
@@ -153,7 +153,7 @@ namespace wi
 		}
 		{
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 			desc.format = Format::R16G16_FLOAT;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -164,7 +164,7 @@ namespace wi
 			if (getMSAASampleCount() > 1)
 			{
 				desc.sample_count = getMSAASampleCount();
-				desc.misc_flags = ResourceMiscFlag::NONE;
+				desc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 				device->CreateTexture(&desc, nullptr, &rtParticleDistortion_render);
 				device->SetName(&rtParticleDistortion_render, "rtParticleDistortion_render");
 			}
@@ -175,14 +175,14 @@ namespace wi
 		}
 		{
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = wi::renderer::format_rendertarget_main;
 			desc.width = internalResolution.x / 4;
 			desc.height = internalResolution.y / 4;
 			desc.mip_levels = std::min(8u, (uint32_t)std::log2(std::max(desc.width, desc.height)));
 			device->CreateTextureZeroed(&desc, &rtSceneCopy);
 			device->SetName(&rtSceneCopy, "rtSceneCopy");
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS | BindFlag::RENDER_TARGET; // render target for aliasing
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS | BindFlag::RENDER_TARGET; // render target for aliasing
 			device->CreateTexture(&desc, nullptr, &rtSceneCopy_tmp, &rtPrimitiveID);
 			device->SetName(&rtSceneCopy_tmp, "rtSceneCopy_tmp");
 
@@ -191,7 +191,7 @@ namespace wi
 		}
 		{
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = wi::renderer::format_rendertarget_main;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -201,11 +201,11 @@ namespace wi
 		}
 		{
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = Format::R10G10B10A2_UNORM;
 			desc.width = internalResolution.x / 4;
 			desc.height = internalResolution.y / 4;
-			desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 			device->CreateTexture(&desc, nullptr, &rtGUIBlurredBackground[0]);
 			device->SetName(&rtGUIBlurredBackground[0], "rtGUIBlurredBackground[0]");
 
@@ -223,7 +223,7 @@ namespace wi
 
 			TextureDesc desc;
 			desc.layout = ResourceState::UNORDERED_ACCESS;
-			desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADING_RATE;
+			desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::SHADING_RATE;
 			desc.format = Format::R8_UINT;
 			desc.width = (internalResolution.x + tileSize - 1) / tileSize;
 			desc.height = (internalResolution.y + tileSize - 1) / tileSize;
@@ -247,7 +247,7 @@ namespace wi
 
 			desc.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
 			desc.format = Format::R32_FLOAT;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.sample_count = 1;
 			desc.mip_levels = 5;
 			device->CreateTexture(&desc, nullptr, &depthBuffer_Copy);
@@ -270,7 +270,7 @@ namespace wi
 		}
 		{
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = Format::R32_FLOAT;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -299,7 +299,7 @@ namespace wi
 			desc.format = Format::R8G8B8A8_UNORM;
 			desc.sample_count = 1;
 			desc.usage = Usage::DEFAULT;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.layout = ResourceState::SHADER_RESOURCE;
 
 			device->CreateTexture(&desc, nullptr, &debugUAV);
@@ -334,7 +334,7 @@ namespace wi
 
 	void RenderPath3D::Update(float dt)
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		RenderPath2D::Update(dt);
 
@@ -360,7 +360,7 @@ namespace wi
 
 	void RenderPath3D::PreRender()
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		if (rtMain_render.desc.sample_count != msaaSampleCount)
 		{
@@ -411,7 +411,7 @@ namespace wi
 		}
 		else if (wi::renderer::GetTemporalAAEnabled() && wi::renderer::GetWireframeMode() == wi::renderer::WIREFRAME_DISABLED)
 		{
-			const XMFLOAT4& halton = wi::math::GetHaltonSequence(wi::graphics::GetDevice()->GetFrameCount() % 256);
+			const XMFLOAT4& halton = wi::math::GetHaltonSequence(wi::GetDevice()->GetFrameCount() % 256);
 			camera->jitter.x = (halton.x * 2 - 1) / (float)internalResolution.x;
 			camera->jitter.y = (halton.y * 2 - 1) / (float)internalResolution.y;
 			if (!temporalAAResources.IsValid())
@@ -511,7 +511,7 @@ namespace wi
 			if (!rtWaterRipple.IsValid())
 			{
 				TextureDesc desc;
-				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 				desc.format = Format::R16G16_FLOAT;
 				desc.width = internalResolution.x / 8;
 				desc.height = internalResolution.y / 8;
@@ -549,7 +549,7 @@ namespace wi
 		if (!first_frame && wi::renderer::IsMeshShaderAllowed() && wi::renderer::IsMeshletOcclusionCullingEnabled())
 		{
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = Format::R16_UNORM;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -591,7 +591,7 @@ namespace wi
 			{
 				TextureDesc desc;
 				desc.format = Format::R16G16_FLOAT;
-				desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS | BindFlag::RENDER_TARGET;
+				desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS | BindFlag::RENDER_TARGET;
 				desc.width = internalResolution.x;
 				desc.height = internalResolution.y;
 				desc.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
@@ -610,7 +610,7 @@ namespace wi
 			if (!rtShadow.IsValid())
 			{
 				TextureDesc desc;
-				desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+				desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 				desc.format = Format::R8_UNORM;
 				desc.array_size = 16;
 				desc.width = internalResolution.x;
@@ -830,7 +830,7 @@ namespace wi
 		}
 		prerender_happened = false;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		wi::jobsystem::context ctx;
 
 		CommandList cmd_copypages;
@@ -850,7 +850,7 @@ namespace wi
 		wi::renderer::ProcessDeferredTextureRequests(cmd); // Execute it first thing in the frame here, on main thread, to not allow other thread steal it and execute on different command list!
 		CommandList cmd_prepareframe = cmd;
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			wi::renderer::BindCameraCB(
 				*camera,
@@ -861,8 +861,8 @@ namespace wi
 			wi::renderer::UpdateRenderData(visibility_main, frameCB, cmd);
 
 			GPUBarrier barriers[] = {
-				GPUBarrier::Image(&debugUAV, debugUAV.desc.layout, ResourceState::UNORDERED_ACCESS),
-				GPUBarrier::Aliasing(&rtPostprocess, &rtPrimitiveID),
+				wiGraphicsCreateGPUBarrierImage(&debugUAV, debugUAV.desc.layout, ResourceState::UNORDERED_ACCESS),
+				wiGraphicsCreateGPUBarrierAliasing(&rtPostprocess, &rtPrimitiveID),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 
@@ -929,7 +929,7 @@ namespace wi
 		CommandList cmd_maincamera_prepass = cmd;
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			wi::renderer::BindCameraCB(
 				*camera,
@@ -951,7 +951,7 @@ namespace wi
 			}
 
 			RenderPassImage rp[] = {
-				RenderPassImage::DepthStencil(
+				wiGraphicsCreateRenderPassImageDepthStencil(
 					&depthBuffer_Main,
 					RenderPassImage::LoadOp::CLEAR,
 					RenderPassImage::StoreOp::STORE,
@@ -959,7 +959,7 @@ namespace wi
 					ResourceState::DEPTHSTENCIL,
 					ResourceState::DEPTHSTENCIL
 				),
-				RenderPassImage::RenderTarget(
+				wiGraphicsCreateRenderPassImageRenderTarget(
 					&rtPrimitiveID_render,
 					RenderPassImage::LoadOp::CLEAR,
 					RenderPassImage::StoreOp::STORE,
@@ -972,7 +972,7 @@ namespace wi
 			device->EventBegin("Opaque Z-prepass", cmd);
 			auto range = wi::profiler::BeginRangeGPU("Z-Prepass", cmd);
 
-			wi::graphics::Rect scissor = GetScissorInternalResolution();
+			wi::Rect scissor = GetScissorInternalResolution();
 			device->BindScissorRects(1, &scissor, cmd);
 
 			Viewport vp;
@@ -1022,7 +1022,7 @@ namespace wi
 		CommandList cmd_maincamera_compute_effects = cmd;
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			for (size_t i = 0; i < scene->videos.GetCount(); ++i)
 			{
@@ -1148,7 +1148,7 @@ namespace wi
 			cmd_occlusionculling = cmd;
 			wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
 
-				GraphicsDevice* device = wi::graphics::GetDevice();
+				GraphicsDevice* device = wi::GetDevice();
 
 				device->EventBegin("Occlusion Culling", cmd);
 				ScopedGPUProfiling("Occlusion Culling", cmd);
@@ -1163,11 +1163,11 @@ namespace wi
 				wi::renderer::OcclusionCulling_Reset(visibility_main, cmd); // must be outside renderpass!
 
 				RenderPassImage rp[] = {
-					RenderPassImage::DepthStencil(&depthBuffer_Main),
+					wiGraphicsCreateRenderPassImageDepthStencil(&depthBuffer_Main),
 				};
 				device->RenderPassBegin(rp, arraysize(rp), &scene->queryHeap, cmd);
 
-				wi::graphics::Rect scissor = GetScissorInternalResolution();
+				wi::Rect scissor = GetScissorInternalResolution();
 				device->BindScissorRects(1, &scissor, cmd);
 
 				Viewport vp;
@@ -1191,7 +1191,7 @@ namespace wi
 			cmd = device->BeginCommandList();
 			wi::jobsystem::Execute(ctx, [cmd, this](wi::jobsystem::JobArgs args) {
 
-				GraphicsDevice* device = wi::graphics::GetDevice();
+				GraphicsDevice* device = wi::GetDevice();
 
 				wi::renderer::BindCameraCB(
 					camera_reflection,
@@ -1204,7 +1204,7 @@ namespace wi
 				auto range = wi::profiler::BeginRangeGPU("Planar Reflections Z-Prepass", cmd);
 
 				RenderPassImage rp[] = {
-					RenderPassImage::DepthStencil(
+					wiGraphicsCreateRenderPassImageDepthStencil(
 						&depthBuffer_Reflection,
 						RenderPassImage::LoadOp::CLEAR,
 						RenderPassImage::StoreOp::STORE,
@@ -1319,7 +1319,7 @@ namespace wi
 			cmd = device->BeginCommandList();
 			wi::jobsystem::Execute(ctx, [cmd, this](wi::jobsystem::JobArgs args) {
 
-				GraphicsDevice* device = wi::graphics::GetDevice();
+				GraphicsDevice* device = wi::GetDevice();
 
 				wi::renderer::BindCameraCB(
 					camera_reflection,
@@ -1339,15 +1339,15 @@ namespace wi
 				auto range = wi::profiler::BeginRangeGPU("Planar Reflections", cmd);
 
 				RenderPassImage rp[] = {
-					RenderPassImage::RenderTarget(
+					wiGraphicsCreateRenderPassImageRenderTarget(
 						&rtReflection,
 						RenderPassImage::LoadOp::CLEAR,
-						RenderPassImage::StoreOp::DONTCARE,
+						RenderPassImage::StoreOp::STOREOP_DONTCARE,
 						ResourceState::RENDERTARGET,
 						ResourceState::RENDERTARGET
 					),
-					RenderPassImage::Resolve(&rtReflection_resolved),
-					RenderPassImage::DepthStencil(
+					wiGraphicsCreateRenderPassImageResolve(&rtReflection_resolved),
+					wiGraphicsCreateRenderPassImageDepthStencil(
 						&depthBuffer_Reflection,
 						RenderPassImage::LoadOp::LOAD,
 						RenderPassImage::StoreOp::STORE,
@@ -1409,7 +1409,7 @@ namespace wi
 		device->WaitCommandList(cmd, cmd_maincamera_compute_effects);
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			device->EventBegin("Opaque Scene", cmd);
 
 			wi::renderer::BindCameraCB(
@@ -1452,7 +1452,7 @@ namespace wi
 
 			if (wi::renderer::GetRaytracedShadowsEnabled() || wi::renderer::GetScreenSpaceShadowsEnabled())
 			{
-				GPUBarrier barrier = GPUBarrier::Image(&rtShadow, rtShadow.desc.layout, ResourceState::SHADER_RESOURCE);
+				GPUBarrier barrier = wiGraphicsCreateGPUBarrierImage(&rtShadow, rtShadow.desc.layout, ResourceState::SHADER_RESOURCE);
 				device->Barrier(&barrier, 1, cmd);
 			}
 
@@ -1470,7 +1470,7 @@ namespace wi
 			vp.height = (float)depthBuffer_Main.GetDesc().height;
 			device->BindViewports(1, &vp, cmd);
 
-			wi::graphics::Rect scissor = GetScissorInternalResolution();
+			wi::Rect scissor = GetScissorInternalResolution();
 			device->BindScissorRects(1, &scissor, cmd);
 
 			if (getOutlineEnabled())
@@ -1481,17 +1481,17 @@ namespace wi
 				if (getMSAASampleCount() > 1)
 				{
 					RenderPassImage rp[] = {
-						RenderPassImage::RenderTarget(&rtOutlineSource_MSAA, RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::DONTCARE, ResourceState::RENDERTARGET, ResourceState::RENDERTARGET),
-						RenderPassImage::DepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::LOAD),
-						RenderPassImage::Resolve(&rtOutlineSource)
+						wiGraphicsCreateRenderPassImageRenderTarget(&rtOutlineSource_MSAA, RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::STOREOP_DONTCARE, ResourceState::RENDERTARGET, ResourceState::RENDERTARGET),
+						wiGraphicsCreateRenderPassImageDepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::LOAD),
+						wiGraphicsCreateRenderPassImageResolve(&rtOutlineSource)
 					};
 					device->RenderPassBegin(rp, arraysize(rp), cmd);
 				}
 				else
 				{
 					RenderPassImage rp[] = {
-						RenderPassImage::RenderTarget(&rtOutlineSource, RenderPassImage::LoadOp::CLEAR),
-						RenderPassImage::DepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::LOAD)
+						wiGraphicsCreateRenderPassImageRenderTarget(&rtOutlineSource, RenderPassImage::LoadOp::CLEAR),
+						wiGraphicsCreateRenderPassImageDepthStencil(&depthBuffer_Main, RenderPassImage::LoadOp::LOAD)
 					};
 					device->RenderPassBegin(rp, arraysize(rp), cmd);
 				}
@@ -1509,15 +1509,15 @@ namespace wi
 
 			RenderPassImage rp[4] = {};
 			uint32_t rp_count = 0;
-			rp[rp_count++] = RenderPassImage::RenderTarget(
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageRenderTarget(
 				&rtMain_render,
 				visibility_shading_in_compute ? RenderPassImage::LoadOp::LOAD : RenderPassImage::LoadOp::CLEAR
 			);
 			if (device->CheckCapability(GraphicsDeviceCapability::VARIABLE_RATE_SHADING_TIER2) && rtShadingRate.IsValid())
 			{
-				rp[rp_count++] = RenderPassImage::ShadingRateSource(&rtShadingRate, ResourceState::UNORDERED_ACCESS, ResourceState::UNORDERED_ACCESS);
+				rp[rp_count++] = wiGraphicsCreateRenderPassImageShadingRateSource(&rtShadingRate, ResourceState::UNORDERED_ACCESS, ResourceState::UNORDERED_ACCESS);
 			}
-			rp[rp_count++] = RenderPassImage::DepthStencil(
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageDepthStencil(
 				&depthBuffer_Main,
 				RenderPassImage::LoadOp::LOAD,
 				RenderPassImage::StoreOp::STORE,
@@ -1580,7 +1580,7 @@ namespace wi
 
 			if (rtAO.IsValid())
 			{
-				device->Barrier(GPUBarrier::Aliasing(&rtAO, &rtParticleDistortion), cmd);
+				device->Barrier(wiGraphicsCreateGPUBarrierAliasing(&rtAO, &rtParticleDistortion), cmd);
 			}
 
 			device->EventEnd(cmd);
@@ -1643,7 +1643,7 @@ namespace wi
 				device->WaitCommandList(cmd, cmd_weathereffect);
 			}
 			wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
-				GraphicsDevice* device = wi::graphics::GetDevice();
+				GraphicsDevice* device = wi::GetDevice();
 				device->EventBegin("Opaque Scene (weather blend / MSAA resolve)", cmd);
 
 				wi::renderer::BindCameraCB(
@@ -1660,10 +1660,10 @@ namespace wi
 
 				RenderPassImage rp[4] = {};
 				uint32_t rp_count = 0;
-				rp[rp_count++] = RenderPassImage::RenderTarget(&rtMain_render, RenderPassImage::LoadOp::LOAD);
+				rp[rp_count++] = wiGraphicsCreateRenderPassImageRenderTarget(&rtMain_render, RenderPassImage::LoadOp::LOAD);
 				if (getMSAASampleCount() > 1)
 				{
-					rp[rp_count++] = RenderPassImage::Resolve(&rtMain);
+					rp[rp_count++] = wiGraphicsCreateRenderPassImageResolve(&rtMain);
 				}
 				device->RenderPassBegin(rp, rp_count, cmd);
 
@@ -1719,7 +1719,7 @@ namespace wi
 		}
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			wi::renderer::BindCameraCB(
 				*camera,
@@ -1743,8 +1743,8 @@ namespace wi
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
 			RenderPostprocessChain(cmd);
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
-			device->Barrier(GPUBarrier::Image(&debugUAV, ResourceState::UNORDERED_ACCESS, debugUAV.desc.layout), cmd);
+			GraphicsDevice* device = wi::GetDevice();
+			device->Barrier(wiGraphicsCreateGPUBarrierImage(&debugUAV, ResourceState::UNORDERED_ACCESS, debugUAV.desc.layout), cmd);
 		});
 
 		cmd = device->BeginCommandList(QUEUE_COPY);
@@ -1762,7 +1762,7 @@ namespace wi
 
 	void RenderPath3D::Compose(CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		device->EventBegin("RenderPath3D::Compose", cmd);
 
 		wi::image::Params fx;
@@ -1802,7 +1802,7 @@ namespace wi
 	{
 		if (rtAO.IsValid())
 		{
-			GetDevice()->Barrier(GPUBarrier::Aliasing(&rtParticleDistortion, &rtAO), cmd);
+			GetDevice()->Barrier(wiGraphicsCreateGPUBarrierAliasing(&rtParticleDistortion, &rtAO), cmd);
 		}
 
 		if (getAOEnabled())
@@ -1927,7 +1927,7 @@ namespace wi
 
 			lightShaftsFadeFactor = wi::math::Lerp(lightShaftsFadeFactor, targetFadeFactor, 1.0f - exp(-fadeSpeed * scene->dt));
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			device->EventBegin("Light Shafts", cmd);
 
@@ -1938,9 +1938,9 @@ namespace wi
 				if (getMSAASampleCount() > 1)
 				{
 					RenderPassImage rp[] = {
-						RenderPassImage::RenderTarget(&rtSun[0], RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::DONTCARE),
-						RenderPassImage::Resolve(&rtSun_resolved),
-						RenderPassImage::DepthStencil(
+						wiGraphicsCreateRenderPassImageRenderTarget(&rtSun[0], RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::STOREOP_DONTCARE),
+						wiGraphicsCreateRenderPassImageResolve(&rtSun_resolved),
+						wiGraphicsCreateRenderPassImageDepthStencil(
 							&depthBuffer_Main,
 							RenderPassImage::LoadOp::LOAD,
 							RenderPassImage::StoreOp::STORE,
@@ -1955,7 +1955,7 @@ namespace wi
 				else
 				{
 					RenderPassImage rp[] = {
-						RenderPassImage::DepthStencil(
+						wiGraphicsCreateRenderPassImageDepthStencil(
 							&depthBuffer_Main,
 							RenderPassImage::LoadOp::LOAD,
 							RenderPassImage::StoreOp::STORE,
@@ -1963,7 +1963,7 @@ namespace wi
 							ResourceState::DEPTHSTENCIL,
 							ResourceState::DEPTHSTENCIL
 						),
-						RenderPassImage::RenderTarget(&rtSun[0], RenderPassImage::LoadOp::CLEAR),
+						wiGraphicsCreateRenderPassImageRenderTarget(&rtSun[0], RenderPassImage::LoadOp::CLEAR),
 					};
 					device->RenderPassBegin(rp, arraysize(rp), cmd);
 					texture_fullres = &rtSun[0];
@@ -1974,7 +1974,7 @@ namespace wi
 				vp.height = (float)depthBuffer_Main.GetDesc().height;
 				device->BindViewports(1, &vp, cmd);
 
-				wi::graphics::Rect scissor = GetScissorInternalResolution();
+				wi::Rect scissor = GetScissorInternalResolution();
 				device->BindScissorRects(1, &scissor, cmd);
 
 				wi::renderer::DrawSun(cmd);
@@ -2011,10 +2011,10 @@ namespace wi
 		{
 			auto range = wi::profiler::BeginRangeGPU("Volumetric Lights", cmd);
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			RenderPassImage rp[] = {
-				RenderPassImage::RenderTarget(&rtVolumetricLights, RenderPassImage::LoadOp::CLEAR),
+				wiGraphicsCreateRenderPassImageRenderTarget(&rtVolumetricLights, RenderPassImage::LoadOp::CLEAR),
 			};
 			device->RenderPassBegin(rp, arraysize(rp), cmd);
 
@@ -2032,15 +2032,15 @@ namespace wi
 	}
 	void RenderPath3D::RenderSceneMIPChain(CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		auto range = wi::profiler::BeginRangeGPU("Scene MIP Chain", cmd);
 		device->EventBegin("RenderSceneMIPChain", cmd);
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Aliasing(&rtPrimitiveID, &rtSceneCopy_tmp),
-				GPUBarrier::Image(&rtSceneCopy_tmp, rtSceneCopy_tmp.desc.layout, ResourceState::UNORDERED_ACCESS),
+				wiGraphicsCreateGPUBarrierAliasing(&rtPrimitiveID, &rtSceneCopy_tmp),
+				wiGraphicsCreateGPUBarrierImage(&rtSceneCopy_tmp, rtSceneCopy_tmp.desc.layout, ResourceState::UNORDERED_ACCESS),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 			device->ClearUAV(&rtSceneCopy_tmp, 0, cmd);
@@ -2048,27 +2048,27 @@ namespace wi
 
 		wi::renderer::Postprocess_Downsample4x(rtMain, rtSceneCopy, cmd);
 
-		device->Barrier(GPUBarrier::Image(&rtSceneCopy_tmp, ResourceState::UNORDERED_ACCESS, rtSceneCopy_tmp.desc.layout), cmd);
+		device->Barrier(wiGraphicsCreateGPUBarrierImage(&rtSceneCopy_tmp, ResourceState::UNORDERED_ACCESS, rtSceneCopy_tmp.desc.layout), cmd);
 
 		wi::renderer::MIPGEN_OPTIONS mipopt;
 		mipopt.gaussian_temp = &rtSceneCopy_tmp;
 		wi::renderer::GenerateMipChain(rtSceneCopy, wi::renderer::MIPGENFILTER_GAUSSIAN, cmd, mipopt);
 
-		device->Barrier(GPUBarrier::Aliasing(&rtSceneCopy_tmp, &rtPrimitiveID), cmd);
+		device->Barrier(wiGraphicsCreateGPUBarrierAliasing(&rtSceneCopy_tmp, &rtPrimitiveID), cmd);
 
 		device->EventEnd(cmd);
 		wi::profiler::EndRange(range);
 	}
 	void RenderPath3D::RenderTransparents(CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		// Water ripple rendering:
 		if (!scene->waterRipples.empty())
 		{
-			device->Barrier(GPUBarrier::Aliasing(&rtParticleDistortion, &rtWaterRipple), cmd);
+			device->Barrier(wiGraphicsCreateGPUBarrierAliasing(&rtParticleDistortion, &rtWaterRipple), cmd);
 			RenderPassImage rp[] = {
-				RenderPassImage::RenderTarget(&rtWaterRipple, RenderPassImage::LoadOp::CLEAR),
+				wiGraphicsCreateRenderPassImageRenderTarget(&rtWaterRipple, RenderPassImage::LoadOp::CLEAR),
 			};
 			device->RenderPassBegin(rp, arraysize(rp), cmd);
 
@@ -2086,8 +2086,8 @@ namespace wi
 			// Save the pre-alpha for FSR2 reactive mask:
 			//	Note that rtFSR temp resource is always larger or equal to rtMain, so CopyTexture is used instead of CopyResource!
 			GPUBarrier barriers[] = {
-				GPUBarrier::Image(&rtMain, rtMain.desc.layout, ResourceState::COPY_SRC),
-				GPUBarrier::Image(&rtFSR[1], rtFSR->desc.layout, ResourceState::COPY_DST),
+				wiGraphicsCreateGPUBarrierImage(&rtMain, rtMain.desc.layout, ResourceState::COPY_SRC),
+				wiGraphicsCreateGPUBarrierImage(&rtFSR[1], rtFSR->desc.layout, ResourceState::COPY_DST),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 			device->CopyTexture(
@@ -2104,7 +2104,7 @@ namespace wi
 
 		wi::renderer::UpdateGaussianSplatsForCamera(*scene, *camera, cmd);
 
-		wi::graphics::Rect scissor = GetScissorInternalResolution();
+		wi::Rect scissor = GetScissorInternalResolution();
 		device->BindScissorRects(1, &scissor, cmd);
 
 		Viewport vp;
@@ -2118,9 +2118,9 @@ namespace wi
 		uint32_t rp_count = 0;
 		if (getMSAASampleCount() > 1)
 		{
-			rp[rp_count++] = RenderPassImage::RenderTarget(&rtMain_render, RenderPassImage::LoadOp::LOAD);
-			rp[rp_count++] = RenderPassImage::Resolve(&rtMain);
-			rp[rp_count++] = RenderPassImage::DepthStencil(
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageRenderTarget(&rtMain_render, RenderPassImage::LoadOp::LOAD);
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageResolve(&rtMain);
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageDepthStencil(
 				&depthBuffer_Main,
 				RenderPassImage::LoadOp::LOAD,
 				RenderPassImage::StoreOp::STORE,
@@ -2132,8 +2132,8 @@ namespace wi
 		else
 		{
 
-			rp[rp_count++] = RenderPassImage::RenderTarget(&rtMain_render, RenderPassImage::LoadOp::LOAD);
-			rp[rp_count++] = RenderPassImage::DepthStencil(
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageRenderTarget(&rtMain_render, RenderPassImage::LoadOp::LOAD);
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageDepthStencil(
 				&depthBuffer_Main,
 				RenderPassImage::LoadOp::LOAD,
 				RenderPassImage::StoreOp::STORE,
@@ -2264,15 +2264,15 @@ namespace wi
 		{
 			if (rtWaterRipple.IsValid())
 			{
-				device->Barrier(GPUBarrier::Aliasing(&rtWaterRipple, &rtParticleDistortion), cmd);
+				device->Barrier(wiGraphicsCreateGPUBarrierAliasing(&rtWaterRipple, &rtParticleDistortion), cmd);
 			}
 
 			if (getMSAASampleCount() > 1)
 			{
 				RenderPassImage rp[] = {
-					RenderPassImage::RenderTarget(&rtParticleDistortion_render, RenderPassImage::LoadOp::CLEAR),
-					RenderPassImage::Resolve(&rtParticleDistortion),
-					RenderPassImage::DepthStencil(
+					wiGraphicsCreateRenderPassImageRenderTarget(&rtParticleDistortion_render, RenderPassImage::LoadOp::CLEAR),
+					wiGraphicsCreateRenderPassImageResolve(&rtParticleDistortion),
+					wiGraphicsCreateRenderPassImageDepthStencil(
 						&depthBuffer_Main,
 						RenderPassImage::LoadOp::LOAD,
 						RenderPassImage::StoreOp::STORE,
@@ -2286,8 +2286,8 @@ namespace wi
 			else
 			{
 				RenderPassImage rp[] = {
-					RenderPassImage::RenderTarget(&rtParticleDistortion, RenderPassImage::LoadOp::CLEAR),
-					RenderPassImage::DepthStencil(
+					wiGraphicsCreateRenderPassImageRenderTarget(&rtParticleDistortion, RenderPassImage::LoadOp::CLEAR),
+					wiGraphicsCreateRenderPassImageDepthStencil(
 						&depthBuffer_Main,
 						RenderPassImage::LoadOp::LOAD,
 						RenderPassImage::StoreOp::STORE,
@@ -2314,7 +2314,7 @@ namespace wi
 	}
 	void RenderPath3D::RenderPostprocessChain(CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		wi::renderer::BindCommonResources(cmd);
 		wi::renderer::BindCameraCB(*camera, camera_previous, camera_reflection, cmd);
@@ -2324,7 +2324,7 @@ namespace wi
 		const Texture* rt_write = &rtPostprocess;
 
 		// rtPostprocess aliasing transition:
-		device->Barrier(GPUBarrier::Aliasing(&rtPrimitiveID, &rtPostprocess), cmd);
+		device->Barrier(wiGraphicsCreateGPUBarrierAliasing(&rtPrimitiveID, &rtPostprocess), cmd);
 
 		// 1.) HDR post process chain
 		{
@@ -2578,7 +2578,7 @@ namespace wi
 				desc.width = camera.render_to_texture.resolution.x;
 				desc.height = camera.render_to_texture.resolution.y;
 				desc.format = wi::renderer::format_rendertarget_main;
-				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 				desc.mip_levels = GetMipCount(desc.width, desc.height);
 				bool success = device->CreateTexture(&desc, nullptr, &camera.render_to_texture.rendertarget_render);
 				assert(success);
@@ -2616,7 +2616,7 @@ namespace wi
 				}
 
 				desc.format = wi::renderer::format_depthbuffer_main;
-				desc.bind_flags = BindFlag::DEPTH_STENCIL | BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::DEPTH_STENCIL | BindFlag::BIND_SHADER_RESOURCE;
 				desc.layout = ResourceState::SHADER_RESOURCE;
 				success = device->CreateTexture(&desc, nullptr, &camera.render_to_texture.depthstencil);
 				assert(success);
@@ -2625,7 +2625,7 @@ namespace wi
 				if (camera.render_to_texture.sample_count > 1)
 				{
 					desc.sample_count = 1;
-					desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+					desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 					desc.layout = ResourceState::SHADER_RESOURCE;
 					desc.format = Format::R32_FLOAT;
 					success = device->CreateTexture(&desc, nullptr, &camera.render_to_texture.depthstencil_resolved);
@@ -2686,7 +2686,7 @@ namespace wi
 					camera,
 					cmd
 				);
-				wi::graphics::Rect scissor;
+				wi::Rect scissor;
 				scissor.right = (int32_t)camera.render_to_texture.depthstencil.desc.width;
 				scissor.bottom = (int32_t)camera.render_to_texture.depthstencil.desc.height;
 				device->BindScissorRects(1, &scissor, cmd);
@@ -2697,7 +2697,7 @@ namespace wi
 				// prepass:
 				{
 					RenderPassImage rp[] = {
-						RenderPassImage::DepthStencil(&camera.render_to_texture.depthstencil, RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::STORE, camera.render_to_texture.depthstencil.desc.layout, ResourceState::DEPTHSTENCIL, ResourceState::SHADER_RESOURCE),
+						wiGraphicsCreateRenderPassImageDepthStencil(&camera.render_to_texture.depthstencil, RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::STORE, camera.render_to_texture.depthstencil.desc.layout, ResourceState::DEPTHSTENCIL, ResourceState::SHADER_RESOURCE),
 					};
 					device->RenderPassBegin(rp, arraysize(rp), cmd);
 					wi::renderer::DrawScene(
@@ -2724,14 +2724,14 @@ namespace wi
 					uint32_t rp_count = 0;
 					if (camera.render_to_texture.rendertarget_MSAA.IsValid())
 					{
-						rp[rp_count++] = RenderPassImage::RenderTarget(&camera.render_to_texture.rendertarget_MSAA, RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::DONTCARE, ResourceState::RENDERTARGET, ResourceState::RENDERTARGET);
-						rp[rp_count++] = RenderPassImage::Resolve(&camera.render_to_texture.rendertarget_render, ResourceState::SHADER_RESOURCE, ResourceState::SHADER_RESOURCE, 0);
+						rp[rp_count++] = wiGraphicsCreateRenderPassImageRenderTarget(&camera.render_to_texture.rendertarget_MSAA, RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::STOREOP_DONTCARE, ResourceState::RENDERTARGET, ResourceState::RENDERTARGET);
+						rp[rp_count++] = wiGraphicsCreateRenderPassImageResolve(&camera.render_to_texture.rendertarget_render, ResourceState::SHADER_RESOURCE, ResourceState::SHADER_RESOURCE, 0);
 					}
 					else
 					{
-						rp[rp_count++] = RenderPassImage::RenderTarget(&camera.render_to_texture.rendertarget_render, RenderPassImage::LoadOp::CLEAR);
+						rp[rp_count++] = wiGraphicsCreateRenderPassImageRenderTarget(&camera.render_to_texture.rendertarget_render, RenderPassImage::LoadOp::CLEAR);
 					}
-					rp[rp_count++] = RenderPassImage::DepthStencil(&camera.render_to_texture.depthstencil, RenderPassImage::LoadOp::LOAD, RenderPassImage::StoreOp::DONTCARE, ResourceState::SHADER_RESOURCE, ResourceState::DEPTHSTENCIL, camera.render_to_texture.depthstencil.desc.layout);
+					rp[rp_count++] = wiGraphicsCreateRenderPassImageDepthStencil(&camera.render_to_texture.depthstencil, RenderPassImage::LoadOp::LOAD, RenderPassImage::StoreOp::STOREOP_DONTCARE, ResourceState::SHADER_RESOURCE, ResourceState::DEPTHSTENCIL, camera.render_to_texture.depthstencil.desc.layout);
 					device->RenderPassBegin(rp, rp_count, cmd);
 					wi::renderer::DrawScene(
 						visibility,
@@ -2787,7 +2787,7 @@ namespace wi
 			return;
 
 		TextureDesc desc;
-		desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS | BindFlag::RENDER_TARGET; // render target binding for aliasing (in case resource heap tier < 2)
+		desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS | BindFlag::RENDER_TARGET; // render target binding for aliasing (in case resource heap tier < 2)
 		desc.format = Format::R8_UNORM;
 		desc.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
 
@@ -2835,7 +2835,7 @@ namespace wi
 			break;
 		}
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		assert(ComputeTextureMemorySizeInBytes(desc) <= ComputeTextureMemorySizeInBytes(rtParticleDistortion.desc)); // aliasing check
 		device->CreateTexture(&desc, nullptr, &rtAO, &rtParticleDistortion); // aliasing!
 		device->SetName(&rtAO, "rtAO");
@@ -2846,13 +2846,13 @@ namespace wi
 
 		if (value)
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			XMUINT2 internalResolution = GetInternalResolution();
 			if (internalResolution.x == 0 || internalResolution.y == 0)
 				return;
 
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = Format::R16G16B16A16_FLOAT;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -2873,13 +2873,13 @@ namespace wi
 
 		if (value)
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			XMUINT2 internalResolution = GetInternalResolution();
 			if (internalResolution.x == 0 || internalResolution.y == 0)
 				return;
 
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = Format::R16G16B16A16_FLOAT;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -2900,13 +2900,13 @@ namespace wi
 
 		if (value)
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			XMUINT2 internalResolution = GetInternalResolution();
 			if (internalResolution.x == 0 || internalResolution.y == 0)
 				return;
 
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = Format::R16G16B16A16_FLOAT;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -2926,13 +2926,13 @@ namespace wi
 
 		if (value)
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			XMUINT2 internalResolution = GetInternalResolution();
 			if (internalResolution.x == 0 || internalResolution.y == 0)
 				return;
 
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = Format::R16G16B16A16_FLOAT;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -2953,12 +2953,12 @@ namespace wi
 
 		if (resolutionScale < 1.0f && fsrEnabled)
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			if (GetPhysicalWidth() == 0 || GetPhysicalHeight() == 0)
 				return;
 
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = wi::renderer::format_rendertarget_main;
 			desc.width = GetPhysicalWidth();
 			desc.height = GetPhysicalHeight();
@@ -2983,7 +2983,7 @@ namespace wi
 
 		if (fsr2Enabled)
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			if (GetPhysicalWidth() == 0 || GetPhysicalHeight() == 0)
 				return;
 
@@ -2995,7 +2995,7 @@ namespace wi
 			wi::renderer::CreateFSR2Resources(fsr2Resources, GetInternalResolution(), displayResolution);
 
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.format = wi::renderer::format_rendertarget_main;
 			desc.width = displayResolution.x;
 			desc.height = displayResolution.y;
@@ -3021,7 +3021,7 @@ namespace wi
 	}
 	void RenderPath3D::setFSR2Preset(FSR2_Preset preset)
 	{
-		wi::graphics::SamplerDesc desc = wi::renderer::GetSampler(wi::enums::SAMPLER_OBJECTSHADER)->GetDesc();
+		wi::SamplerDesc desc = wi::renderer::GetSampler(wi::enums::SAMPLER_OBJECTSHADER)->GetDesc();
 		switch (preset)
 		{
 		default:
@@ -3071,7 +3071,7 @@ namespace wi
 
 		if (value)
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			XMUINT2 internalResolution = GetInternalResolution();
 			if (internalResolution.x == 0 || internalResolution.y == 0)
 				return;
@@ -3087,8 +3087,8 @@ namespace wi
 			device->CreateTexture(&desc, nullptr, &rtReflection);
 			device->SetName(&rtReflection, "rtReflection");
 
-			desc.misc_flags = ResourceMiscFlag::NONE;
-			desc.bind_flags = BindFlag::DEPTH_STENCIL | BindFlag::SHADER_RESOURCE;
+			desc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
+			desc.bind_flags = BindFlag::DEPTH_STENCIL | BindFlag::BIND_SHADER_RESOURCE;
 			desc.format = wi::renderer::format_depthbuffer_main;
 			desc.layout = ResourceState::SHADER_RESOURCE;
 			device->CreateTexture(&desc, nullptr, &depthBuffer_Reflection);
@@ -3097,12 +3097,12 @@ namespace wi
 
 			desc.sample_count = 1;
 			desc.format = wi::renderer::format_rendertarget_main;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 			device->CreateTexture(&desc, nullptr, &rtReflection_resolved);
 			device->SetName(&rtReflection_resolved, "rtReflection_resolved");
 
 			desc.format = Format::R16_UNORM;
-			desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_SHADER_RESOURCE;
 			device->CreateTexture(&desc, nullptr, &depthBuffer_Reflection_resolved);
 			device->SetName(&depthBuffer_Reflection_resolved, "depthBuffer_Reflection_resolved");
 
@@ -3139,14 +3139,14 @@ namespace wi
 
 		if (value)
 		{
-			const GraphicsDevice* device = wi::graphics::GetDevice();
+			const GraphicsDevice* device = wi::GetDevice();
 			const XMUINT2 internalResolution = GetInternalResolution();
 			if (internalResolution.x == 0 || internalResolution.y == 0)
 				return;
 
 			TextureDesc desc;
 			desc.format = Format::R16G16B16A16_FLOAT;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.width = internalResolution.x / 2;
 			desc.height = internalResolution.y / 2;
 			device->CreateTexture(&desc, nullptr, &rtVolumetricLights);
@@ -3163,13 +3163,13 @@ namespace wi
 
 		if (value)
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			XMUINT2 internalResolution = GetInternalResolution();
 			if (internalResolution.x == 0 || internalResolution.y == 0)
 				return;
 
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 			desc.format = wi::renderer::format_rendertarget_main;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -3177,7 +3177,7 @@ namespace wi
 			device->CreateTexture(&desc, nullptr, &rtSun[0]);
 			device->SetName(&rtSun[0], "rtSun[0]");
 
-			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			desc.sample_count = 1;
 			desc.width = internalResolution.x / 4;
 			desc.height = internalResolution.y / 4;
@@ -3188,7 +3188,7 @@ namespace wi
 
 			if (getMSAASampleCount() > 1)
 			{
-				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 				desc.width = internalResolution.x;
 				desc.height = internalResolution.y;
 				desc.sample_count = 1;
@@ -3210,13 +3210,13 @@ namespace wi
 
 		if (value)
 		{
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 			XMUINT2 internalResolution = GetInternalResolution();
 			if (internalResolution.x == 0 || internalResolution.y == 0)
 				return;
 
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 			desc.format = Format::R32_FLOAT;
 			desc.width = internalResolution.x;
 			desc.height = internalResolution.y;
@@ -3244,7 +3244,7 @@ namespace wi
 	{
 		TextureDesc desc = rtMain_render.GetDesc();
 		desc.format = Format::R8G8B8A8_UNORM;
-		desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+		desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 		Texture tex;
 		GraphicsDevice* device = GetDevice();
 		bool success = device->CreateTexture(&desc, nullptr, &tex);
@@ -3260,9 +3260,9 @@ namespace wi
 
 		CommandList cmd = device->BeginCommandList();
 		RenderPassImage rp[] = {
-			RenderPassImage::RenderTarget(&tex, RenderPassImage::LoadOp::CLEAR),
-			RenderPassImage::DepthStencil(GetDepthStencil()),
-			RenderPassImage::Resolve(&tex_resolved),
+			wiGraphicsCreateRenderPassImageRenderTarget(&tex, RenderPassImage::LoadOp::CLEAR),
+			wiGraphicsCreateRenderPassImageDepthStencil(GetDepthStencil()),
+			wiGraphicsCreateRenderPassImageResolve(&tex_resolved),
 		};
 		device->RenderPassBegin(rp, tex_resolved.IsValid() ? 3 : 2, cmd);
 		Viewport vp;

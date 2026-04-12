@@ -8,18 +8,18 @@ namespace wi
 	struct GPUBVH
 	{
 		// Scene BVH intersection resources:
-		wi::graphics::GPUBuffer bvhNodeBuffer;
-		wi::graphics::GPUBuffer bvhParentBuffer;
-		wi::graphics::GPUBuffer bvhFlagBuffer;
-		wi::graphics::GPUBuffer primitiveCounterBuffer;
-		wi::graphics::GPUBuffer primitiveIDBuffer;
-		wi::graphics::GPUBuffer primitiveBuffer;
-		wi::graphics::GPUBuffer primitiveMortonBuffer;
+		wi::GPUBuffer bvhNodeBuffer;
+		wi::GPUBuffer bvhParentBuffer;
+		wi::GPUBuffer bvhFlagBuffer;
+		wi::GPUBuffer primitiveCounterBuffer;
+		wi::GPUBuffer primitiveIDBuffer;
+		wi::GPUBuffer primitiveBuffer;
+		wi::GPUBuffer primitiveMortonBuffer;
 		uint32_t primitiveCapacity = 0;
 		bool IsValid() const { return primitiveCounterBuffer.IsValid(); }
 
 		void Update(const wi::scene::Scene& scene);
-		void Build(const wi::scene::Scene& scene, wi::graphics::CommandList cmd) const;
+		void Build(const wi::scene::Scene& scene, wi::CommandList cmd) const;
 
 		void Clear();
 

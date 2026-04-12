@@ -31,7 +31,7 @@ namespace wi
 		std::function<void()> onFade = [] {};
 		bool fadeEventTriggeredThisFrame = false;
 		bool crossFadeTextureSaveRequired = false;
-		wi::graphics::Texture crossFadeTexture;
+		wi::Texture crossFadeTexture;
 
 		FadeManager()
 		{

@@ -11,7 +11,7 @@
 #include "logo.h"
 #include "waterripple.h"
 
-using namespace wi::graphics;
+using namespace wi;
 
 // from Utility/samplerBlueNoiseErrorDistribution_128x128_OptimizedFor_2d2d2d2d_1spp.cpp
 extern float samplerBlueNoiseErrorDistribution_128x128_OptimizedFor_2d2d2d2d_1spp(int pixel_i, int pixel_j, int sampleIndex, int sampleDimension);
@@ -35,13 +35,13 @@ namespace wi::texturehelper
 		HELPERTEXTURE_CHECKERBOARD,
 		HELPERTEXTURE_COUNT
 	};
-	wi::graphics::Texture helperTextures[HELPERTEXTURE_COUNT];
+	wi::Texture helperTextures[HELPERTEXTURE_COUNT];
 
 	void Initialize()
 	{
 		wi::Timer timer;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		// Logo
 		{
@@ -103,7 +103,7 @@ namespace wi::texturehelper
 			texDesc.format = Format::R8G8B8A8_UNORM;
 			texDesc.sample_count = 1;
 			texDesc.usage = Usage::DEFAULT;
-			texDesc.bind_flags = BindFlag::SHADER_RESOURCE;
+			texDesc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			texDesc.misc_flags = ResourceMiscFlag::TEXTURECUBE;
 
 			SubresourceData pData[6];
@@ -155,8 +155,8 @@ namespace wi::texturehelper
 			desc.height = 64;
 			desc.mip_levels = 7;
 			desc.format = Format::BC5_UNORM;
-			desc.swizzle = { ComponentSwizzle::R,ComponentSwizzle::G,ComponentSwizzle::ONE,ComponentSwizzle::ONE };
-			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.swizzle = { ComponentSwizzle::R,ComponentSwizzle::G,ComponentSwizzle::SWIZZLE_ONE,ComponentSwizzle::SWIZZLE_ONE };
+			desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 
 			const uint32_t data_stride = GetFormatStride(desc.format);
 			const uint32_t block_size = GetFormatBlockSize(desc.format);
@@ -268,7 +268,7 @@ namespace wi::texturehelper
 	{
 		if (data == nullptr)
 			return false;
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		TextureDesc desc;
 		desc.width = width;
@@ -277,7 +277,7 @@ namespace wi::texturehelper
 		desc.array_size = 1;
 		desc.format = format;
 		desc.sample_count = 1;
-		desc.bind_flags = BindFlag::SHADER_RESOURCE;
+		desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 		desc.swizzle = swizzle;
 
 		SubresourceData InitData;
@@ -478,7 +478,7 @@ namespace wi::texturehelper
 		return texture;
 	}
 
-	wi::graphics::Texture CreateLensDistortionNormalMap(
+	wi::Texture CreateLensDistortionNormalMap(
 		uint32_t width,
 		uint32_t height,
 		const XMFLOAT2& uv_start,

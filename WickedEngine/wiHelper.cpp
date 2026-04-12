@@ -192,12 +192,12 @@ namespace wi::helper
 		return MessageBoxResult::Cancel;
 	}
 
-	std::string screenshot(const wi::graphics::SwapChain& swapchain, const std::string& name)
+	std::string screenshot(const wi::SwapChain& swapchain, const std::string& name)
 	{
-		return screenshot(wi::graphics::GetDevice()->GetBackBuffer(&swapchain));
+		return screenshot(wi::GetDevice()->GetBackBuffer(&swapchain));
 	}
 
-	std::string screenshot(const wi::graphics::Texture& texture, const std::string& name)
+	std::string screenshot(const wi::Texture& texture, const std::string& name)
 	{
 		std::string directory;
 		if (name.empty())
@@ -228,11 +228,11 @@ namespace wi::helper
 		return "";
 	}
 
-	bool saveTextureToMemory(const wi::graphics::Texture& texture, wi::vector<uint8_t>& texturedata)
+	bool saveTextureToMemory(const wi::Texture& texture, wi::vector<uint8_t>& texturedata)
 	{
-		using namespace wi::graphics;
+		using namespace wi;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		TextureDesc desc = texture.GetDesc();
 
@@ -240,8 +240,8 @@ namespace wi::helper
 		TextureDesc staging_desc = desc;
 		staging_desc.usage = Usage::READBACK;
 		staging_desc.layout = ResourceState::COPY_DST;
-		staging_desc.bind_flags = BindFlag::NONE;
-		staging_desc.misc_flags = ResourceMiscFlag::NONE;
+		staging_desc.bind_flags = BindFlag::BIND_NONE;
+		staging_desc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 		bool success = device->CreateTexture(&staging_desc, nullptr, &stagingTex);
 		assert(success);
 
@@ -249,7 +249,7 @@ namespace wi::helper
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Image(&texture,texture.desc.layout,ResourceState::COPY_SRC),
+				wiGraphicsCreateGPUBarrierImage(&texture,texture.desc.layout,ResourceState::COPY_SRC),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -258,7 +258,7 @@ namespace wi::helper
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Image(&texture,ResourceState::COPY_SRC,texture.desc.layout),
+				wiGraphicsCreateGPUBarrierImage(&texture,ResourceState::COPY_SRC,texture.desc.layout),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -314,9 +314,9 @@ namespace wi::helper
 		return stagingTex.mapped_data != nullptr;
 	}
 
-	bool saveTextureToMemoryFile(const wi::graphics::Texture& texture, const std::string& fileExtension, wi::vector<uint8_t>& filedata)
+	bool saveTextureToMemoryFile(const wi::Texture& texture, const std::string& fileExtension, wi::vector<uint8_t>& filedata)
 	{
-		using namespace wi::graphics;
+		using namespace wi;
 		TextureDesc desc = texture.GetDesc();
 		wi::vector<uint8_t> texturedata;
 		if (saveTextureToMemory(texture, texturedata))
@@ -326,9 +326,9 @@ namespace wi::helper
 		return false;
 	}
 
-	bool saveTextureToMemoryFile(const wi::vector<uint8_t>& texturedata, const wi::graphics::TextureDesc& desc, const std::string& fileExtension, wi::vector<uint8_t>& filedata)
+	bool saveTextureToMemoryFile(const wi::vector<uint8_t>& texturedata, const wi::TextureDesc& desc, const std::string& fileExtension, wi::vector<uint8_t>& filedata)
 	{
-		using namespace wi::graphics;
+		using namespace wi;
 		const uint32_t data_stride = GetFormatStride(desc.format);
 
 		std::string extension = wi::helper::toUpper(fileExtension);
@@ -339,186 +339,186 @@ namespace wi::helper
 			dds::DXGI_FORMAT dds_format = dds::DXGI_FORMAT_UNKNOWN;
 			switch (desc.format)
 			{
-			case wi::graphics::Format::R32G32B32A32_FLOAT:
+			case wi::Format::R32G32B32A32_FLOAT:
 				dds_format = dds::DXGI_FORMAT_R32G32B32A32_FLOAT;
 				break;
-			case wi::graphics::Format::R32G32B32A32_UINT:
+			case wi::Format::R32G32B32A32_UINT:
 				dds_format = dds::DXGI_FORMAT_R32G32B32A32_UINT;
 				break;
-			case wi::graphics::Format::R32G32B32A32_SINT:
+			case wi::Format::R32G32B32A32_SINT:
 				dds_format = dds::DXGI_FORMAT_R32G32B32A32_SINT;
 				break;
-			case wi::graphics::Format::R32G32B32_FLOAT:
+			case wi::Format::R32G32B32_FLOAT:
 				dds_format = dds::DXGI_FORMAT_R32G32B32_FLOAT;
 				break;
-			case wi::graphics::Format::R32G32B32_UINT:
+			case wi::Format::R32G32B32_UINT:
 				dds_format = dds::DXGI_FORMAT_R32G32B32_UINT;
 				break;
-			case wi::graphics::Format::R32G32B32_SINT:
+			case wi::Format::R32G32B32_SINT:
 				dds_format = dds::DXGI_FORMAT_R32G32B32_SINT;
 				break;
-			case wi::graphics::Format::R16G16B16A16_FLOAT:
+			case wi::Format::R16G16B16A16_FLOAT:
 				dds_format = dds::DXGI_FORMAT_R16G16B16A16_FLOAT;
 				break;
-			case wi::graphics::Format::R16G16B16A16_UNORM:
+			case wi::Format::R16G16B16A16_UNORM:
 				dds_format = dds::DXGI_FORMAT_R16G16B16A16_UNORM;
 				break;
-			case wi::graphics::Format::R16G16B16A16_UINT:
+			case wi::Format::R16G16B16A16_UINT:
 				dds_format = dds::DXGI_FORMAT_R16G16B16A16_UINT;
 				break;
-			case wi::graphics::Format::R16G16B16A16_SNORM:
+			case wi::Format::R16G16B16A16_SNORM:
 				dds_format = dds::DXGI_FORMAT_R16G16B16A16_SNORM;
 				break;
-			case wi::graphics::Format::R16G16B16A16_SINT:
+			case wi::Format::R16G16B16A16_SINT:
 				dds_format = dds::DXGI_FORMAT_R16G16B16A16_SINT;
 				break;
-			case wi::graphics::Format::R32G32_FLOAT:
+			case wi::Format::R32G32_FLOAT:
 				dds_format = dds::DXGI_FORMAT_R32G32_FLOAT;
 				break;
-			case wi::graphics::Format::R32G32_UINT:
+			case wi::Format::R32G32_UINT:
 				dds_format = dds::DXGI_FORMAT_R32G32_UINT;
 				break;
-			case wi::graphics::Format::R32G32_SINT:
+			case wi::Format::R32G32_SINT:
 				dds_format = dds::DXGI_FORMAT_R32G32_SINT;
 				break;
-			case wi::graphics::Format::R10G10B10A2_UNORM:
+			case wi::Format::R10G10B10A2_UNORM:
 				dds_format = dds::DXGI_FORMAT_R10G10B10A2_UNORM;
 				break;
-			case wi::graphics::Format::R10G10B10A2_UINT:
+			case wi::Format::R10G10B10A2_UINT:
 				dds_format = dds::DXGI_FORMAT_R10G10B10A2_UINT;
 				break;
-			case wi::graphics::Format::R11G11B10_FLOAT:
+			case wi::Format::R11G11B10_FLOAT:
 				dds_format = dds::DXGI_FORMAT_R11G11B10_FLOAT;
 				break;
-			case wi::graphics::Format::R8G8B8A8_UNORM:
+			case wi::Format::R8G8B8A8_UNORM:
 				dds_format = dds::DXGI_FORMAT_R8G8B8A8_UNORM;
 				break;
-			case wi::graphics::Format::R8G8B8A8_UNORM_SRGB:
+			case wi::Format::R8G8B8A8_UNORM_SRGB:
 				dds_format = dds::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 				break;
-			case wi::graphics::Format::R8G8B8A8_UINT:
+			case wi::Format::R8G8B8A8_UINT:
 				dds_format = dds::DXGI_FORMAT_R8G8B8A8_UINT;
 				break;
-			case wi::graphics::Format::R8G8B8A8_SNORM:
+			case wi::Format::R8G8B8A8_SNORM:
 				dds_format = dds::DXGI_FORMAT_R8G8B8A8_SNORM;
 				break;
-			case wi::graphics::Format::R8G8B8A8_SINT:
+			case wi::Format::R8G8B8A8_SINT:
 				dds_format = dds::DXGI_FORMAT_R8G8B8A8_SINT;
 				break;
-			case wi::graphics::Format::B8G8R8A8_UNORM:
+			case wi::Format::B8G8R8A8_UNORM:
 				dds_format = dds::DXGI_FORMAT_B8G8R8A8_UNORM;
 				break;
-			case wi::graphics::Format::B8G8R8A8_UNORM_SRGB:
+			case wi::Format::B8G8R8A8_UNORM_SRGB:
 				dds_format = dds::DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
 				break;
-			case wi::graphics::Format::R16G16_FLOAT:
+			case wi::Format::R16G16_FLOAT:
 				dds_format = dds::DXGI_FORMAT_R16G16_FLOAT;
 				break;
-			case wi::graphics::Format::R16G16_UNORM:
+			case wi::Format::R16G16_UNORM:
 				dds_format = dds::DXGI_FORMAT_R16G16_UNORM;
 				break;
-			case wi::graphics::Format::R16G16_UINT:
+			case wi::Format::R16G16_UINT:
 				dds_format = dds::DXGI_FORMAT_R16G16_UINT;
 				break;
-			case wi::graphics::Format::R16G16_SNORM:
+			case wi::Format::R16G16_SNORM:
 				dds_format = dds::DXGI_FORMAT_R16G16_SNORM;
 				break;
-			case wi::graphics::Format::R16G16_SINT:
+			case wi::Format::R16G16_SINT:
 				dds_format = dds::DXGI_FORMAT_R16G16_SINT;
 				break;
-			case wi::graphics::Format::D32_FLOAT:
-			case wi::graphics::Format::R32_FLOAT:
+			case wi::Format::D32_FLOAT:
+			case wi::Format::R32_FLOAT:
 				dds_format = dds::DXGI_FORMAT_R32_FLOAT;
 				break;
-			case wi::graphics::Format::R32_UINT:
+			case wi::Format::R32_UINT:
 				dds_format = dds::DXGI_FORMAT_R32_UINT;
 				break;
-			case wi::graphics::Format::R32_SINT:
+			case wi::Format::R32_SINT:
 				dds_format = dds::DXGI_FORMAT_R32_SINT;
 				break;
-			case wi::graphics::Format::R9G9B9E5_SHAREDEXP:
+			case wi::Format::R9G9B9E5_SHAREDEXP:
 				dds_format = dds::DXGI_FORMAT_R9G9B9E5_SHAREDEXP;
 				break;
-			case wi::graphics::Format::R8G8_UNORM:
+			case wi::Format::R8G8_UNORM:
 				dds_format = dds::DXGI_FORMAT_R8G8_UNORM;
 				break;
-			case wi::graphics::Format::R8G8_UINT:
+			case wi::Format::R8G8_UINT:
 				dds_format = dds::DXGI_FORMAT_R8G8_UINT;
 				break;
-			case wi::graphics::Format::R8G8_SNORM:
+			case wi::Format::R8G8_SNORM:
 				dds_format = dds::DXGI_FORMAT_R8G8_SNORM;
 				break;
-			case wi::graphics::Format::R8G8_SINT:
+			case wi::Format::R8G8_SINT:
 				dds_format = dds::DXGI_FORMAT_R8G8_SINT;
 				break;
-			case wi::graphics::Format::R16_FLOAT:
+			case wi::Format::R16_FLOAT:
 				dds_format = dds::DXGI_FORMAT_R16_FLOAT;
 				break;
-			case wi::graphics::Format::D16_UNORM:
-			case wi::graphics::Format::R16_UNORM:
+			case wi::Format::D16_UNORM:
+			case wi::Format::R16_UNORM:
 				dds_format = dds::DXGI_FORMAT_R16_UNORM;
 				break;
-			case wi::graphics::Format::R16_UINT:
+			case wi::Format::R16_UINT:
 				dds_format = dds::DXGI_FORMAT_R16_UINT;
 				break;
-			case wi::graphics::Format::R16_SNORM:
+			case wi::Format::R16_SNORM:
 				dds_format = dds::DXGI_FORMAT_R16_SNORM;
 				break;
-			case wi::graphics::Format::R16_SINT:
+			case wi::Format::R16_SINT:
 				dds_format = dds::DXGI_FORMAT_R16_SINT;
 				break;
-			case wi::graphics::Format::R8_UNORM:
+			case wi::Format::R8_UNORM:
 				dds_format = dds::DXGI_FORMAT_R8_UNORM;
 				break;
-			case wi::graphics::Format::R8_UINT:
+			case wi::Format::R8_UINT:
 				dds_format = dds::DXGI_FORMAT_R8_UINT;
 				break;
-			case wi::graphics::Format::R8_SNORM:
+			case wi::Format::R8_SNORM:
 				dds_format = dds::DXGI_FORMAT_R8_SNORM;
 				break;
-			case wi::graphics::Format::R8_SINT:
+			case wi::Format::R8_SINT:
 				dds_format = dds::DXGI_FORMAT_R8_SINT;
 				break;
-			case wi::graphics::Format::BC1_UNORM:
+			case wi::Format::BC1_UNORM:
 				dds_format = dds::DXGI_FORMAT_BC1_UNORM;
 				break;
-			case wi::graphics::Format::BC1_UNORM_SRGB:
+			case wi::Format::BC1_UNORM_SRGB:
 				dds_format = dds::DXGI_FORMAT_BC1_UNORM_SRGB;
 				break;
-			case wi::graphics::Format::BC2_UNORM:
+			case wi::Format::BC2_UNORM:
 				dds_format = dds::DXGI_FORMAT_BC2_UNORM;
 				break;
-			case wi::graphics::Format::BC2_UNORM_SRGB:
+			case wi::Format::BC2_UNORM_SRGB:
 				dds_format = dds::DXGI_FORMAT_BC2_UNORM_SRGB;
 				break;
-			case wi::graphics::Format::BC3_UNORM:
+			case wi::Format::BC3_UNORM:
 				dds_format = dds::DXGI_FORMAT_BC3_UNORM;
 				break;
-			case wi::graphics::Format::BC3_UNORM_SRGB:
+			case wi::Format::BC3_UNORM_SRGB:
 				dds_format = dds::DXGI_FORMAT_BC3_UNORM_SRGB;
 				break;
-			case wi::graphics::Format::BC4_UNORM:
+			case wi::Format::BC4_UNORM:
 				dds_format = dds::DXGI_FORMAT_BC4_UNORM;
 				break;
-			case wi::graphics::Format::BC4_SNORM:
+			case wi::Format::BC4_SNORM:
 				dds_format = dds::DXGI_FORMAT_BC4_SNORM;
 				break;
-			case wi::graphics::Format::BC5_UNORM:
+			case wi::Format::BC5_UNORM:
 				dds_format = dds::DXGI_FORMAT_BC5_UNORM;
 				break;
-			case wi::graphics::Format::BC5_SNORM:
+			case wi::Format::BC5_SNORM:
 				dds_format = dds::DXGI_FORMAT_BC5_SNORM;
 				break;
-			case wi::graphics::Format::BC6H_UF16:
+			case wi::Format::BC6H_UF16:
 				dds_format = dds::DXGI_FORMAT_BC6H_UF16;
 				break;
-			case wi::graphics::Format::BC6H_SF16:
+			case wi::Format::BC6H_SF16:
 				dds_format = dds::DXGI_FORMAT_BC6H_SF16;
 				break;
-			case wi::graphics::Format::BC7_UNORM:
+			case wi::Format::BC7_UNORM:
 				dds_format = dds::DXGI_FORMAT_BC7_UNORM;
 				break;
-			case wi::graphics::Format::BC7_UNORM_SRGB:
+			case wi::Format::BC7_UNORM_SRGB:
 				dds_format = dds::DXGI_FORMAT_BC7_UNORM_SRGB;
 				break;
 			default:
@@ -1001,9 +1001,9 @@ namespace wi::helper
 		return write_result != 0;
 	}
 
-	bool saveTextureToFile(const wi::graphics::Texture& texture, const std::string& fileName)
+	bool saveTextureToFile(const wi::Texture& texture, const std::string& fileName)
 	{
-		using namespace wi::graphics;
+		using namespace wi;
 		TextureDesc desc = texture.GetDesc();
 		wi::vector<uint8_t> data;
 		if (saveTextureToMemory(texture, data))
@@ -1013,9 +1013,9 @@ namespace wi::helper
 		return false;
 	}
 
-	bool saveTextureToFile(const wi::vector<uint8_t>& texturedata, const wi::graphics::TextureDesc& desc, const std::string& fileName)
+	bool saveTextureToFile(const wi::vector<uint8_t>& texturedata, const wi::TextureDesc& desc, const std::string& fileName)
 	{
-		using namespace wi::graphics;
+		using namespace wi;
 
 		std::string ext = GetExtensionFromFileName(fileName);
 		wi::vector<uint8_t> filedata;
@@ -1027,13 +1027,13 @@ namespace wi::helper
 		return false;
 	}
 
-	bool saveBufferToMemory(const wi::graphics::GPUBuffer& buffer, wi::vector<uint8_t>& data)
+	bool saveBufferToMemory(const wi::GPUBuffer& buffer, wi::vector<uint8_t>& data)
 	{
-		using namespace wi::graphics;
+		using namespace wi;
 		GraphicsDevice* device = GetDevice();
 
 		GPUBufferDesc desc = buffer.desc;
-		desc.usage = wi::graphics::Usage::READBACK;
+		desc.usage = wi::Usage::READBACK;
 		desc.bind_flags = {};
 		desc.misc_flags = {};
 		GPUBuffer staging;
@@ -1044,9 +1044,9 @@ namespace wi::helper
 		{
 			CommandList cmd = device->BeginCommandList();
 
-			device->Barrier(GPUBarrier::Memory(), cmd);
+			device->Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd);
 			device->CopyResource(&staging, &buffer, cmd);
-			device->Barrier(GPUBarrier::Memory(), cmd);
+			device->Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd);
 
 			device->SubmitCommandLists();
 			device->WaitForGPU();
@@ -1061,7 +1061,7 @@ namespace wi::helper
 		return success;
 	}
 
-	bool CreateCursorFromTexture(const wi::graphics::Texture& texture, int hotspotX, int hotspotY, wi::vector<uint8_t>& data)
+	bool CreateCursorFromTexture(const wi::Texture& texture, int hotspotX, int hotspotY, wi::vector<uint8_t>& data)
 	{
 		if (!saveTextureToMemoryFile(texture, "ico", data))
 			return false;
@@ -2082,7 +2082,7 @@ namespace wi::helper
 		// there doesn't seem to be an easy way to determine
 		// swapped out memory
 #elif defined(PLATFORM_PS5)
-		wi::graphics::GraphicsDevice::MemoryUsage gpumem = wi::graphics::GetDevice()->GetMemoryUsage();
+		wi::GraphicsDevice::MemoryUsage gpumem = wi::GetDevice()->GetMemoryUsage();
 		mem.process_physical = mem.total_physical = gpumem.budget;
 		mem.process_virtual = mem.total_virtual = gpumem.usage;
 #elif defined(__APPLE__)

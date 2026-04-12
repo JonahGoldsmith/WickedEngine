@@ -8,11 +8,20 @@
 
 #ifdef WICKEDENGINE_BUILD_DX12
 #include "wiGraphicsDevice.h"
-#include "wiUnorderedMap.h"
-#include "wiVector.h"
 #include "wiSpinLock.h"
-#include "wiBacklog.h"
-#include "wiHelper.h"
+#include "../stb_ds.h"
+
+#include <cassert>
+#include <type_traits>
+
+#if __has_include(<SDL3/SDL_assert.h>) && __has_include(<SDL3/SDL_log.h>) && __has_include(<SDL3/SDL_stdinc.h>)
+#include <SDL3/SDL_assert.h>
+#include <SDL3/SDL_log.h>
+#include <SDL3/SDL_stdinc.h>
+#define WI_DX12_HAS_SDL 1
+#else
+#define WI_DX12_HAS_SDL 0
+#endif
 
 #ifdef PLATFORM_XBOX
 #include "wiGraphicsDevice_DX12_XBOX.h"
@@ -36,11 +45,60 @@
 #include <atomic>
 #include <mutex>
 
-#define dx12_assert(cond, fname) { wilog_assert(cond, "DX12 error: %s failed with %s (%s:%d)", fname, wi::helper::GetPlatformErrorString(hr).c_str(), relative_path(__FILE__), __LINE__); }
-#define dx12_check(call) [&]() { HRESULT hr = call; dx12_assert(SUCCEEDED(hr), extract_function_name(#call).c_str()); return hr; }()
+#if WI_DX12_HAS_SDL
+#define WI_DX12_LOG_ERROR(...) SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, __VA_ARGS__)
+#define WI_DX12_LOG_WARN(...) SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, __VA_ARGS__)
+#define WI_DX12_ASSERT(cond) SDL_assert(cond)
+#else
+#define WI_DX12_LOG_ERROR(...) do { } while (0)
+#define WI_DX12_LOG_WARN(...) do { } while (0)
+#define WI_DX12_ASSERT(cond) assert(cond)
+#endif
 
-namespace wi::graphics
+#if !defined(SDL_arraysize)
+#define SDL_arraysize(array) (sizeof(array) / sizeof((array)[0]))
+#endif
+
+#define dx12_assert(cond, fname) do { const bool dx12_condition = static_cast<bool>(cond); if (!dx12_condition) { WI_DX12_LOG_ERROR("DX12 error: %s failed (hr=0x%08X) (%s:%d)", fname, (unsigned int)hr, __FILE__, __LINE__); WI_DX12_ASSERT(dx12_condition); } } while (0)
+#define dx12_check(call) [&]() { HRESULT hr = call; dx12_assert(SUCCEEDED(hr), #call); return hr; }()
+
+namespace wi
 {
+	namespace dx12_internal
+	{
+		template<typename T>
+		inline void destroy_stb_array(T*& data)
+		{
+			if (data != nullptr)
+			{
+				// stb_ds array: destroy contained objects explicitly before arrfree().
+				if constexpr (!std::is_trivially_destructible_v<T>)
+				{
+					for (size_t i = 0; i < arrlenu(data); ++i)
+					{
+						data[i].~T();
+					}
+				}
+				arrfree(data);
+			}
+		}
+
+		template<typename T>
+		inline T pop_back_stb_array(T*& data)
+		{
+			WI_DX12_ASSERT(data != nullptr);
+			WI_DX12_ASSERT(arrlenu(data) > 0);
+			T value = std::move(data[arrlenu(data) - 1]);
+			if constexpr (!std::is_trivially_destructible_v<T>)
+			{
+				data[arrlenu(data) - 1].~T();
+			}
+			arrsetlen(data, arrlenu(data) - 1);
+			return value;
+		}
+
+	}
+
 	class GraphicsDevice_DX12 final : public GraphicsDevice
 	{
 	protected:
@@ -67,10 +125,22 @@ namespace wi::graphics
 			Microsoft::WRL::ComPtr<ID3D12CommandSignature> drawIndexedInstancedIndirectCountCommandSignature;
 			Microsoft::WRL::ComPtr<ID3D12CommandSignature> dispatchMeshIndirectCountCommandSignature;
 		};
+		struct MultiDrawCacheEntry
+		{
+			ID3D12RootSignature* key = nullptr;
+			MultiDrawSignature* value = nullptr;
+		};
+		struct PipelineCacheEntry
+		{
+			PipelineHash key = {};
+			PipelineState* value = nullptr;
+		};
 		mutable std::mutex multidraw_signature_locker;
-		mutable wi::unordered_map<ID3D12RootSignature*, MultiDrawSignature> multidraw_signatures;
+		// stb_ds hash map: keyed by root signature pointer, destroyed explicitly in the cpp teardown path.
+		mutable MultiDrawCacheEntry* multidraw_signatures = nullptr;
 
-		wi::vector<GUID> video_decode_profile_list;
+		// stb_ds array: decode profile list is rebuilt explicitly and freed with arrfree().
+		GUID* video_decode_profile_list = nullptr;
 
 		bool deviceRemoved = false;
 		bool tearingSupported = false;
@@ -100,11 +170,16 @@ namespace wi::graphics
 		{
 			D3D12_COMMAND_QUEUE_DESC desc = {};
 			Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
-			wi::vector<ID3D12CommandList*> submit_cmds;
+			ID3D12CommandList** submit_cmds = nullptr;
 
 			void signal(const Semaphore& semaphore);
 			void wait(const Semaphore& semaphore);
 			void submit();
+
+			~CommandQueue()
+			{
+				dx12_internal::destroy_stb_array(submit_cmds);
+			}
 		} queues[QUEUE_COUNT];
 
 		struct CopyAllocator
@@ -122,11 +197,23 @@ namespace wi::graphics
 				GPUBuffer uploadbuffer;
 				inline bool IsValid() const { return commandList != nullptr; }
 			};
-			wi::vector<CopyCMD> freelist;
+			CopyCMD** freelist = nullptr;
 
 			void init(GraphicsDevice_DX12* device);
 			CopyCMD allocate(uint64_t staging_size);
 			void submit(CopyCMD cmd);
+
+			~CopyAllocator()
+			{
+				if (freelist != nullptr)
+				{
+					for (size_t i = 0; i < arrlenu(freelist); ++i)
+					{
+						delete freelist[i];
+					}
+				}
+				dx12_internal::destroy_stb_array(freelist);
+			}
 		};
 		mutable CopyAllocator copyAllocator;
 
@@ -148,26 +235,29 @@ namespace wi::graphics
 			void flush(bool graphics, CommandList cmd);
 		};
 
-		wi::vector<Semaphore> semaphore_pool;
+		Semaphore** semaphore_pool = nullptr;
 		std::mutex semaphore_pool_locker;
 		Semaphore new_semaphore()
 		{
 			std::scoped_lock lck(semaphore_pool_locker);
-			if (semaphore_pool.empty())
+			if (semaphore_pool == nullptr || arrlenu(semaphore_pool) == 0)
 			{
-				Semaphore& dependency = semaphore_pool.emplace_back();
+				Semaphore dependency = {};
 				dx12_check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, PPV_ARGS(dependency.fence)));
 				dx12_check(dependency.fence.Get()->SetName(L"DependencySemaphore"));
+				dependency.fenceValue++;
+				return dependency;
 			}
-			Semaphore semaphore = std::move(semaphore_pool.back());
-			semaphore_pool.pop_back();
+			Semaphore* dependency = dx12_internal::pop_back_stb_array(semaphore_pool);
+			Semaphore semaphore = *dependency;
+			delete dependency;
 			semaphore.fenceValue++;
 			return semaphore;
 		}
 		void free_semaphore(const Semaphore& semaphore)
 		{
 			std::scoped_lock lck(semaphore_pool_locker);
-			semaphore_pool.push_back(semaphore);
+			arrput(semaphore_pool, new Semaphore(semaphore));
 		}
 
 		struct CommandList_DX12
@@ -179,21 +269,21 @@ namespace wi::graphics
 
 			QUEUE_TYPE queue = {};
 			uint32_t id = 0;
-			wi::vector<Semaphore> waits;
-			wi::vector<Semaphore> signals;
+			Semaphore** waits = nullptr;
+			Semaphore** signals = nullptr;
 
 			DescriptorBinder binder;
 			GPULinearAllocator frame_allocators[BUFFERCOUNT];
 
-			wi::vector<D3D12_RESOURCE_BARRIER> frame_barriers;
+			D3D12_RESOURCE_BARRIER* frame_barriers = nullptr;
 			struct Discard
 			{
 				ID3D12Resource* resource = nullptr;
 				D3D12_DISCARD_REGION region = {};
 			};
-			wi::vector<Discard> discards;
+			Discard* discards = nullptr;
 			D3D_PRIMITIVE_TOPOLOGY prev_pt = {};
-			wi::vector<std::pair<PipelineHash, PipelineState>> pipelines_worker;
+			PipelineCacheEntry** pipelines_worker = nullptr;
 			PipelineHash prev_pipeline_hash = {};
 			const PipelineState* active_pso = {};
 			const Shader* active_cs = {};
@@ -202,13 +292,13 @@ namespace wi::graphics
 			const ID3D12RootSignature* active_rootsig_compute = {};
 			ShadingRate prev_shadingrate = {};
 			uint32_t prev_stencilref = 0;
-			wi::vector<const SwapChain*> swapchains;
+			const SwapChain** swapchains = nullptr;
 			bool dirty_pso = {};
-			wi::vector<D3D12_RAYTRACING_GEOMETRY_DESC> accelerationstructure_build_geometries;
+			D3D12_RAYTRACING_GEOMETRY_DESC* accelerationstructure_build_geometries = nullptr;
 			RenderPassInfo renderpass_info;
-			wi::vector<D3D12_RESOURCE_BARRIER> renderpass_barriers_begin;
-			wi::vector<D3D12_RESOURCE_BARRIER> renderpass_barriers_begin_after_discards;
-			wi::vector<D3D12_RESOURCE_BARRIER> renderpass_barriers_end;
+			D3D12_RESOURCE_BARRIER* renderpass_barriers_begin = nullptr;
+			D3D12_RESOURCE_BARRIER* renderpass_barriers_begin_after_discards = nullptr;
+			D3D12_RESOURCE_BARRIER* renderpass_barriers_end = nullptr;
 			ID3D12Resource* shading_rate_image = nullptr;
 			ID3D12Resource* resolve_src[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
 			ID3D12Resource* resolve_dst[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
@@ -216,15 +306,29 @@ namespace wi::graphics
 			ID3D12Resource* resolve_src_ds = nullptr;
 			ID3D12Resource* resolve_dst_ds = nullptr;
 			DXGI_FORMAT resolve_ds_format = {};
-			wi::vector<D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS> resolve_subresources[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
-			wi::vector<D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS> resolve_subresources_dsv = {};
-			wi::vector<D3D12_RESOURCE_BARRIER> resolve_src_barriers;
+			D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS* resolve_subresources[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+			D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS* resolve_subresources_dsv = nullptr;
+			D3D12_RESOURCE_BARRIER* resolve_src_barriers = nullptr;
 
 			void reset(uint32_t bufferindex)
 			{
 				buffer_index = bufferindex;
-				waits.clear();
-				signals.clear();
+				if (waits != nullptr)
+				{
+					for (size_t i = 0; i < arrlenu(waits); ++i)
+					{
+						delete waits[i];
+					}
+				}
+				dx12_internal::destroy_stb_array(waits);
+				if (signals != nullptr)
+				{
+					for (size_t i = 0; i < arrlenu(signals); ++i)
+					{
+						delete signals[i];
+					}
+				}
+				dx12_internal::destroy_stb_array(signals);
 				binder.reset();
 				frame_allocators[buffer_index].reset();
 				prev_pt = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
@@ -237,18 +341,31 @@ namespace wi::graphics
 				prev_shadingrate = ShadingRate::RATE_INVALID;
 				prev_stencilref = 0;
 				dirty_pso = false;
-				swapchains.clear();
+				dx12_internal::destroy_stb_array(swapchains);
 				renderpass_info = {};
-				renderpass_barriers_begin.clear();
-				renderpass_barriers_end.clear();
+				dx12_internal::destroy_stb_array(frame_barriers);
+				dx12_internal::destroy_stb_array(discards);
+				if (pipelines_worker != nullptr)
+				{
+					for (size_t i = 0; i < arrlenu(pipelines_worker); ++i)
+					{
+						delete pipelines_worker[i]->value;
+						delete pipelines_worker[i];
+					}
+				}
+				dx12_internal::destroy_stb_array(pipelines_worker);
+				dx12_internal::destroy_stb_array(accelerationstructure_build_geometries);
+				dx12_internal::destroy_stb_array(renderpass_barriers_begin);
+				dx12_internal::destroy_stb_array(renderpass_barriers_begin_after_discards);
+				dx12_internal::destroy_stb_array(renderpass_barriers_end);
 				for (size_t i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
 				{
 					resolve_src[i] = {};
 					resolve_dst[i] = {};
-					resolve_subresources[i].clear();
+					dx12_internal::destroy_stb_array(resolve_subresources[i]);
 				}
-				resolve_subresources_dsv.clear();
-				resolve_src_barriers.clear();
+				dx12_internal::destroy_stb_array(resolve_subresources_dsv);
+				dx12_internal::destroy_stb_array(resolve_src_barriers);
 				resolve_src_ds = nullptr;
 				resolve_dst_ds = nullptr;
 				shading_rate_image = nullptr;
@@ -264,32 +381,38 @@ namespace wi::graphics
 			}
 			inline ID3D12GraphicsCommandList* GetGraphicsCommandList()
 			{
-				assert(queue != QUEUE_VIDEO_DECODE);
+				WI_DX12_ASSERT(queue != QUEUE_VIDEO_DECODE);
 				return (ID3D12GraphicsCommandList*)commandLists[queue].Get();
 			}
 			inline graphics_command_list_version* GetGraphicsCommandListLatest()
 			{
-				assert(queue != QUEUE_VIDEO_DECODE && queue != QUEUE_COPY);
+				WI_DX12_ASSERT(queue != QUEUE_VIDEO_DECODE && queue != QUEUE_COPY);
 				return (graphics_command_list_version*)commandLists[queue].Get();
 			}
 			inline ID3D12VideoDecodeCommandList* GetVideoDecodeCommandList()
 			{
-				assert(queue == QUEUE_VIDEO_DECODE);
+				WI_DX12_ASSERT(queue == QUEUE_VIDEO_DECODE);
 				return (ID3D12VideoDecodeCommandList*)commandLists[queue].Get();
+			}
+
+			~CommandList_DX12()
+			{
+				reset(buffer_index);
 			}
 		};
 		wi::allocator::BlockAllocator<CommandList_DX12, 64> cmd_allocator;
-		wi::vector<CommandList_DX12*> commandlists;
+		CommandList_DX12** commandlists = nullptr;
 		uint32_t cmd_count = 0;
 		wi::SpinLock cmd_locker;
 
 		constexpr CommandList_DX12& GetCommandList(CommandList cmd) const
 		{
-			assert(cmd.IsValid());
+			WI_DX12_ASSERT(wiGraphicsCommandListIsValid(cmd));
 			return *(CommandList_DX12*)cmd.internal_state;
 		}
 
-		wi::unordered_map<PipelineHash, PipelineState> pipelines_global;
+		// stb_ds hash map/array: pipeline cache entries are owned explicitly and cleared in device teardown.
+		PipelineCacheEntry* pipelines_global = nullptr;
 
 		void pso_validate(CommandList cmd);
 
@@ -331,7 +454,7 @@ namespace wi::graphics
 
 		void WaitForGPU() const override;
 		void ClearPipelineStateCache() override;
-		size_t GetActivePipelineCount() const override { return pipelines_global.size(); }
+		size_t GetActivePipelineCount() const override { return arrlenu(pipelines_global); }
 
 		ShaderFormat GetShaderFormat() const override
 		{
@@ -350,7 +473,7 @@ namespace wi::graphics
 		uint32_t GetMinOffsetAlignment(const GPUBufferDesc* desc) const override
 		{
 			uint32_t alignment = std::max(1u, desc->alignment);
-			if (has_flag(desc->bind_flags, BindFlag::CONSTANT_BUFFER))
+			if (has_flag(desc->bind_flags, BindFlag::BIND_CONSTANT_BUFFER))
 			{
 				alignment = std::max(alignment, (uint32_t)D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 			}
@@ -401,7 +524,7 @@ namespace wi::graphics
 
 		void WaitCommandList(CommandList cmd, CommandList wait_for) override;
 		void RenderPassBegin(const SwapChain* swapchain, CommandList cmd) override;
-		void RenderPassBegin(const RenderPassImage* images, uint32_t image_count, CommandList cmd, RenderPassFlags flags = RenderPassFlags::NONE) override;
+		void RenderPassBegin(const RenderPassImage* images, uint32_t image_count, CommandList cmd, RenderPassFlags flags = RenderPassFlags::RENDER_PASS_FLAG_NONE) override;
 		void RenderPassEnd(CommandList cmd) override;
 		void BindScissorRects(uint32_t numRects, const Rect* rects, CommandList cmd) override;
 		void BindViewports(uint32_t NumViewports, const Viewport* pViewports, CommandList cmd) override;
@@ -506,9 +629,9 @@ namespace wi::graphics
 				GraphicsDevice_DX12* device = nullptr;
 				std::mutex locker;
 				D3D12_DESCRIPTOR_HEAP_DESC desc = {};
-				wi::vector<Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>> heaps;
+				ID3D12DescriptorHeap** heaps = nullptr;
 				uint32_t descriptor_size = 0;
-				wi::vector<D3D12_CPU_DESCRIPTOR_HANDLE> freelist;
+				D3D12_CPU_DESCRIPTOR_HANDLE* freelist = nullptr;
 
 				void init(GraphicsDevice_DX12* device, D3D12_DESCRIPTOR_HEAP_TYPE type, UINT numDescriptorsPerBlock)
 				{
@@ -519,34 +642,49 @@ namespace wi::graphics
 				}
 				void block_allocate()
 				{
-					heaps.emplace_back();
-					dx12_check(device->device->CreateDescriptorHeap(&desc, PPV_ARGS(heaps.back())));
-					D3D12_CPU_DESCRIPTOR_HANDLE heap_start = heaps.back()->GetCPUDescriptorHandleForHeapStart();
+					arrput(heaps, nullptr);
+					dx12_check(device->device->CreateDescriptorHeap(&desc, PPV_ARGS(heaps[arrlenu(heaps) - 1])));
+					D3D12_CPU_DESCRIPTOR_HANDLE heap_start = heaps[arrlenu(heaps) - 1]->GetCPUDescriptorHandleForHeapStart();
 					for (UINT i = 0; i < desc.NumDescriptors; ++i)
 					{
 						D3D12_CPU_DESCRIPTOR_HANDLE handle = heap_start;
 						handle.ptr += i * descriptor_size;
-						freelist.push_back(handle);
+						arrput(freelist, handle);
 					}
 				}
 				D3D12_CPU_DESCRIPTOR_HANDLE allocate()
 				{
 					locker.lock();
-					if (freelist.empty())
+					if (freelist == nullptr || arrlenu(freelist) == 0)
 					{
 						block_allocate();
 					}
-					assert(!freelist.empty());
-					D3D12_CPU_DESCRIPTOR_HANDLE handle = freelist.back();
-					freelist.pop_back();
+					WI_DX12_ASSERT(freelist != nullptr && arrlenu(freelist) > 0);
+					D3D12_CPU_DESCRIPTOR_HANDLE handle = dx12_internal::pop_back_stb_array(freelist);
 					locker.unlock();
 					return handle;
 				}
 				void free(D3D12_CPU_DESCRIPTOR_HANDLE index)
 				{
 					locker.lock();
-					freelist.push_back(index);
+					arrput(freelist, index);
 					locker.unlock();
+				}
+
+				~DescriptorAllocator()
+				{
+					if (heaps != nullptr)
+					{
+						for (size_t i = 0; i < arrlenu(heaps); ++i)
+						{
+							if (heaps[i] != nullptr)
+							{
+								heaps[i]->Release();
+							}
+						}
+					}
+					dx12_internal::destroy_stb_array(heaps);
+					dx12_internal::destroy_stb_array(freelist);
 				}
 			};
 			DescriptorAllocator descriptors_res;
@@ -554,8 +692,9 @@ namespace wi::graphics
 			DescriptorAllocator descriptors_rtv;
 			DescriptorAllocator descriptors_dsv;
 
-			wi::vector<int> free_bindless_res;
-			wi::vector<int> free_bindless_sam;
+			// stb_ds arrays: bindless free-lists are rebuilt explicitly and released with arrfree().
+			int* free_bindless_res = nullptr;
+			int* free_bindless_sam = nullptr;
 
 			std::deque<std::pair<Microsoft::WRL::ComPtr<D3D12MA::Allocation>, uint64_t>> destroyer_allocations;
 			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12Resource>, uint64_t>> destroyer_resources;
@@ -571,6 +710,8 @@ namespace wi::graphics
 			~AllocationHandler()
 			{
 				Update(~0ull, 0); // destroy all remaining
+				dx12_internal::destroy_stb_array(free_bindless_res);
+				dx12_internal::destroy_stb_array(free_bindless_sam);
 			}
 
 			// Deferred destroy of resources that the GPU is already finished with:
@@ -622,13 +763,13 @@ namespace wi::graphics
 				{
 					int index = destroyer_bindless_res.front().first;
 					destroyer_bindless_res.pop_front();
-					free_bindless_res.push_back(index);
+					arrput(free_bindless_res, index);
 				}
 				while (!destroyer_bindless_sam.empty() && destroyer_bindless_sam.front().second + BUFFERCOUNT < FRAMECOUNT)
 				{
 					int index = destroyer_bindless_sam.front().first;
 					destroyer_bindless_sam.pop_front();
-					free_bindless_sam.push_back(index);
+					arrput(free_bindless_sam, index);
 				}
 			}
 		};

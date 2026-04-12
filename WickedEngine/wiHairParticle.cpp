@@ -13,7 +13,7 @@
 #include "wiTimer.h"
 
 using namespace wi::primitive;
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::scene;
 using namespace wi::enums;
 
@@ -114,7 +114,7 @@ namespace wi
 	{
 		DeleteRenderData();
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		BLAS = {};
 		_flags &= ~REBUILD_BUFFERS;
@@ -128,7 +128,7 @@ namespace wi
 		{
 			GPUBufferDesc bd;
 			bd.usage = Usage::DEFAULT;
-			bd.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS | BindFlag::INDEX_BUFFER;
+			bd.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS | BindFlag::BIND_INDEX_BUFFER;
 			bd.misc_flags = ResourceMiscFlag::BUFFER_RAW | ResourceMiscFlag::TYPED_FORMAT_CASTING | ResourceMiscFlag::INDIRECT_ARGS | ResourceMiscFlag::NO_DEFAULT_DESCRIPTORS;
 			if (device->CheckCapability(GraphicsDeviceCapability::RAYTRACING))
 			{
@@ -275,8 +275,8 @@ namespace wi
 		GPUBufferDesc bd;
 		bd.usage = Usage::DEFAULT;
 		bd.size = sizeof(HairParticleCB);
-		bd.bind_flags = BindFlag::CONSTANT_BUFFER;
-		bd.misc_flags = ResourceMiscFlag::NONE;
+		bd.bind_flags = BindFlag::BIND_CONSTANT_BUFFER;
+		bd.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 		device->CreateBuffer(&bd, nullptr, &constantBuffer);
 		device->SetName(&constantBuffer, "HairParticleSystem::constantBuffer");
 
@@ -290,8 +290,8 @@ namespace wi
 					std::memcpy(vertex_lengths_packed + i, &packed, sizeof(uint8_t));
 				}
 			};
-			bd.misc_flags = ResourceMiscFlag::NONE;
-			bd.bind_flags = BindFlag::SHADER_RESOURCE;
+			bd.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
+			bd.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			bd.format = Format::R8_UNORM;
 			bd.stride = sizeof(uint8_t);
 			bd.size = bd.stride * vertex_lengths.size();
@@ -300,8 +300,8 @@ namespace wi
 		}
 		if (!indices.empty())
 		{
-			bd.misc_flags = ResourceMiscFlag::NONE;
-			bd.bind_flags = BindFlag::SHADER_RESOURCE;
+			bd.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
+			bd.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 			bd.format = Format::R32_UINT;
 			bd.stride = sizeof(uint32_t);
 			bd.size = bd.stride * indices.size();
@@ -311,7 +311,7 @@ namespace wi
 	}
 	void HairParticleSystem::CreateRaytracingRenderData()
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		if (device->CheckCapability(GraphicsDeviceCapability::RAYTRACING) && prim_view.IsValid())
 		{
@@ -392,7 +392,7 @@ namespace wi
 		CommandList cmd
 	)
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		device->EventBegin("HairParticleSystem - InitializeGPUBuffersIfNeeded", cmd);
 
 		for (uint32_t i = 0; i < hairCount; ++i)
@@ -406,7 +406,7 @@ namespace wi
 			{
 				hair.gpu_initialized = true;
 				device->ClearUAV(&hair.generalBuffer, 0, cmd);
-				wi::renderer::PushBarrier(GPUBarrier::Buffer(&hair.generalBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::COPY_DST));
+				wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierBuffer(&hair.generalBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::COPY_DST));
 			}
 		}
 		wi::renderer::FlushBarriers(cmd);
@@ -418,7 +418,7 @@ namespace wi
 		CommandList cmd
 	)
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		device->EventBegin("HairParticleSystem - UpdateGPU", cmd);
 
 		for (uint32_t i = 0; i < itemCount; ++i)
@@ -497,7 +497,7 @@ namespace wi
 			}
 			hcb.xHairUniformity = hair.uniformity;
 			device->UpdateBuffer(&hair.constantBuffer, &hcb, cmd);
-			wi::renderer::PushBarrier(GPUBarrier::Buffer(&hair.constantBuffer, ResourceState::COPY_DST, ResourceState::CONSTANT_BUFFER));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierBuffer(&hair.constantBuffer, ResourceState::COPY_DST, ResourceState::CONSTANT_BUFFER));
 
 			IndirectDrawArgsIndexedInstanced args = {};
 			args.BaseVertexLocation = 0;
@@ -506,7 +506,7 @@ namespace wi
 			args.StartIndexLocation = 0;
 			args.StartInstanceLocation = 0;
 			device->UpdateBuffer(&hair.generalBuffer, &args, cmd, sizeof(args), hair.indirect_view.offset);
-			wi::renderer::PushBarrier(GPUBarrier::Buffer(&hair.generalBuffer, ResourceState::COPY_DST, ResourceState::UNORDERED_ACCESS));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierBuffer(&hair.generalBuffer, ResourceState::COPY_DST, ResourceState::UNORDERED_ACCESS));
 
 			if (hair.regenerate_frame)
 			{
@@ -561,7 +561,7 @@ namespace wi
 
 			device->Dispatch((hair.strandCount + THREADCOUNT_SIMULATEHAIR - 1) / THREADCOUNT_SIMULATEHAIR, 1, 1, cmd);
 
-			wi::renderer::PushBarrier(GPUBarrier::Buffer(&hair.generalBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT | ResourceState::INDEX_BUFFER | ResourceState::SHADER_RESOURCE));
+			wi::renderer::PushBarrier(wiGraphicsCreateGPUBarrierBuffer(&hair.generalBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT | ResourceState::INDEX_BUFFER | ResourceState::SHADER_RESOURCE));
 		}
 
 		wi::renderer::FlushBarriers(cmd);
@@ -579,7 +579,7 @@ namespace wi
 		if (renderPass == RENDERPASS_SHADOW && !material.IsCastingShadow())
 			return;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		if (wi::renderer::GetWireframeMode() == wi::renderer::WIREFRAME_ONLY)
 		{
@@ -753,7 +753,7 @@ namespace wi
 
 			wi::renderer::LoadShader(ShaderStage::CS, cs_simulate, "hairparticle_simulateCS.cso");
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			for (int i = 0; i < RENDERPASS_COUNT; ++i)
 			{
@@ -822,7 +822,7 @@ namespace wi
 		rs = rsd;
 
 		rsd.fill_mode = FillMode::SOLID;
-		rsd.cull_mode = CullMode::NONE;
+		rsd.cull_mode = CullMode::CULL_NONE;
 		rsd.front_counter_clockwise = true;
 		rsd.depth_bias = 0;
 		rsd.depth_bias_clamp = 0;
@@ -833,7 +833,7 @@ namespace wi
 		ncrs = rsd;
 
 		rsd.fill_mode = FillMode::WIREFRAME;
-		rsd.cull_mode = CullMode::NONE;
+		rsd.cull_mode = CullMode::CULL_NONE;
 		rsd.front_counter_clockwise = true;
 		rsd.depth_bias = 0;
 		rsd.depth_bias_clamp = 0;
@@ -876,7 +876,7 @@ namespace wi
 		dsd.back_face.stencil_depth_fail_op = StencilOp::KEEP;
 		dss_default = dsd;
 
-		dsd.depth_write_mask = DepthWriteMask::ZERO;
+		dsd.depth_write_mask = DepthWriteMask::DEPTH_WRITE_ZERO;
 		dsd.depth_func = ComparisonFunc::EQUAL;
 		dsd.stencil_enable = false;
 		dss_equal = dsd;

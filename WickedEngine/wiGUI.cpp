@@ -15,14 +15,14 @@
 #include <iomanip> // setprecision
 #include <utility>
 
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::primitive;
 
 namespace wi::gui
 {
 	struct InternalState
 	{
-		wi::graphics::PipelineState PSO_colored;
+		wi::PipelineState PSO_colored;
 
 		InternalState()
 		{
@@ -44,7 +44,7 @@ namespace wi::gui
 			desc.bs = wi::renderer::GetBlendState(wi::enums::BSTYPE_TRANSPARENT);
 			desc.rs = wi::renderer::GetRasterizerState(wi::enums::RSTYPE_DOUBLESIDED);
 			desc.pt = PrimitiveTopology::TRIANGLESTRIP;
-			wi::graphics::GetDevice()->CreatePipelineState(&desc, &PSO_colored);
+			wi::GetDevice()->CreatePipelineState(&desc, &PSO_colored);
 		}
 	};
 	inline InternalState& gui_internal()
@@ -132,13 +132,13 @@ namespace wi::gui
 		auto range_cpu = wi::profiler::BeginRangeCPU("GUI Render");
 		auto range_gpu = wi::profiler::BeginRangeGPU("GUI Render", cmd);
 
-		wi::graphics::Rect scissorRect;
+		wi::Rect scissorRect;
 		scissorRect.bottom = (int32_t)(canvas.GetPhysicalHeight());
 		scissorRect.left = (int32_t)(0);
 		scissorRect.right = (int32_t)(canvas.GetPhysicalWidth());
 		scissorRect.top = (int32_t)(0);
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		device->EventBegin("GUI", cmd);
 		// Rendering is back to front:
@@ -373,7 +373,7 @@ namespace wi::gui
 		font.Update(dt);
 		angular_highlight_timer += dt;
 	}
-	void Widget::Render(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const
+	void Widget::Render(const wi::Canvas& canvas, wi::CommandList cmd) const
 	{
 		if (!IsVisible())
 		{
@@ -764,9 +764,9 @@ namespace wi::gui
 			ApplyTransform();
 		}
 	}
-	void Widget::ApplyScissor(const wi::Canvas& canvas, const wi::graphics::Rect rect, CommandList cmd, bool constrain_to_parent) const
+	void Widget::ApplyScissor(const wi::Canvas& canvas, const wi::Rect rect, CommandList cmd, bool constrain_to_parent) const
 	{
-		wi::graphics::Rect scissor = rect;
+		wi::Rect scissor = rect;
 
 		if (constrain_to_parent && parent != nullptr)
 		{
@@ -791,7 +791,7 @@ namespace wi::gui
 			scissor.top = scissor.bottom;
 		}
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		float scale = canvas.GetDPIScaling();
 		scissor.bottom = int32_t((float)scissor.bottom * scale);
 		scissor.top = int32_t((float)scissor.top * scale);
@@ -1367,7 +1367,7 @@ namespace wi::gui
 		//scissorRect.left = (int32_t)(0);
 		//scissorRect.right = (int32_t)(canvas.GetPhysicalWidth());
 		//scissorRect.top = (int32_t)(0);
-		//GraphicsDevice* device = wi::graphics::GetDevice();
+		//GraphicsDevice* device = wi::GetDevice();
 		//device->BindScissorRects(1, &scissorRect, cmd);
 		//wi::image::Draw(nullptr, wi::image::Params(hitBox.pos.x, hitBox.pos.y, hitBox.siz.x, hitBox.siz.y, wi::Color(255,0,0,100)), cmd);
 
@@ -2027,7 +2027,7 @@ namespace wi::gui
 			//scissorRect.left = (int32_t)(0);
 			//scissorRect.right = (int32_t)(canvas.GetPhysicalWidth());
 			//scissorRect.top = (int32_t)(0);
-			//GraphicsDevice* device = wi::graphics::GetDevice();
+			//GraphicsDevice* device = wi::GetDevice();
 			//device->BindScissorRects(1, &scissorRect, cmd);
 			//wi::font::Draw("caret_begin = " + std::to_string(caret_begin) + "\ncaret_pos = " + std::to_string(caret_pos), wi::font::Params(0, 20), cmd);
 		}
@@ -2453,7 +2453,7 @@ namespace wi::gui
 		// input field
 		valueInputField.Render(canvas, cmd);
 	}
-	void Slider::RenderTooltip(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const
+	void Slider::RenderTooltip(const wi::Canvas& canvas, wi::CommandList cmd) const
 	{
 		Widget::RenderTooltip(canvas, cmd);
 		valueInputField.RenderTooltip(canvas, cmd);
@@ -3060,7 +3060,7 @@ namespace wi::gui
 		{
 			return;
 		}
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		const float drop_width = fixed_drop_width > 0 ? fixed_drop_width : (scale.x - 1 - scale.y);
 		const float drop_x = GetDropX(canvas);
@@ -3127,7 +3127,7 @@ namespace wi::gui
 				wi::math::ConstructTriangleEquilateral(1, vertices[0].pos, vertices[1].pos, vertices[2].pos);
 
 				GPUBufferDesc desc;
-				desc.bind_flags = BindFlag::VERTEX_BUFFER;
+				desc.bind_flags = BindFlag::BIND_VERTEX_BUFFER;
 				desc.size = sizeof(vertices);
 				device->CreateBuffer(&desc, &vertices, &vb_triangle);
 			}
@@ -3175,7 +3175,7 @@ namespace wi::gui
 		if (state == ACTIVE)
 		{
 			{
-				wi::graphics::Rect fullscissorRect;
+				wi::Rect fullscissorRect;
 				fullscissorRect.bottom = (int32_t)(canvas.GetPhysicalHeight());
 				fullscissorRect.left = (int32_t)(0);
 				fullscissorRect.right = (int32_t)(canvas.GetPhysicalWidth());
@@ -3186,7 +3186,7 @@ namespace wi::gui
 
 			if (HasScrollbar())
 			{
-				wi::graphics::Rect rect;
+				wi::Rect rect;
 				rect.left = int(drop_x + drop_width + 1);
 				rect.right = int(drop_x + drop_width + 1 + scale.y);
 				rect.top = int(translation.y + scale.y + drop_offset);
@@ -3228,7 +3228,7 @@ namespace wi::gui
 				}
 			}
 
-			wi::graphics::Rect rect;
+			wi::Rect rect;
 			rect.left = int(drop_x);
 			rect.right = rect.left + int(drop_width);
 			rect.top = int(translation.y + scale.y + drop_offset);
@@ -4324,7 +4324,7 @@ namespace wi::gui
 		//scissorRect.left = (int32_t)(0);
 		//scissorRect.right = (int32_t)(canvas.GetPhysicalWidth());
 		//scissorRect.top = (int32_t)(0);
-		//GraphicsDevice* device = wi::graphics::GetDevice();
+		//GraphicsDevice* device = wi::GetDevice();
 		//device->BindScissorRects(1, &scissorRect, cmd);
 		//wi::image::Draw(nullptr, wi::image::Params(scrollable_area.active_area.pos.x, scrollable_area.active_area.pos.y, scrollable_area.active_area.siz.x, scrollable_area.active_area.siz.y, wi::Color(255,0,255,100)), cmd);
 		//Hitbox2D p = scrollable_area.GetPointerHitbox();
@@ -4336,7 +4336,7 @@ namespace wi::gui
 
 		GetDevice()->EventEnd(cmd);
 	}
-	void Window::RenderTooltip(const wi::Canvas& canvas, wi::graphics::CommandList cmd) const
+	void Window::RenderTooltip(const wi::Canvas& canvas, wi::CommandList cmd) const
 	{
 		// Window base tooltip is not rendered
 		for (auto& x : widgets)
@@ -5005,17 +5005,17 @@ namespace wi::gui
 			return;
 		}
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		struct Vertex
 		{
 			XMFLOAT4 pos;
 			XMFLOAT4 col;
 		};
-		static wi::graphics::GPUBuffer vb_hue;
-		static wi::graphics::GPUBuffer vb_picker_saturation;
-		static wi::graphics::GPUBuffer vb_picker_hue;
-		static wi::graphics::GPUBuffer vb_preview;
+		static wi::GPUBuffer vb_hue;
+		static wi::GPUBuffer vb_picker_saturation;
+		static wi::GPUBuffer vb_picker_hue;
+		static wi::GPUBuffer vb_preview;
 
 		static wi::vector<Vertex> vertices_saturation;
 
@@ -5100,7 +5100,7 @@ namespace wi::gui
 				}
 
 				GPUBufferDesc desc;
-				desc.bind_flags = BindFlag::VERTEX_BUFFER;
+				desc.bind_flags = BindFlag::BIND_VERTEX_BUFFER;
 				desc.size = vertices.size() * sizeof(Vertex);
 				desc.stride = 0;
 				device->CreateBuffer(&desc, vertices.data(), &vb_hue);
@@ -5122,7 +5122,7 @@ namespace wi::gui
 				}
 
 				GPUBufferDesc desc;
-				desc.bind_flags = BindFlag::VERTEX_BUFFER;
+				desc.bind_flags = BindFlag::BIND_VERTEX_BUFFER;
 				desc.size = vertices.size() * sizeof(Vertex);
 				desc.stride = 0;
 				device->CreateBuffer(&desc, vertices.data(), &vb_picker_saturation);
@@ -5158,7 +5158,7 @@ namespace wi::gui
 				};
 
 				GPUBufferDesc desc;
-				desc.bind_flags = BindFlag::VERTEX_BUFFER;
+				desc.bind_flags = BindFlag::BIND_VERTEX_BUFFER;
 				desc.size = sizeof(vertices);
 				desc.stride = 0;
 				device->CreateBuffer(&desc, vertices, &vb_picker_hue);
@@ -5174,7 +5174,7 @@ namespace wi::gui
 				};
 
 				GPUBufferDesc desc;
-				desc.bind_flags = BindFlag::VERTEX_BUFFER;
+				desc.bind_flags = BindFlag::BIND_VERTEX_BUFFER;
 				desc.size = sizeof(vertices);
 				device->CreateBuffer(&desc, vertices, &vb_preview);
 			}
@@ -5794,7 +5794,7 @@ namespace wi::gui
 		{
 			return;
 		}
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		// shadow:
 		if (shadow > 0)
@@ -5884,7 +5884,7 @@ namespace wi::gui
 		fx.siz = XMFLOAT2(itemlist_box.siz.x, itemlist_box.siz.y);
 		wi::image::Draw(nullptr, fx, cmd);
 
-		wi::graphics::Rect rect_without_scrollbar;
+		wi::Rect rect_without_scrollbar;
 		rect_without_scrollbar.left = (int)itemlist_box.pos.x;
 		rect_without_scrollbar.right = (int)(itemlist_box.pos.x + itemlist_box.siz.x);
 		rect_without_scrollbar.top = (int)itemlist_box.pos.y;
@@ -5906,7 +5906,7 @@ namespace wi::gui
 			wi::math::ConstructTriangleEquilateral(1, vertices[0].pos, vertices[1].pos, vertices[2].pos);
 
 			GPUBufferDesc desc;
-			desc.bind_flags = BindFlag::VERTEX_BUFFER;
+			desc.bind_flags = BindFlag::BIND_VERTEX_BUFFER;
 			desc.size = sizeof(vertices);
 			device->CreateBuffer(&desc, vertices, &vb_triangle);
 		}

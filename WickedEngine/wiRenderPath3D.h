@@ -96,45 +96,45 @@ namespace wi
 		void RenderCameraComponents(wi::jobsystem::context& ctx) const;
 
 	public:
-		wi::graphics::Texture rtMain;
-		wi::graphics::Texture rtMain_render; // can be MSAA
-		wi::graphics::Texture rtPrimitiveID;
-		wi::graphics::Texture rtPrimitiveID_render; // can be MSAA
-		wi::graphics::Texture rtVelocity; // optional R16G16_FLOAT
-		wi::graphics::Texture rtReflection; // contains the scene rendered for planar reflections, MSAA
-		wi::graphics::Texture rtReflection_resolved; // contains the scene rendered for planar reflections, single sample
-		wi::graphics::Texture rtRaytracedDiffuse; // raytraced diffuse screen space texture
-		wi::graphics::Texture rtSSR; // standard screen-space reflection results
-		wi::graphics::Texture rtSSGI; // standard screen-space GI results
-		wi::graphics::Texture rtSceneCopy; // contains the rendered scene that can be fed into transparent pass for distortion effect
-		wi::graphics::Texture rtSceneCopy_tmp; // temporary for gaussian mipchain
-		wi::graphics::Texture rtWaterRipple; // water ripple sprite normal maps are rendered into this
-		wi::graphics::Texture rtParticleDistortion_render; // contains distortive particles (can be MSAA)
-		wi::graphics::Texture rtParticleDistortion; // contains distortive particles
-		wi::graphics::Texture rtVolumetricLights; // contains the volumetric light results
-		wi::graphics::Texture rtBloom; // contains the bright parts of the image + mipchain
-		wi::graphics::Texture rtBloom_tmp; // temporary for bloom downsampling
-		wi::graphics::Texture rtAO; // full res AO
-		wi::graphics::Texture rtShadow; // raytraced shadows mask
-		wi::graphics::Texture rtSun[3]; // 0: sun render target used for lightshafts (can be MSAA), 1: radial blurred lightshafts
-		wi::graphics::Texture rtSun_resolved; // sun render target, but the resolved version if MSAA is enabled
-		wi::graphics::Texture rtGUIBlurredBackground[3];	// downsampled, gaussian blurred scene for GUI
-		wi::graphics::Texture rtShadingRate; // UINT8 shading rate per tile
-		wi::graphics::Texture rtFSR[2]; // FSR upscaling result (full resolution LDR)
-		wi::graphics::Texture rtOutlineSource; // linear depth but only the regions which have outline stencil
-		wi::graphics::Texture rtOutlineSource_MSAA; // linear depth but only the regions which have outline stencil
+		wi::Texture rtMain;
+		wi::Texture rtMain_render; // can be MSAA
+		wi::Texture rtPrimitiveID;
+		wi::Texture rtPrimitiveID_render; // can be MSAA
+		wi::Texture rtVelocity; // optional R16G16_FLOAT
+		wi::Texture rtReflection; // contains the scene rendered for planar reflections, MSAA
+		wi::Texture rtReflection_resolved; // contains the scene rendered for planar reflections, single sample
+		wi::Texture rtRaytracedDiffuse; // raytraced diffuse screen space texture
+		wi::Texture rtSSR; // standard screen-space reflection results
+		wi::Texture rtSSGI; // standard screen-space GI results
+		wi::Texture rtSceneCopy; // contains the rendered scene that can be fed into transparent pass for distortion effect
+		wi::Texture rtSceneCopy_tmp; // temporary for gaussian mipchain
+		wi::Texture rtWaterRipple; // water ripple sprite normal maps are rendered into this
+		wi::Texture rtParticleDistortion_render; // contains distortive particles (can be MSAA)
+		wi::Texture rtParticleDistortion; // contains distortive particles
+		wi::Texture rtVolumetricLights; // contains the volumetric light results
+		wi::Texture rtBloom; // contains the bright parts of the image + mipchain
+		wi::Texture rtBloom_tmp; // temporary for bloom downsampling
+		wi::Texture rtAO; // full res AO
+		wi::Texture rtShadow; // raytraced shadows mask
+		wi::Texture rtSun[3]; // 0: sun render target used for lightshafts (can be MSAA), 1: radial blurred lightshafts
+		wi::Texture rtSun_resolved; // sun render target, but the resolved version if MSAA is enabled
+		wi::Texture rtGUIBlurredBackground[3];	// downsampled, gaussian blurred scene for GUI
+		wi::Texture rtShadingRate; // UINT8 shading rate per tile
+		wi::Texture rtFSR[2]; // FSR upscaling result (full resolution LDR)
+		wi::Texture rtOutlineSource; // linear depth but only the regions which have outline stencil
+		wi::Texture rtOutlineSource_MSAA; // linear depth but only the regions which have outline stencil
 
-		wi::graphics::Texture rtPostprocess; // ping-pong with main scene RT in post-process chain
+		wi::Texture rtPostprocess; // ping-pong with main scene RT in post-process chain
 
-		wi::graphics::Texture depthBuffer_Main; // used for depth-testing, can be MSAA
-		wi::graphics::Texture depthBuffer_Copy; // used for shader resource, single sample
-		wi::graphics::Texture depthBuffer_Copy1; // used for disocclusion check
-		wi::graphics::Texture depthBuffer_Reflection; // used for reflection, MSAA
-		wi::graphics::Texture depthBuffer_Reflection_resolved; // used for reflection, single sample
-		wi::graphics::Texture rtLinearDepth; // linear depth result + mipchain (max filter)
-		wi::graphics::Texture reprojectedDepth; // prev frame depth reprojected into current, and downsampled for meshlet occlusion culling
+		wi::Texture depthBuffer_Main; // used for depth-testing, can be MSAA
+		wi::Texture depthBuffer_Copy; // used for shader resource, single sample
+		wi::Texture depthBuffer_Copy1; // used for disocclusion check
+		wi::Texture depthBuffer_Reflection; // used for reflection, MSAA
+		wi::Texture depthBuffer_Reflection_resolved; // used for reflection, single sample
+		wi::Texture rtLinearDepth; // linear depth result + mipchain (max filter)
+		wi::Texture reprojectedDepth; // prev frame depth reprojected into current, and downsampled for meshlet occlusion culling
 
-		wi::graphics::Texture debugUAV; // debug UAV can be used by some shaders...
+		wi::Texture debugUAV; // debug UAV can be used by some shaders...
 		wi::renderer::TiledLightResources tiledLightResources;
 		wi::renderer::TiledLightResources tiledLightResources_planarReflection;
 		wi::renderer::LuminanceResources luminanceResources;
@@ -160,28 +160,28 @@ namespace wi
 		wi::renderer::VXGIResources vxgiResources;
 		wi::renderer::MeshBlendResources meshblendResources;
 
-		wi::graphics::CommandList video_cmd;
+		wi::CommandList video_cmd;
 
-		wi::graphics::Texture distortion_overlay; // optional full screen distortion from an asset
+		wi::Texture distortion_overlay; // optional full screen distortion from an asset
 
-		mutable const wi::graphics::Texture* lastPostprocessRT = &rtPostprocess;
+		mutable const wi::Texture* lastPostprocessRT = &rtPostprocess;
 		// Post-processes are ping-ponged, this function helps to obtain the last postprocess render target that was written
-		const wi::graphics::Texture* GetLastPostprocessRT() const
+		const wi::Texture* GetLastPostprocessRT() const
 		{
 			return lastPostprocessRT;
 		}
 
 		mutable float lightShaftsFadeFactor = 0.0f;
 
-		virtual void RenderAO(wi::graphics::CommandList cmd) const;
-		virtual void RenderSSR(wi::graphics::CommandList cmd) const;
-		virtual void RenderSSGI(wi::graphics::CommandList cmd) const;
-		virtual void RenderOutline(wi::graphics::CommandList cmd) const;
-		virtual void RenderLightShafts(wi::graphics::CommandList cmd) const;
-		virtual void RenderVolumetrics(wi::graphics::CommandList cmd) const;
-		virtual void RenderSceneMIPChain(wi::graphics::CommandList cmd) const;
-		virtual void RenderTransparents(wi::graphics::CommandList cmd) const;
-		virtual void RenderPostprocessChain(wi::graphics::CommandList cmd) const;
+		virtual void RenderAO(wi::CommandList cmd) const;
+		virtual void RenderSSR(wi::CommandList cmd) const;
+		virtual void RenderSSGI(wi::CommandList cmd) const;
+		virtual void RenderOutline(wi::CommandList cmd) const;
+		virtual void RenderLightShafts(wi::CommandList cmd) const;
+		virtual void RenderVolumetrics(wi::CommandList cmd) const;
+		virtual void RenderSceneMIPChain(wi::CommandList cmd) const;
+		virtual void RenderTransparents(wi::CommandList cmd) const;
+		virtual void RenderPostprocessChain(wi::CommandList cmd) const;
 
 		void DeleteGPUResources() override;
 		void ResizeBuffers() override;
@@ -204,18 +204,18 @@ namespace wi
 		float crop_top = 0;
 		float crop_right = 0;
 		float crop_bottom = 0;
-		wi::graphics::Rect GetScissorNativeResolution() const
+		wi::Rect GetScissorNativeResolution() const
 		{
-			wi::graphics::Rect scissor;
+			wi::Rect scissor;
 			scissor.left = int(LogicalToPhysical(crop_left));
 			scissor.top = int(LogicalToPhysical(crop_top));
 			scissor.right = int(GetPhysicalWidth() - LogicalToPhysical(crop_right));
 			scissor.bottom = int(GetPhysicalHeight() - LogicalToPhysical(crop_bottom));
 			return scissor;
 		}
-		wi::graphics::Rect GetScissorInternalResolution() const
+		wi::Rect GetScissorInternalResolution() const
 		{
-			wi::graphics::Rect scissor;
+			wi::Rect scissor;
 			scissor.left = int(LogicalToPhysical(crop_left) * resolutionScale);
 			scissor.top = int(LogicalToPhysical(crop_top) * resolutionScale);
 			scissor.right = int(GetInternalResolution().x - LogicalToPhysical(crop_right) * resolutionScale);
@@ -223,8 +223,8 @@ namespace wi
 			return scissor;
 		}
 
-		const wi::graphics::Texture* GetDepthStencil() const override { return &depthBuffer_Main; }
-		const wi::graphics::Texture* GetGUIBlurredBackground() const override { return &rtGUIBlurredBackground[2]; }
+		const wi::Texture* GetDepthStencil() const override { return &depthBuffer_Main; }
+		const wi::Texture* GetGUIBlurredBackground() const override { return &rtGUIBlurredBackground[2]; }
 
 		constexpr float getExposure() const { return exposure; }
 		constexpr float getHDRCalibration() const { return hdr_calibration; }
@@ -353,7 +353,7 @@ namespace wi
 		struct CustomPostprocess
 		{
 			std::string name = "CustomPostprocess";
-			wi::graphics::Shader computeshader;
+			wi::Shader computeshader;
 			XMFLOAT4 params0;
 			XMFLOAT4 params1;
 			enum class Stage
@@ -368,13 +368,13 @@ namespace wi
 		void Update(float dt) override;
 		void PreRender() override;
 		void Render() const override;
-		void Compose(wi::graphics::CommandList cmd) const override;
+		void Compose(wi::CommandList cmd) const override;
 
 		void Stop() override;
 		void Start() override;
 
 		// Creates screenshot of the render result and replaces background (sky) pixels with transparency
-		wi::graphics::Texture CreateScreenshotWithAlphaBackground();
+		wi::Texture CreateScreenshotWithAlphaBackground();
 
 		// This is an identifier of RenderPath subtype that is used for lua binding.
 		static constexpr const auto script_check_identifier = relative_path_storage(__FILE__);

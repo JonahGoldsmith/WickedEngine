@@ -4,7 +4,7 @@
 
 #include <thread>
 
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi
 {
@@ -73,7 +73,7 @@ namespace wi
 		RenderPath2D::Start();
 	}
 
-	void LoadingScreen::Compose(wi::graphics::CommandList cmd) const
+	void LoadingScreen::Compose(wi::CommandList cmd) const
 	{
 		if (backgroundTexture.IsValid())
 		{

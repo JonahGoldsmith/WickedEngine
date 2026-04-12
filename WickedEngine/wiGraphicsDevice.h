@@ -7,8 +7,9 @@
 #include <cstring>
 #include <algorithm>
 #include <functional>
+#include <memory>
 
-namespace wi::graphics
+namespace wi
 {
 	// CommandList can be used to record graphics commands from a CPU thread
 	//	Use GraphicsDevice::BeginCommandList() to start a command list
@@ -17,8 +18,11 @@ namespace wi::graphics
 	struct CommandList
 	{
 		void* internal_state = nullptr;
-		constexpr bool IsValid() const { return internal_state != nullptr; }
 	};
+	inline bool wiGraphicsCommandListIsValid(CommandList command_list)
+	{
+		return command_list.internal_state != nullptr;
+	}
 
 	// Descriptor binding counts:
 	//	It's OK increase these limits if not enough
@@ -75,7 +79,7 @@ namespace wi::graphics
 		size_t TOPLEVEL_ACCELERATION_STRUCTURE_INSTANCE_SIZE = 0;
 		uint64_t TIMESTAMP_FREQUENCY = 0;
 		uint64_t VIDEO_DECODE_BITSTREAM_ALIGNMENT = 1u;
-		GraphicsDeviceCapability capabilities = GraphicsDeviceCapability::NONE;
+		GraphicsDeviceCapability capabilities = GraphicsDeviceCapability::GRAPHICS_DEVICE_CAPABILITY_NONE;
 		uint32_t VARIABLE_RATE_SHADING_TILE_SIZE = 0;
 		uint32_t vendorId = 0;
 		uint32_t deviceId = 0;
@@ -206,8 +210,8 @@ namespace wi::graphics
 		//	On some platform like PS5 this can be implemented by waiting exactly at the wait insertion point within the command lists which is more precise
 		virtual void WaitCommandList(CommandList cmd, CommandList wait_for) = 0;
 		virtual void RenderPassBegin(const SwapChain* swapchain, CommandList cmd) = 0;
-		virtual void RenderPassBegin(const RenderPassImage* images, uint32_t image_count, CommandList cmd, RenderPassFlags flags = RenderPassFlags::NONE) = 0;
-		virtual void RenderPassBegin(const RenderPassImage* images, uint32_t image_count, const GPUQueryHeap* occlusionqueries, CommandList cmd, RenderPassFlags flags = RenderPassFlags::NONE) { RenderPassBegin(images,image_count,cmd,flags); }
+		virtual void RenderPassBegin(const RenderPassImage* images, uint32_t image_count, CommandList cmd, RenderPassFlags flags = RenderPassFlags::RENDER_PASS_FLAG_NONE) = 0;
+		virtual void RenderPassBegin(const RenderPassImage* images, uint32_t image_count, const GPUQueryHeap* occlusionqueries, CommandList cmd, RenderPassFlags flags = RenderPassFlags::RENDER_PASS_FLAG_NONE) { RenderPassBegin(images,image_count,cmd,flags); }
 		virtual void RenderPassEnd(CommandList cmd) = 0;
 		virtual void BindScissorRects(uint32_t numRects, const Rect* rects, CommandList cmd) = 0;
 		virtual void BindViewports(uint32_t NumViewports, const Viewport* pViewports, CommandList cmd) = 0;
@@ -285,15 +289,18 @@ namespace wi::graphics
 			return CreateBufferCleared(desc, 0, buffer, alias, alias_offset);
 		}
 
-		// This can be used to create a texture filled with a single value
-		bool CreateTextureCleared(const TextureDesc* desc, uint8_t value, Texture* texture, const GPUResource* alias = nullptr, uint64_t alias_offset = 0ull) const
-		{
-			wi::vector<uint8_t> texturedata(ComputeTextureMemorySizeInBytes(*desc));
-			std::fill(texturedata.begin(), texturedata.end(), value);
-			wi::vector<SubresourceData> initdata;
-			CreateTextureSubresourceDatas(*desc, texturedata.data(), initdata);
-			return CreateTexture(desc, initdata.data(), texture, alias, alias_offset);
-		}
+			// This can be used to create a texture filled with a single value
+			bool CreateTextureCleared(const TextureDesc* desc, uint8_t value, Texture* texture, const GPUResource* alias = nullptr, uint64_t alias_offset = 0ull) const
+			{
+				const size_t texture_size = ComputeTextureMemorySizeInBytes(*desc);
+				std::unique_ptr<uint8_t[]> texturedata(new uint8_t[texture_size]);
+				std::fill_n(texturedata.get(), texture_size, value);
+				SubresourceData* initdata = nullptr; // stb_ds-backed subresource array, create/destroy explicitly
+				CreateTextureSubresourceDatas(*desc, texturedata.get(), initdata);
+				const bool success = CreateTexture(desc, initdata, texture, alias, alias_offset);
+				arrfree(initdata);
+				return success;
+			}
 
 		// This can be used to create a texture filled with zeroes
 		bool CreateTextureZeroed(const TextureDesc* desc, Texture* texture, const GPUResource* alias = nullptr, uint64_t alias_offset = 0ull) const
@@ -310,7 +317,7 @@ namespace wi::graphics
 		// Execute a global GPU memory barrier
 		void Barrier(CommandList cmd)
 		{
-			Barrier(GPUBarrier::Memory(), cmd);
+			Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd);
 		}
 
 		struct GPULinearAllocator
@@ -330,9 +337,6 @@ namespace wi::graphics
 			void* data = nullptr;	// application can write to this. Reads might be not supported or slow. The offset is already applied
 			GPUBuffer buffer;		// application can bind it to the GPU
 			uint64_t offset = 0;	// allocation's offset from the GPUbuffer's beginning
-
-			// Returns true if the allocation was successful
-			inline bool IsValid() const { return data != nullptr && buffer.IsValid(); }
 		};
 
 		// Allocates temporary memory that the CPU can write and GPU can read. 
@@ -350,7 +354,7 @@ namespace wi::graphics
 			{
 				GPUBufferDesc desc;
 				desc.usage = Usage::UPLOAD;
-				desc.bind_flags = BindFlag::CONSTANT_BUFFER | BindFlag::VERTEX_BUFFER | BindFlag::INDEX_BUFFER | BindFlag::SHADER_RESOURCE;
+				desc.bind_flags = BindFlag::BIND_CONSTANT_BUFFER | BindFlag::BIND_VERTEX_BUFFER | BindFlag::BIND_INDEX_BUFFER | BindFlag::BIND_SHADER_RESOURCE;
 				desc.misc_flags = ResourceMiscFlag::BUFFER_RAW;
 				if (CheckCapability(GraphicsDeviceCapability::RAYTRACING))
 				{
@@ -369,7 +373,7 @@ namespace wi::graphics
 
 			allocator.offset += align(dataSize, allocator.alignment);
 
-			assert(allocation.IsValid());
+			assert(allocation.data != nullptr && wiGraphicsGPUResourceIsValid(&allocation.buffer));
 			return allocation;
 		}
 
@@ -403,7 +407,7 @@ namespace wi::graphics
 		void RenderPassBegin(const Texture* rendertarget, CommandList cmd, bool clear = true)
 		{
 			RenderPassImage rp[] = {
-				RenderPassImage::RenderTarget(rendertarget, clear ? RenderPassImage::LoadOp::CLEAR : RenderPassImage::LoadOp::LOAD),
+				wiGraphicsCreateRenderPassImageRenderTarget(rendertarget, clear ? RenderPassImage::LoadOp::CLEAR : RenderPassImage::LoadOp::LOAD),
 			};
 			RenderPassBegin(rp, arraysize(rp), cmd);
 		}
@@ -421,13 +425,14 @@ namespace wi::graphics
 			}
 		}
 
-		// Deprecated, kept for back-compat:
-		bool CreateRenderPass(const RenderPassDesc* desc, RenderPass* renderpass) const
-		{
-			renderpass->valid = true;
-			renderpass->desc = *desc;
-			return true;
-		}
+			// Deprecated, kept for back-compat:
+			bool CreateRenderPass(const RenderPassDesc* desc, RenderPass* renderpass) const
+			{
+				DestroyRenderPassDesc(renderpass->desc);
+				CloneRenderPassDesc(renderpass->desc, *desc);
+				renderpass->valid = true;
+				return true;
+			}
 		// Deprecated, kept for back-compat:
 		void RenderPassBegin(const RenderPass* renderpass, CommandList cmd)
 		{
@@ -437,11 +442,11 @@ namespace wi::graphics
 				flags |= RenderPassFlags::ALLOW_UAV_WRITES;
 			}
 			RenderPassImage rp[32] = {};
-			for (size_t i = 0; i < renderpass->desc.attachments.size(); ++i)
+			for (size_t i = 0; i < arrlenu(renderpass->desc.attachments); ++i)
 			{
-				rp[i] = renderpass->desc.attachments[i];
+				rp[i] = wiGraphicsConvertRenderPassAttachmentToImage(&renderpass->desc.attachments[i]);
 			}
-			RenderPassBegin(rp, (uint32_t)renderpass->desc.attachments.size(), cmd, flags);
+			RenderPassBegin(rp, (uint32_t)arrlenu(renderpass->desc.attachments), cmd, flags);
 		}
 	};
 

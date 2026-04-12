@@ -4,7 +4,7 @@
 #include "wiSpriteFont.h"
 #include "wiRenderer.h"
 
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi
 {
@@ -24,7 +24,7 @@ namespace wi
 		current_buffersize = GetInternalResolution();
 		current_layoutscale = 0; // invalidate layout
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		const uint32_t sampleCount = std::max(getMSAASampleCount(), getMSAASampleCount2D());
 
@@ -33,7 +33,7 @@ namespace wi
 		{
 			TextureDesc desc = GetDepthStencil()->GetDesc();
 			desc.layout = ResourceState::SHADER_RESOURCE;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 			desc.format = Format::R8_UINT;
 			desc.layout = ResourceState::SHADER_RESOURCE;
 			device->CreateTexture(&desc, nullptr, &rtStencilExtracted);
@@ -56,7 +56,7 @@ namespace wi
 
 		{
 			TextureDesc desc;
-			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
 			desc.format = Format::R8G8B8A8_UNORM;
 			desc.width = GetPhysicalWidth();
 			desc.height = GetPhysicalHeight();
@@ -163,7 +163,7 @@ namespace wi
 			const_cast<RenderPath2D*>(this)->PreRender();
 		}
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		CommandList video_cmd;
 		if (!video_decodes.empty())
@@ -212,29 +212,29 @@ namespace wi
 		if (rtFinal_MSAA.IsValid())
 		{
 			// MSAA:
-			rp[rp_count++] = RenderPassImage::RenderTarget(
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageRenderTarget(
 				&rtFinal_MSAA,
 				RenderPassImage::LoadOp::CLEAR,
-				RenderPassImage::StoreOp::DONTCARE,
+				RenderPassImage::StoreOp::STOREOP_DONTCARE,
 				ResourceState::RENDERTARGET,
 				ResourceState::RENDERTARGET
 			);
-			rp[rp_count++] = RenderPassImage::Resolve(&rtFinal);
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageResolve(&rtFinal);
 		}
 		else
 		{
 			// Single sample:
-			rp[rp_count++] = RenderPassImage::RenderTarget(&rtFinal, RenderPassImage::LoadOp::CLEAR);
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageRenderTarget(&rtFinal, RenderPassImage::LoadOp::CLEAR);
 		}
 		if (stencilScaled.IsValid())
 		{
 			// Scaled stencil:
-			rp[rp_count++] = RenderPassImage::DepthStencil(&stencilScaled, RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::DONTCARE);
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageDepthStencil(&stencilScaled, RenderPassImage::LoadOp::CLEAR, RenderPassImage::StoreOp::STOREOP_DONTCARE);
 		}
 		else if (dsv != nullptr)
 		{
 			// Native stencil:
-			rp[rp_count++] = RenderPassImage::DepthStencil(dsv, RenderPassImage::LoadOp::LOAD, RenderPassImage::StoreOp::STORE);
+			rp[rp_count++] = wiGraphicsCreateRenderPassImageDepthStencil(dsv, RenderPassImage::LoadOp::LOAD, RenderPassImage::StoreOp::STORE);
 		}
 		device->RenderPassBegin(rp, rp_count, cmd);
 
@@ -243,7 +243,7 @@ namespace wi
 		vp.height = (float)rtFinal.GetDesc().height;
 		device->BindViewports(1, &vp, cmd);
 
-		wi::graphics::Rect rect;
+		wi::Rect rect;
 		rect.left = 0;
 		rect.right = (int32_t)rtFinal.GetDesc().width;
 		rect.top = 0;
@@ -289,7 +289,7 @@ namespace wi
 	}
 	void RenderPath2D::Compose(CommandList cmd) const
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		device->EventBegin("RenderPath2D::Compose", cmd);
 
 		wi::image::Params fx;

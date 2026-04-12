@@ -21,6 +21,6 @@ class Example_ImGui : public wi::Application
 public:
 	~Example_ImGui() override;
 	void Initialize() override;
-	void Compose(wi::graphics::CommandList cmd) override;
+	void Compose(wi::CommandList cmd) override;
 };
 

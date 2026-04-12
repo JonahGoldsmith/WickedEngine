@@ -126,18 +126,18 @@ namespace wi::image
 		SAMPLEMODE sampleFlag = SAMPLEMODE_MIRROR;
 		QUALITY quality = QUALITY_LINEAR;
 
-		const wi::graphics::Texture* maskMap = nullptr;
-		const wi::graphics::Texture* backgroundMap = nullptr;
+		const wi::Texture* maskMap = nullptr;
+		const wi::Texture* backgroundMap = nullptr;
 		int image_subresource = -1;
 		int mask_subresource = -1;
 		int background_subresource = -1;
 
 		// Set a mask map that will be used to multiply the base image
-		constexpr void setMaskMap(const wi::graphics::Texture* tex) { maskMap = tex; }
+		constexpr void setMaskMap(const wi::Texture* tex) { maskMap = tex; }
 		// Set a texture that will be used to blend to the transparent part of the image with screen coordinates
 		//	Will be used if using enableBackground()
 		//	If you don't set this per image, then wi::image::SetBackground() will be used instead
-		constexpr void setBackgroundMap(const wi::graphics::Texture* tex) { backgroundMap = tex; }
+		constexpr void setBackgroundMap(const wi::Texture* tex) { backgroundMap = tex; }
 
 		constexpr bool isDrawRectEnabled() const { return _flags & DRAWRECT; }
 		constexpr bool isDrawRect2Enabled() const { return _flags & DRAWRECT2; }
@@ -245,10 +245,10 @@ namespace wi::image
 	void SetCanvas(const wi::Canvas& current_canvas);
 
 	// Set a background texture (applied to all image rendering commands on the current thread that used enableBackground())
-	void SetBackground(const wi::graphics::Texture& texture);
+	void SetBackground(const wi::Texture& texture);
 
 	// Draw the specified texture with the specified parameters
-	void Draw(const wi::graphics::Texture* texture, const Params& params, wi::graphics::CommandList cmd);
+	void Draw(const wi::Texture* texture, const Params& params, wi::CommandList cmd);
 
 	// Initializes the image renderer
 	void Initialize();

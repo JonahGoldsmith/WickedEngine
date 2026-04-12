@@ -3,7 +3,7 @@
 #include "wiMath_BindLua.h"
 #include "wiHelper.h"
 
-using namespace wi::graphics;
+using namespace wi;
 
 namespace wi::lua
 {
@@ -114,12 +114,12 @@ namespace wi::lua
 				}
 			}
 		}
-		wi::graphics::Texture texture = wi::texturehelper::CreateGradientTexture(
+		wi::Texture texture = wi::texturehelper::CreateGradientTexture(
 			gradient_type,
 			width, height,
 			uv_start, uv_end,
 			gradient_flags,
-			wi::graphics::SwizzleFromString(swizzle_string.c_str()),
+			wi::SwizzleFromString(swizzle_string.c_str()),
 			perlin_scale,
 			perlin_seed,
 			perlin_octaves,
@@ -177,7 +177,7 @@ namespace wi::lua
 			}
 		}
 
-		wi::graphics::Texture texture = wi::texturehelper::CreateLensDistortionNormalMap(
+		wi::Texture texture = wi::texturehelper::CreateLensDistortionNormalMap(
 			width, height,
 			uv_start,
 			radius,

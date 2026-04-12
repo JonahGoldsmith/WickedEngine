@@ -23,7 +23,7 @@ namespace wi
 		constexpr bool IsValid() const { return internal_state.IsValid(); }
 
 		const wi::vector<uint8_t>& GetFileData() const;
-		const wi::graphics::Texture& GetTexture() const;
+		const wi::Texture& GetTexture() const;
 		uint32_t GetTextureFullMipCount() const;
 		const wi::audio::Sound& GetSound() const;
 		const std::string& GetScript() const;
@@ -36,8 +36,8 @@ namespace wi
 		void SetFileData(wi::vector<uint8_t>&& data);
 		// Allows to set a Texture to the resource from outside
 		//	srgb_subresource: you can provide a subresource for SRGB view if the texture is going to be used as SRGB with the GetTextureSRGBSubresource() (optional)
-		void SetTexture(const wi::graphics::Texture& texture, int srgb_subresource = -1);
-		void SetTextureVirtual(const wi::graphics::GPUBuffer& tile_pool, const wi::graphics::Texture& residency, const wi::graphics::Texture& feedback); // for virtual texture, bind additional resources to have same lifetime
+		void SetTexture(const wi::Texture& texture, int srgb_subresource = -1);
+		void SetTextureVirtual(const wi::GPUBuffer& tile_pool, const wi::Texture& residency, const wi::Texture& feedback); // for virtual texture, bind additional resources to have same lifetime
 		void SetSound(const wi::audio::Sound& sound);
 		void SetScript(const std::string& script);
 		void SetVideo(const wi::video::Video& script);

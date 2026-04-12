@@ -15,7 +15,7 @@
 
 #include <algorithm>
 
-using namespace wi::graphics;
+using namespace wi;
 using namespace wi::scene;
 using namespace wi::enums;
 
@@ -63,7 +63,7 @@ namespace wi
 
 	void EmittedParticleSystem::CreateSelfBuffers()
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		if (particleBuffer.desc.size < MAX_PARTICLES * sizeof(Particle))
 		{
@@ -71,7 +71,7 @@ namespace wi
 
 			GPUBufferDesc bd;
 			bd.usage = Usage::DEFAULT;
-			bd.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			bd.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 
 			// Particle buffer:
@@ -167,7 +167,7 @@ namespace wi
 			// Distance buffer:
 			GPUBufferDesc bd;
 			bd.usage = Usage::DEFAULT;
-			bd.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			bd.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 			bd.stride = sizeof(uint32_t);
 			bd.size = bd.stride * MAX_PARTICLES;
@@ -183,7 +183,7 @@ namespace wi
 		{
 			GPUBufferDesc bd;
 			bd.usage = Usage::DEFAULT;
-			bd.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			bd.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
 
 			if (densityBuffer.desc.size < MAX_PARTICLES * sizeof(float))
@@ -232,7 +232,7 @@ namespace wi
 
 			GPUBufferDesc bd;
 			bd.usage = Usage::DEFAULT;
-			bd.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+			bd.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
 			bd.stride = sizeof(counters);
 			bd.size = bd.stride;
 			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
@@ -246,7 +246,7 @@ namespace wi
 
 			// Indirect Execution buffer:
 			bd.usage = Usage::DEFAULT;
-			bd.bind_flags = BindFlag::UNORDERED_ACCESS;
+			bd.bind_flags = BindFlag::BIND_UNORDERED_ACCESS;
 			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED | ResourceMiscFlag::INDIRECT_ARGS;
 			bd.stride = sizeof(EmitterIndirectArgs);
 			bd.size = bd.stride;
@@ -256,8 +256,8 @@ namespace wi
 			// Constant buffer:
 			bd.usage = Usage::DEFAULT;
 			bd.size = sizeof(EmittedParticleCB);
-			bd.bind_flags = BindFlag::CONSTANT_BUFFER;
-			bd.misc_flags = ResourceMiscFlag::NONE;
+			bd.bind_flags = BindFlag::BIND_CONSTANT_BUFFER;
+			bd.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 			device->CreateBuffer(&bd, nullptr, &constantBuffer);
 			device->SetName(&constantBuffer, "EmittedParticleSystem::constantBuffer");
 
@@ -265,8 +265,8 @@ namespace wi
 			{
 				GPUBufferDesc debugBufDesc = counterBuffer.GetDesc();
 				debugBufDesc.usage = Usage::READBACK;
-				debugBufDesc.bind_flags = BindFlag::NONE;
-				debugBufDesc.misc_flags = ResourceMiscFlag::NONE;
+				debugBufDesc.bind_flags = BindFlag::BIND_NONE;
+				debugBufDesc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
 				for (int i = 0; i < arraysize(statisticsReadbackBuffer); ++i)
 				{
 					device->CreateBuffer(&debugBufDesc, nullptr, &statisticsReadbackBuffer[i]);
@@ -278,7 +278,7 @@ namespace wi
 
 	void EmittedParticleSystem::CreateRaytracingRenderData()
 	{
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 
 		if (device->CheckCapability(GraphicsDeviceCapability::RAYTRACING) && !BLAS.IsValid() && primitiveBuffer.IsValid())
 		{
@@ -365,7 +365,7 @@ namespace wi
 		std::swap(aliveList[0], aliveList[1]);
 
 		// Read back statistics (with GPU delay):
-		const uint32_t oldest_stat_index = wi::graphics::GetDevice()->GetBufferIndex();
+		const uint32_t oldest_stat_index = wi::GetDevice()->GetBufferIndex();
 		memcpy(&statistics, statisticsReadbackBuffer[oldest_stat_index].mapped_data, sizeof(statistics));
 
 		if (statistics.aliveCount > 0 || statistics.aliveCount_afterSimulation > 0)
@@ -436,7 +436,7 @@ namespace wi
 		if (!particleBuffer.IsValid())
 			return;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		device->EventBegin("UpdateEmittedParticles", cmd);
 
 		if (!IsPaused() && dt > 0)
@@ -548,7 +548,7 @@ namespace wi
 			device->UpdateBuffer(&constantBuffer, &cb, cmd);
 			{
 				GPUBarrier barriers[] = {
-					GPUBarrier::Buffer(&constantBuffer, ResourceState::COPY_DST, ResourceState::CONSTANT_BUFFER),
+					wiGraphicsCreateGPUBarrierBuffer(&constantBuffer, ResourceState::COPY_DST, ResourceState::CONSTANT_BUFFER),
 				};
 				device->Barrier(barriers, arraysize(barriers), cmd);
 			}
@@ -569,8 +569,8 @@ namespace wi
 			device->BindUAV(&culledIndirectionBuffer, 11, cmd);
 			device->BindUAV(&culledIndirectionBuffer2, 12, cmd);
 
-			GPUBarrier barrier_indirect_uav = GPUBarrier::Buffer(&indirectBuffers, ResourceState::INDIRECT_ARGUMENT, ResourceState::UNORDERED_ACCESS);
-			GPUBarrier barrier_uav_indirect = GPUBarrier::Buffer(&indirectBuffers, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT);
+			GPUBarrier barrier_indirect_uav = wiGraphicsCreateGPUBarrierBuffer(&indirectBuffers, ResourceState::INDIRECT_ARGUMENT, ResourceState::UNORDERED_ACCESS);
+			GPUBarrier barrier_uav_indirect = wiGraphicsCreateGPUBarrierBuffer(&indirectBuffers, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT);
 
 			device->Barrier(&barrier_indirect_uav, 1, cmd);
 
@@ -585,7 +585,7 @@ namespace wi
 				bufferoffset += sizeof(EmitLocation);
 			}
 			emit_locations.clear();
-			device->Barrier(GPUBarrier::Memory(), cmd);
+			device->Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd);
 			device->EventEnd(cmd);
 
 			// kick off indirect updating
@@ -607,7 +607,7 @@ namespace wi
 				// Reset grid cell offset buffer with invalid offsets (max uint):
 				device->EventBegin("Grid - Reset", cmd);
 				device->ClearUAV(&sphGridCells, 0, cmd);
-				device->Barrier(GPUBarrier::Memory(), cmd);
+				device->Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd);
 				device->EventEnd(cmd);
 
 				// Assign particles into partitioning grid:
@@ -626,7 +626,7 @@ namespace wi
 				device->DispatchIndirect(&indirectBuffers, offsetof(EmitterIndirectArgs, dispatch), cmd);
 				{
 					GPUBarrier barriers[] = {
-						GPUBarrier::Memory(&sphGridCells),
+						wiGraphicsCreateGPUBarrierMemory(&sphGridCells),
 					};
 					device->Barrier(barriers, arraysize(barriers), cmd);
 				}
@@ -648,7 +648,7 @@ namespace wi
 				device->Dispatch((SPH_PARTITION_BUCKET_COUNT + THREADCOUNT_SIMULATION - 1) / THREADCOUNT_SIMULATION, 1, 1, cmd);
 				{
 					GPUBarrier barriers[] = {
-						GPUBarrier::Memory(&sphGridCells),
+						wiGraphicsCreateGPUBarrierMemory(&sphGridCells),
 					};
 					device->Barrier(barriers, arraysize(barriers), cmd);
 				}
@@ -671,8 +671,8 @@ namespace wi
 				device->DispatchIndirect(&indirectBuffers, offsetof(EmitterIndirectArgs, dispatch), cmd);
 				{
 					GPUBarrier barriers[] = {
-						GPUBarrier::Buffer(&sphGridCells, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
-						GPUBarrier::Buffer(&sphParticleCells, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
+						wiGraphicsCreateGPUBarrierBuffer(&sphGridCells, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
+						wiGraphicsCreateGPUBarrierBuffer(&sphParticleCells, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
 					};
 					device->Barrier(barriers, arraysize(barriers), cmd);
 				}
@@ -696,7 +696,7 @@ namespace wi
 				};
 				device->BindUAVs(uav_density, 0, arraysize(uav_density), cmd);
 				device->DispatchIndirect(&indirectBuffers, offsetof(EmitterIndirectArgs, dispatch), cmd);
-				device->Barrier(GPUBarrier::Memory(), cmd);
+				device->Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd);
 				device->EventEnd(cmd);
 
 				// 6.) Compute particle pressure forces:
@@ -715,7 +715,7 @@ namespace wi
 				};
 				device->BindUAVs(uav_force, 0, arraysize(uav_force), cmd);
 				device->DispatchIndirect(&indirectBuffers, offsetof(EmitterIndirectArgs, dispatch), cmd);
-				device->Barrier(GPUBarrier::Memory(), cmd);
+				device->Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd);
 				device->EventEnd(cmd);
 
 
@@ -768,9 +768,9 @@ namespace wi
 			device->DispatchIndirect(&indirectBuffers, offsetof(EmitterIndirectArgs, dispatch), cmd);
 			{
 				GPUBarrier barriers[] = {
-					GPUBarrier::Memory(),
-					GPUBarrier::Buffer(&counterBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
-					GPUBarrier::Buffer(&distanceBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
+					wiGraphicsCreateGPUBarrierMemory(),
+					wiGraphicsCreateGPUBarrierBuffer(&counterBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+					wiGraphicsCreateGPUBarrierBuffer(&distanceBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
 				};
 				device->Barrier(barriers, arraysize(barriers), cmd);
 			}
@@ -780,9 +780,9 @@ namespace wi
 
 		if (IsSorted())
 		{
-			device->Barrier(GPUBarrier::Buffer(&distanceBuffer, ResourceState::SHADER_RESOURCE_COMPUTE, ResourceState::UNORDERED_ACCESS), cmd);
+			device->Barrier(wiGraphicsCreateGPUBarrierBuffer(&distanceBuffer, ResourceState::SHADER_RESOURCE_COMPUTE, ResourceState::UNORDERED_ACCESS), cmd);
 			wi::gpusortlib::Sort(MAX_PARTICLES, distanceBuffer, counterBuffer, offsetof(ParticleCounters, culledCount), culledIndirectionBuffer, cmd);
-			device->Barrier(GPUBarrier::Buffer(&distanceBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE), cmd);
+			device->Barrier(wiGraphicsCreateGPUBarrierBuffer(&distanceBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE), cmd);
 		}
 
 		if (!IsPaused() && dt > 0)
@@ -803,8 +803,8 @@ namespace wi
 
 			{
 				GPUBarrier barriers[] = {
-					GPUBarrier::Memory(),
-					GPUBarrier::Buffer(&indirectBuffers, ResourceState::INDIRECT_ARGUMENT, ResourceState::UNORDERED_ACCESS),
+					wiGraphicsCreateGPUBarrierMemory(),
+					wiGraphicsCreateGPUBarrierBuffer(&indirectBuffers, ResourceState::INDIRECT_ARGUMENT, ResourceState::UNORDERED_ACCESS),
 				};
 				device->Barrier(barriers, arraysize(barriers), cmd);
 			}
@@ -817,25 +817,25 @@ namespace wi
 
 		{
 			GPUBarrier barriers[] = {
-				GPUBarrier::Memory(),
-				GPUBarrier::Buffer(&counterBuffer, ResourceState::SHADER_RESOURCE, ResourceState::COPY_SRC),
+				wiGraphicsCreateGPUBarrierMemory(),
+				wiGraphicsCreateGPUBarrierBuffer(&counterBuffer, ResourceState::SHADER_RESOURCE, ResourceState::COPY_SRC),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
 
 		// Statistics is copied to readback:
-		const uint32_t oldest_stat_index = wi::graphics::GetDevice()->GetBufferIndex();
+		const uint32_t oldest_stat_index = wi::GetDevice()->GetBufferIndex();
 		device->CopyBuffer(&statisticsReadbackBuffer[oldest_stat_index], 0, &counterBuffer, 0, sizeof(ParticleCounters), cmd);
 
 		{
 			const GPUBarrier barriers[] = {
-				GPUBarrier::Buffer(&indirectBuffers, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT),
-				GPUBarrier::Buffer(&counterBuffer, ResourceState::COPY_SRC, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&particleBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&aliveList[1], ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&generalBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&culledIndirectionBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
-				GPUBarrier::Buffer(&culledIndirectionBuffer2, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
+				wiGraphicsCreateGPUBarrierBuffer(&indirectBuffers, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT),
+				wiGraphicsCreateGPUBarrierBuffer(&counterBuffer, ResourceState::COPY_SRC, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&particleBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&aliveList[1], ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&generalBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
+				wiGraphicsCreateGPUBarrierBuffer(&culledIndirectionBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
+				wiGraphicsCreateGPUBarrierBuffer(&culledIndirectionBuffer2, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -848,7 +848,7 @@ namespace wi
 	{
 		if (IsInactive())
 			return;
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		device->EventBegin("EmittedParticle", cmd);
 
 		if (wi::renderer::GetWireframeMode() == wi::renderer::WIREFRAME_ONLY)
@@ -905,7 +905,7 @@ namespace wi
 		if (!material.IsCastingShadow())
 			return;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
+		GraphicsDevice* device = wi::GetDevice();
 		device->EventBegin("EmittedParticle Shadow", cmd);
 
 		device->BindPipelineState(&PSO_shadow, cmd);
@@ -958,7 +958,7 @@ namespace wi
 		desc.type = TextureDesc::Type::TEXTURE_1D;
 		desc.width = arraysize(data);
 		desc.format = Format::R16_UNORM;
-		desc.bind_flags = BindFlag::SHADER_RESOURCE;
+		desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
 		desc.swizzle = SwizzleFromString("rrr1");
 		SubresourceData initdata;
 		initdata.data_ptr = data;
@@ -975,7 +975,7 @@ namespace wi
 			wi::renderer::LoadShader(ShaderStage::VS, vertexShader_shadow, "emittedparticleVS_shadow.cso");
 			wi::renderer::LoadShader(ShaderStage::PS, shadowPS, "emittedparticlePS_shadow.cso");
 
-			if (ALLOW_MESH_SHADER && wi::graphics::GetDevice()->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
+			if (ALLOW_MESH_SHADER && wi::GetDevice()->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
 			{
 				wi::renderer::LoadShader(ShaderStage::MS, meshShader, "emittedparticleMS.cso");
 			}
@@ -1001,13 +1001,13 @@ namespace wi
 			wi::renderer::LoadShader(ShaderStage::CS, simulateCS_SORTING_DEPTHCOLLISIONS, "emittedparticle_simulateCS_SORTING_DEPTHCOLLISIONS.cso");
 
 
-			GraphicsDevice* device = wi::graphics::GetDevice();
+			GraphicsDevice* device = wi::GetDevice();
 
 			for (int i = 0; i < BLENDMODE_COUNT; ++i)
 			{
 				PipelineStateDesc desc;
 				desc.pt = PrimitiveTopology::TRIANGLESTRIP;
-				if (ALLOW_MESH_SHADER && wi::graphics::GetDevice()->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
+				if (ALLOW_MESH_SHADER && wi::GetDevice()->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
 				{
 					desc.ms = &meshShader;
 				}
@@ -1029,7 +1029,7 @@ namespace wi
 			{
 				PipelineStateDesc desc;
 				desc.pt = PrimitiveTopology::TRIANGLESTRIP;
-				if (ALLOW_MESH_SHADER && wi::graphics::GetDevice()->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
+				if (ALLOW_MESH_SHADER && wi::GetDevice()->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
 				{
 					desc.ms = &meshShader;
 				}
@@ -1066,7 +1066,7 @@ namespace wi
 
 		RasterizerState rs;
 		rs.fill_mode = FillMode::SOLID;
-		rs.cull_mode = CullMode::NONE;
+		rs.cull_mode = CullMode::CULL_NONE;
 		rs.front_counter_clockwise = true;
 		rs.depth_bias = 0;
 		rs.depth_bias_clamp = 0;
@@ -1090,7 +1090,7 @@ namespace wi
 
 
 		rs.fill_mode = FillMode::WIREFRAME;
-		rs.cull_mode = CullMode::NONE;
+		rs.cull_mode = CullMode::CULL_NONE;
 		rs.front_counter_clockwise = true;
 		rs.depth_bias = 0;
 		rs.depth_bias_clamp = 0;
@@ -1103,7 +1103,7 @@ namespace wi
 
 		DepthStencilState dsd;
 		dsd.depth_enable = true;
-		dsd.depth_write_mask = DepthWriteMask::ZERO;
+		dsd.depth_write_mask = DepthWriteMask::DEPTH_WRITE_ZERO;
 		dsd.depth_func = ComparisonFunc::GREATER_EQUAL;
 		dsd.stencil_enable = false;
 		depthStencilState = dsd;
