@@ -3342,7 +3342,7 @@ std::mutex queue_locker;
 		}
 
 #else
-		UINT swapChainFlags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+		UINT swapChainFlags = desc->fullscreen ? DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH : 0u;
 		if (tearingSupported)
 		{
 			swapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
@@ -3417,15 +3417,35 @@ std::mutex queue_locker;
 
 			DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreenDesc = {};
 			fullscreenDesc.Windowed = !desc->fullscreen;
+			DXGI_SWAP_CHAIN_FULLSCREEN_DESC* requestedFullscreenDesc = desc->fullscreen ? &fullscreenDesc : nullptr;
 
 			hr = dxgiFactory->CreateSwapChainForHwnd(
 				queues[QUEUE_GRAPHICS].queue.Get(),
 				window,
 				&swapChainDesc,
-				&fullscreenDesc,
+				requestedFullscreenDesc,
 				nullptr,
 				tempSwapChain.GetAddressOf()
 			);
+			if (FAILED(hr) && (hr == E_ACCESSDENIED || hr == DXGI_ERROR_INVALID_CALL))
+			{
+				// Retry with conservative windowed settings: no mode switch request and no fullscreen descriptor.
+				DXGI_SWAP_CHAIN_DESC1 retryDesc = swapChainDesc;
+				retryDesc.Flags &= ~DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+				hr = dxgiFactory->CreateSwapChainForHwnd(
+					queues[QUEUE_GRAPHICS].queue.Get(),
+					window,
+					&retryDesc,
+					nullptr,
+					nullptr,
+					tempSwapChain.GetAddressOf()
+				);
+				if (SUCCEEDED(hr))
+				{
+					swapChainDesc = retryDesc;
+					WI_DX12_LOG_WARN("CreateSwapChainForHwnd recovered after retry without ALLOW_MODE_SWITCH / fullscreenDesc");
+				}
+			}
 #else
 			swapChainDesc.Scaling = DXGI_SCALING_ASPECT_RATIO_STRETCH;
 
