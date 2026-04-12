@@ -299,6 +299,9 @@ if(WICKED_SUBSET_ENABLE_VULKAN)
     wicked_subset_add_object(wicked_subset_graphics_vulkan_obj
         "${WICKED_SUBSET_ENGINE_ROOT}/wiGraphicsDevice_Vulkan.cpp"
     )
+    target_compile_definitions(wicked_subset_graphics_vulkan_obj PRIVATE
+        WICKEDENGINE_BUILD_VULKAN
+    )
 endif()
 
 if(WICKED_SUBSET_ENABLE_METAL)
@@ -398,8 +401,8 @@ if(WICKED_SUBSET_BUILD_CUBE_DEMO)
         "${WICKED_SUBSET_ENGINE_ROOT}/Utility/metal"
     )
 
-    target_sources(wicked_subset_cube_demo PRIVATE
-        $<TARGET_OBJECTS:wicked_subset_shadercompiler_obj>
+    target_link_libraries(wicked_subset_cube_demo PRIVATE
+        wicked_subset_shadercompiler_obj
     )
 
     wicked_subset_link_mmgr_runtime_object(wicked_subset_cube_demo)
@@ -411,8 +414,8 @@ if(WICKED_SUBSET_BUILD_CUBE_DEMO)
         if(NOT TARGET wicked_subset_graphics_metal_obj)
             message(FATAL_ERROR "EngineConfig requests Metal backend (WI_ENGINECONFIG_SUBSET_BACKEND=2), but WICKED_SUBSET_ENABLE_METAL is OFF.")
         endif()
-        target_sources(wicked_subset_cube_demo PRIVATE
-            $<TARGET_OBJECTS:wicked_subset_graphics_metal_obj>
+        target_link_libraries(wicked_subset_cube_demo PRIVATE
+            wicked_subset_graphics_metal_obj
         )
     elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_DX12)
         if(NOT WIN32)
@@ -421,16 +424,21 @@ if(WICKED_SUBSET_BUILD_CUBE_DEMO)
         if(NOT TARGET wicked_subset_graphics_dx12_obj)
             message(FATAL_ERROR "EngineConfig requests DX12 backend (WI_ENGINECONFIG_SUBSET_BACKEND=1), but WICKED_SUBSET_ENABLE_DX12 is OFF.")
         endif()
-        target_sources(wicked_subset_cube_demo PRIVATE
-            $<TARGET_OBJECTS:wicked_subset_graphics_dx12_obj>
+        target_link_libraries(wicked_subset_cube_demo PRIVATE
+            wicked_subset_graphics_dx12_obj
         )
         target_link_libraries(wicked_subset_cube_demo PRIVATE d3d12 dxgi dxguid)
     elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_VULKAN)
         if(NOT TARGET wicked_subset_graphics_vulkan_obj)
             message(FATAL_ERROR "EngineConfig requests Vulkan backend (WI_ENGINECONFIG_SUBSET_BACKEND=0), but WICKED_SUBSET_ENABLE_VULKAN is OFF.")
         endif()
+        target_compile_definitions(wicked_subset_cube_demo PRIVATE
+            WICKEDENGINE_BUILD_VULKAN
+        )
+        target_link_libraries(wicked_subset_cube_demo PRIVATE
+            wicked_subset_graphics_vulkan_obj
+        )
         target_sources(wicked_subset_cube_demo PRIVATE
-            $<TARGET_OBJECTS:wicked_subset_graphics_vulkan_obj>
             "${WICKED_SUBSET_ENGINE_ROOT}/Utility/spirv_reflect.c"
         )
     else()
@@ -501,8 +509,8 @@ if(WICKED_SUBSET_BUILD_CUBE_DEMO)
         "${WICKED_SUBSET_ENGINE_ROOT}/Utility/metal"
     )
 
-    target_sources(wicked_subset_cube_indirect_compare_demo PRIVATE
-        $<TARGET_OBJECTS:wicked_subset_shadercompiler_obj>
+    target_link_libraries(wicked_subset_cube_indirect_compare_demo PRIVATE
+        wicked_subset_shadercompiler_obj
     )
 
     wicked_subset_link_mmgr_runtime_object(wicked_subset_cube_indirect_compare_demo)
@@ -514,8 +522,8 @@ if(WICKED_SUBSET_BUILD_CUBE_DEMO)
         if(NOT TARGET wicked_subset_graphics_metal_obj)
             message(FATAL_ERROR "EngineConfig requests Metal backend (WI_ENGINECONFIG_SUBSET_BACKEND=2), but WICKED_SUBSET_ENABLE_METAL is OFF.")
         endif()
-        target_sources(wicked_subset_cube_indirect_compare_demo PRIVATE
-            $<TARGET_OBJECTS:wicked_subset_graphics_metal_obj>
+        target_link_libraries(wicked_subset_cube_indirect_compare_demo PRIVATE
+            wicked_subset_graphics_metal_obj
         )
     elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_DX12)
         if(NOT WIN32)
@@ -524,16 +532,21 @@ if(WICKED_SUBSET_BUILD_CUBE_DEMO)
         if(NOT TARGET wicked_subset_graphics_dx12_obj)
             message(FATAL_ERROR "EngineConfig requests DX12 backend (WI_ENGINECONFIG_SUBSET_BACKEND=1), but WICKED_SUBSET_ENABLE_DX12 is OFF.")
         endif()
-        target_sources(wicked_subset_cube_indirect_compare_demo PRIVATE
-            $<TARGET_OBJECTS:wicked_subset_graphics_dx12_obj>
+        target_link_libraries(wicked_subset_cube_indirect_compare_demo PRIVATE
+            wicked_subset_graphics_dx12_obj
         )
         target_link_libraries(wicked_subset_cube_indirect_compare_demo PRIVATE d3d12 dxgi dxguid)
     elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_VULKAN)
         if(NOT TARGET wicked_subset_graphics_vulkan_obj)
             message(FATAL_ERROR "EngineConfig requests Vulkan backend (WI_ENGINECONFIG_SUBSET_BACKEND=0), but WICKED_SUBSET_ENABLE_VULKAN is OFF.")
         endif()
+        target_compile_definitions(wicked_subset_cube_indirect_compare_demo PRIVATE
+            WICKEDENGINE_BUILD_VULKAN
+        )
+        target_link_libraries(wicked_subset_cube_indirect_compare_demo PRIVATE
+            wicked_subset_graphics_vulkan_obj
+        )
         target_sources(wicked_subset_cube_indirect_compare_demo PRIVATE
-            $<TARGET_OBJECTS:wicked_subset_graphics_vulkan_obj>
             "${WICKED_SUBSET_ENGINE_ROOT}/Utility/spirv_reflect.c"
         )
     else()

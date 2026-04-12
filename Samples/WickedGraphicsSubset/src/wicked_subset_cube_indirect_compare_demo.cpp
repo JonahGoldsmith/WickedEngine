@@ -1059,7 +1059,14 @@ private:
 
         if (!device_->CreateSwapChain(&desc, (wi::platform::window_type)nativeWindow_, &swapchain_))
         {
-            std::fprintf(stderr, "CreateSwapChain failed\n");
+            std::fprintf(
+                stderr,
+                "CreateSwapChain failed (backend=%s, nativeWindow=%p, size=%ux%u)\n",
+                device_ != nullptr ? device_->GetTag() : "unknown",
+                nativeWindow_,
+                desc.width,
+                desc.height
+            );
             return false;
         }
         return true;

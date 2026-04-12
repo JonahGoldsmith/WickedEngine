@@ -3348,29 +3348,59 @@ std::mutex queue_locker;
 			swapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 		}
 
-		if (internal_state->swapChain == nullptr)
-		{
-			// Create swapchain:
-			ComPtr<IDXGISwapChain1> tempSwapChain;
+			if (internal_state->swapChain == nullptr)
+			{
+				// Create swapchain:
+				ComPtr<IDXGISwapChain1> tempSwapChain;
 
-			DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-			swapChainDesc.Width = desc->width;
-			swapChainDesc.Height = desc->height;
-			swapChainDesc.Format = rtv_desc.Format;
+				DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
+				swapChainDesc.Width = desc->width;
+				swapChainDesc.Height = desc->height;
+				swapChainDesc.Format = rtv_desc.Format;
 			swapChainDesc.Stereo = false;
 			swapChainDesc.SampleDesc.Count = 1;
 			swapChainDesc.SampleDesc.Quality = 0;
 			swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
 			swapChainDesc.BufferCount = desc->buffer_count;
-			swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-			swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-			swapChainDesc.Flags = swapChainFlags;
+				swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+				swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+				swapChainDesc.Flags = swapChainFlags;
 
 #ifdef PLATFORM_WINDOWS_DESKTOP
-			swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+				if (window == nullptr)
+				{
+					WI_DX12_LOG_ERROR(
+						"DX12 CreateSwapChainForHwnd aborted: hwnd=null, desc={w=%u h=%u buffers=%u format=%d vsync=%d fullscreen=%d} flags=0x%X",
+						(unsigned int)desc->width,
+						(unsigned int)desc->height,
+						(unsigned int)desc->buffer_count,
+						(int)desc->format,
+						(int)desc->vsync,
+						(int)desc->fullscreen,
+						(unsigned int)swapChainFlags
+					);
+					return false;
+				}
+				if (IsWindow(window) == FALSE)
+				{
+					WI_DX12_LOG_ERROR(
+						"DX12 CreateSwapChainForHwnd aborted: hwnd=%p is not a valid window, desc={w=%u h=%u buffers=%u format=%d vsync=%d fullscreen=%d} flags=0x%X",
+						(void*)window,
+						(unsigned int)desc->width,
+						(unsigned int)desc->height,
+						(unsigned int)desc->buffer_count,
+						(int)desc->format,
+						(int)desc->vsync,
+						(int)desc->fullscreen,
+						(unsigned int)swapChainFlags
+					);
+					return false;
+				}
 
-			DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreenDesc = {};
-			fullscreenDesc.Windowed = !desc->fullscreen;
+				swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+
+				DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreenDesc = {};
+				fullscreenDesc.Windowed = !desc->fullscreen;
 
 			hr = dxgiFactory->CreateSwapChainForHwnd(
 				queues[QUEUE_GRAPHICS].queue.Get(),
@@ -3392,29 +3422,97 @@ std::mutex queue_locker;
 			);
 #endif // PLATFORM_WINDOWS_DESKTOP
 
-			if (FAILED(hr))
-			{
-				return false;
-			}
+				if (FAILED(hr))
+				{
+	#ifdef PLATFORM_WINDOWS_DESKTOP
+					RECT rect = {};
+					const bool has_rect = GetClientRect(window, &rect) != FALSE;
+					const long client_width = has_rect ? (rect.right - rect.left) : -1;
+					const long client_height = has_rect ? (rect.bottom - rect.top) : -1;
+					DWORD hwnd_pid = 0;
+					DWORD hwnd_tid = GetWindowThreadProcessId(window, &hwnd_pid);
+					WI_DX12_LOG_ERROR(
+						"IDXGIFactory::CreateSwapChainForHwnd failed: hr=0x%08X (%s), hwnd=%p valid=%d tid=%lu pid=%lu client=%ldx%ld desc={w=%u h=%u buffers=%u format=%d vsync=%d fullscreen=%d} dxgi={usage=0x%X swapEffect=%d alphaMode=%d scaling=%d flags=0x%X}",
+						(unsigned int)hr,
+						dx12_internal::HrToString(hr),
+						(void*)window,
+						(int)(IsWindow(window) != FALSE),
+						(unsigned long)hwnd_tid,
+						(unsigned long)hwnd_pid,
+						client_width,
+						client_height,
+						(unsigned int)desc->width,
+						(unsigned int)desc->height,
+						(unsigned int)desc->buffer_count,
+						(int)desc->format,
+						(int)desc->vsync,
+						(int)desc->fullscreen,
+						(unsigned int)swapChainDesc.BufferUsage,
+						(int)swapChainDesc.SwapEffect,
+						(int)swapChainDesc.AlphaMode,
+						(int)swapChainDesc.Scaling,
+						(unsigned int)swapChainDesc.Flags
+					);
+	#else
+					WI_DX12_LOG_ERROR(
+						"IDXGIFactory::CreateSwapChainForCoreWindow failed: hr=0x%08X (%s), desc={w=%u h=%u buffers=%u format=%d vsync=%d fullscreen=%d} dxgi={usage=0x%X swapEffect=%d alphaMode=%d scaling=%d flags=0x%X}",
+						(unsigned int)hr,
+						dx12_internal::HrToString(hr),
+						(unsigned int)desc->width,
+						(unsigned int)desc->height,
+						(unsigned int)desc->buffer_count,
+						(int)desc->format,
+						(int)desc->vsync,
+						(int)desc->fullscreen,
+						(unsigned int)swapChainDesc.BufferUsage,
+						(int)swapChainDesc.SwapEffect,
+						(int)swapChainDesc.AlphaMode,
+						(int)swapChainDesc.Scaling,
+						(unsigned int)swapChainDesc.Flags
+					);
+	#endif
+					return false;
+				}
 
-			hr = tempSwapChain.As(&internal_state->swapChain);
-			if (FAILED(hr))
-			{
-				return false;
+				hr = tempSwapChain.As(&internal_state->swapChain);
+				if (FAILED(hr))
+				{
+					WI_DX12_LOG_ERROR(
+						"IDXGISwapChain1::QueryInterface(IDXGISwapChain4) failed: hr=0x%08X (%s)",
+						(unsigned int)hr,
+						dx12_internal::HrToString(hr)
+					);
+					return false;
+				}
 			}
-		}
-		else
-		{
-			// Resize swapchain:
-			dx12_check(internal_state->swapChain->ResizeBuffers(
-				desc->buffer_count,
-				desc->width,
-				desc->height,
-				rtv_desc.Format,
-				swapChainFlags
-			));
+			else
+			{
+				// Resize swapchain:
+				hr = internal_state->swapChain->ResizeBuffers(
+					desc->buffer_count,
+					desc->width,
+					desc->height,
+					rtv_desc.Format,
+					swapChainFlags
+				);
+				if (FAILED(hr))
+				{
+					WI_DX12_LOG_ERROR(
+						"IDXGISwapChain::ResizeBuffers failed: hr=0x%08X (%s), desc={w=%u h=%u buffers=%u format=%d vsync=%d fullscreen=%d} flags=0x%X",
+						(unsigned int)hr,
+						dx12_internal::HrToString(hr),
+						(unsigned int)desc->width,
+						(unsigned int)desc->height,
+						(unsigned int)desc->buffer_count,
+						(int)desc->format,
+						(int)desc->vsync,
+						(int)desc->fullscreen,
+						(unsigned int)swapChainFlags
+					);
+					return false;
+				}
 
-		}
+			}
 
 		const bool hdr = desc->allow_hdr && IsSwapChainSupportsHDR(swapchain);
 
@@ -3468,16 +3566,26 @@ std::mutex queue_locker;
 
 		arrsetlen(internal_state->textures, desc->buffer_count);
 
-		for (uint32_t i = 0; i < desc->buffer_count; ++i)
-		{
-			internal_state->textures[i] = new wi::allocator::shared_ptr<Resource_DX12>();
-			*internal_state->textures[i] = wi::allocator::make_shared<Resource_DX12>();
-			auto& backbuffer = *internal_state->textures[i];
-			backbuffer->allocationhandler = allocationhandler;
-			dx12_check(internal_state->swapChain->GetBuffer(i, PPV_ARGS(backbuffer->resource)));
-			backbuffer->rtv.init(this, rtv_desc, backbuffer->resource.Get());
-			backbuffer->srv.init(this, srv_desc, backbuffer->resource.Get());
-		}
+			for (uint32_t i = 0; i < desc->buffer_count; ++i)
+			{
+				internal_state->textures[i] = new wi::allocator::shared_ptr<Resource_DX12>();
+				*internal_state->textures[i] = wi::allocator::make_shared<Resource_DX12>();
+				auto& backbuffer = *internal_state->textures[i];
+				backbuffer->allocationhandler = allocationhandler;
+				hr = internal_state->swapChain->GetBuffer(i, PPV_ARGS(backbuffer->resource));
+				if (FAILED(hr))
+				{
+					WI_DX12_LOG_ERROR(
+						"IDXGISwapChain::GetBuffer(%u) failed: hr=0x%08X (%s)",
+						(unsigned int)i,
+						(unsigned int)hr,
+						dx12_internal::HrToString(hr)
+					);
+					return false;
+				}
+				backbuffer->rtv.init(this, rtv_desc, backbuffer->resource.Get());
+				backbuffer->srv.init(this, srv_desc, backbuffer->resource.Get());
+			}
 #endif // PLATFORM_XBOX
 
 		internal_state->dummyTexture.desc.format = desc->format;
