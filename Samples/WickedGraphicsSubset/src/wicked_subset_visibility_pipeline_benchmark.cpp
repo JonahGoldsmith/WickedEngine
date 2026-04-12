@@ -100,6 +100,7 @@ using wi::GPUBuffer;
 using wi::GPUBufferDesc;
 using wi::GPUQueryHeap;
 using wi::GPUQueryHeapDesc;
+using wi::InputClassification;
 using wi::InputLayout;
 using wi::PipelineState;
 using wi::PipelineStateDesc;
@@ -135,6 +136,7 @@ static constexpr uint32_t kTimestampFrameEnd = 7u;
 
 static constexpr uint32_t kArgByteStride = 20u;
 static constexpr float kPi = 3.14159265358979323846f;
+static constexpr uint32_t kMaxMeshDispatchGroups = 65535u;
 
 #if defined(WICKED_MMGR_ENABLED)
 void* SDLCALL SDLMmgrMalloc(size_t size)
@@ -260,6 +262,16 @@ Vec3 VecSub(const Vec3& a, const Vec3& b)
     return Vec3{ a.x - b.x, a.y - b.y, a.z - b.z };
 }
 
+Vec3 VecAdd(const Vec3& a, const Vec3& b)
+{
+    return Vec3{ a.x + b.x, a.y + b.y, a.z + b.z };
+}
+
+Vec3 VecScale(const Vec3& v, float s)
+{
+    return Vec3{ v.x * s, v.y * s, v.z * s };
+}
+
 Vec3 VecCross(const Vec3& a, const Vec3& b)
 {
     return Vec3{
@@ -278,6 +290,20 @@ Vec3 VecNormalize(const Vec3& v)
     }
     const float invLen = 1.0f / std::sqrt(lenSq);
     return Vec3{ v.x * invLen, v.y * invLen, v.z * invLen };
+}
+
+Vec3 BuildForwardFromYawPitch(float yawRadians, float pitchRadians)
+{
+    return VecNormalize(Vec3{
+        std::cos(pitchRadians) * std::sin(yawRadians),
+        std::sin(pitchRadians),
+        std::cos(pitchRadians) * std::cos(yawRadians),
+    });
+}
+
+Vec3 BuildRightFromForward(const Vec3& forward)
+{
+    return VecNormalize(VecCross(Vec3{ 0.0f, 1.0f, 0.0f }, forward));
 }
 
 Mat4 MatLookAtLH(const Vec3& eye, const Vec3& target, const Vec3& up)
@@ -404,8 +430,8 @@ struct SceneCB
     uint32_t activeCommandCount = 0;
     uint32_t activeInstanceCount = 0;
     uint32_t pipelineStyle = 0;
-    uint32_t scenarioMode = 0;
     uint32_t meshUseVisibleList = 0;
+    uint32_t meshCommandOffset = 0;
     uint32_t padding[3] = {};
 };
 
@@ -483,9 +509,12 @@ struct AggregateStats
     std::vector<uint32_t> hashValues;
 };
 
-static constexpr std::array<TierPreset, 3> kTierPresets = {
+static constexpr std::array<TierPreset, 6> kTierPresets = {
+    TierPreset{ "500K", 500'000ull },
     TierPreset{ "1M", 1'000'000ull },
+    TierPreset{ "2M", 2'000'000ull },
     TierPreset{ "5M", 5'000'000ull },
+    TierPreset{ "10M", 10'000'000ull },
     TierPreset{ "20M", 20'000'000ull },
 };
 
@@ -867,16 +896,25 @@ public:
         }
 
         BuildComboList();
+        autoRun_ = false;
         autoRunComboIndex_ = 0;
-        ApplyCombo(combos_[autoRunComboIndex_]);
-        autoRun_ = true;
+        ComboConfig initialCombo = {};
+        initialCombo.suite = activeSuite_;
+        initialCombo.pipeline = activePipeline_;
+        initialCombo.scenario = activeScenario_;
+        initialCombo.tierIndex = std::min(activeTier_, static_cast<uint32_t>(kTierPresets.size() - 1u));
+        ApplyCombo(initialCombo);
+        ResetCameraToScene();
+        LogStartupControls();
+        LogActiveTier();
 
         SDL_Log(
-            "[WickedVisibilityPipelineBenchmark] initialized | backend=%s | mesh=%s | instances=%u | commands=%u",
+            "[WickedVisibilityPipelineBenchmark] initialized | backend=%s | mesh=%s | instances=%u | commands=%u | auto-run=%s | camera=fly",
             BackendName(),
             supportsMeshShaders_ ? "yes" : "no",
             totalInstanceCount_,
-            totalCommandCount_);
+            totalCommandCount_,
+            autoRun_ ? "on" : "off");
 
         return true;
     }
@@ -906,6 +944,22 @@ public:
                 else if (event.type == SDL_EVENT_KEY_DOWN && event.key.down && !event.key.repeat)
                 {
                     HandleKey(event.key.key);
+                }
+                else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.down && event.button.button == SDL_BUTTON_RIGHT)
+                {
+                    mouseLookActive_ = true;
+                    SDL_SetWindowRelativeMouseMode(window_, true);
+                }
+                else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_RIGHT)
+                {
+                    mouseLookActive_ = false;
+                    SDL_SetWindowRelativeMouseMode(window_, false);
+                }
+                else if (event.type == SDL_EVENT_MOUSE_MOTION && mouseLookActive_)
+                {
+                    cameraYaw_ += event.motion.xrel * mouseLookSensitivity_;
+                    cameraPitch_ -= event.motion.yrel * mouseLookSensitivity_;
+                    cameraPitch_ = std::clamp(cameraPitch_, -1.54f, 1.54f);
                 }
             }
 
@@ -939,6 +993,11 @@ public:
     {
         SDL_Log("[WickedVisibilityPipelineBenchmark] Shutdown begin");
 
+        if (window_ != nullptr)
+        {
+            SDL_SetWindowRelativeMouseMode(window_, false);
+        }
+
         if (device_ != nullptr)
         {
             device_->WaitForGPU();
@@ -948,6 +1007,7 @@ public:
 
         pipelineIndexed_ = {};
         pipelineMesh_ = {};
+        pipelinePresent_ = {};
         csInstanceFilter_ = {};
         csClusterFilter_ = {};
         csCompactArgs_ = {};
@@ -959,6 +1019,10 @@ public:
         msCluster_ = {};
         psIndexed_ = {};
         psMesh_ = {};
+        vsPresent_ = {};
+        psPresent_ = {};
+
+        wi::DestroyInputLayout(indexedInputLayout_);
 
         swapchain_ = {};
         device_.reset();
@@ -1092,6 +1156,7 @@ private:
         depthDesc.height = swapchain_.desc.height;
         depthDesc.format = Format::D32_FLOAT;
         depthDesc.bind_flags = BindFlag::DEPTH_STENCIL;
+        depthDesc.clear.depth_stencil.depth = 1.0f;
         depthDesc.layout = ResourceState::DEPTHSTENCIL;
         if (!device_->CreateTexture(&depthDesc, nullptr, &depthTexture_))
         {
@@ -1146,15 +1211,39 @@ private:
         wi::InitDepthStencilState(depthStencilState_);
         depthStencilState_.depth_enable = true;
         depthStencilState_.depth_write_mask = DepthWriteMask::ALL;
-        depthStencilState_.depth_func = ComparisonFunc::GREATER_EQUAL;
+        depthStencilState_.depth_func = ComparisonFunc::LESS_EQUAL;
 
         wi::InitBlendState(blendState_);
         blendState_.alpha_to_coverage_enable = false;
         blendState_.render_target[0].blend_enable = false;
 
+        wi::DestroyInputLayout(indexedInputLayout_);
+        arrsetlen(indexedInputLayout_.elements, 2);
+        for (size_t i = 0; i < 2; ++i)
+        {
+            wi::InitInputLayoutElement(indexedInputLayout_.elements[i]);
+        }
+        indexedInputLayout_.elements[0].semantic_name = wi::CloneCString("POSITION");
+        indexedInputLayout_.elements[0].semantic_index = 0;
+        indexedInputLayout_.elements[0].format = Format::R32G32B32_FLOAT;
+        indexedInputLayout_.elements[0].input_slot = 0;
+        indexedInputLayout_.elements[0].aligned_byte_offset = 0;
+        indexedInputLayout_.elements[0].input_slot_class = InputClassification::PER_VERTEX_DATA;
+
+        indexedInputLayout_.elements[1].semantic_name = wi::CloneCString("COLOR");
+        indexedInputLayout_.elements[1].semantic_index = 0;
+        indexedInputLayout_.elements[1].format = Format::R32_UINT;
+        indexedInputLayout_.elements[1].input_slot = 1;
+        indexedInputLayout_.elements[1].aligned_byte_offset = 0;
+        indexedInputLayout_.elements[1].input_slot_class = InputClassification::PER_INSTANCE_DATA;
+
         if (!CompileShader(ShaderStage::VS, "vs_indexed", &vsIndexed_))
             return false;
         if (!CompileShader(ShaderStage::PS, "ps_indexed", &psIndexed_))
+            return false;
+        if (!CompileShader(ShaderStage::VS, "vs_debug_fullscreen", &vsPresent_))
+            return false;
+        if (!CompileShader(ShaderStage::PS, "ps_debug_visualize", &psPresent_))
             return false;
         if (!CompileShader(ShaderStage::CS, "cs_instance_filter", &csInstanceFilter_))
             return false;
@@ -1172,6 +1261,7 @@ private:
         PipelineStateDesc pso = {};
         pso.vs = &vsIndexed_;
         pso.ps = &psIndexed_;
+        pso.il = &indexedInputLayout_;
         pso.rs = &rasterState_;
         pso.dss = &depthStencilState_;
         pso.bs = &blendState_;
@@ -1179,6 +1269,18 @@ private:
         if (!device_->CreatePipelineState(&pso, &pipelineIndexed_))
         {
             std::fprintf(stderr, "CreatePipelineState(indexed) failed\n");
+            return false;
+        }
+
+        PipelineStateDesc presentPSO = {};
+        presentPSO.vs = &vsPresent_;
+        presentPSO.ps = &psPresent_;
+        presentPSO.rs = &rasterState_;
+        presentPSO.bs = &blendState_;
+        presentPSO.pt = PrimitiveTopology::TRIANGLELIST;
+        if (!device_->CreatePipelineState(&presentPSO, &pipelinePresent_))
+        {
+            std::fprintf(stderr, "CreatePipelineState(present) failed\n");
             return false;
         }
 
@@ -1473,6 +1575,12 @@ private:
         totalInstanceCount_ = static_cast<uint32_t>(instances_.size());
         totalCommandCount_ = static_cast<uint32_t>(commands_.size());
         totalPrimitiveCount_ = primitiveBase;
+
+        drawCommandIndices_.resize(totalCommandCount_);
+        for (uint32_t i = 0; i < totalCommandCount_; ++i)
+        {
+            drawCommandIndices_[i] = i;
+        }
     }
 
     void BuildTierMappings()
@@ -1515,7 +1623,7 @@ private:
         GPUBufferDesc desc = {};
 
         desc.usage = Usage::DEFAULT;
-        desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
+        desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_VERTEX_BUFFER;
         desc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
         desc.stride = sizeof(Vec3);
         desc.size = static_cast<uint64_t>(vertices_.size() * sizeof(Vec3));
@@ -1571,6 +1679,18 @@ private:
         if (!device_->CreateBuffer(&desc, clusterDrawIndices_.data(), &clusterIndexBuffer_))
         {
             std::fprintf(stderr, "CreateBuffer(clusterIndexBuffer) failed\n");
+            return false;
+        }
+
+        GPUBufferDesc drawCommandVBDesc = {};
+        drawCommandVBDesc.usage = Usage::DEFAULT;
+        drawCommandVBDesc.bind_flags = BindFlag::BIND_VERTEX_BUFFER | BindFlag::BIND_SHADER_RESOURCE;
+        drawCommandVBDesc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
+        drawCommandVBDesc.stride = sizeof(uint32_t);
+        drawCommandVBDesc.size = static_cast<uint64_t>(drawCommandIndices_.size()) * sizeof(uint32_t);
+        if (!device_->CreateBuffer(&drawCommandVBDesc, drawCommandIndices_.data(), &drawCommandIndexBuffer_))
+        {
+            std::fprintf(stderr, "CreateBuffer(drawCommandIndexBuffer) failed\n");
             return false;
         }
 
@@ -1702,6 +1822,7 @@ private:
         device_->SetName(&commandBuffer_, "subset_visibility_benchmark_commands");
         device_->SetName(&clusterTemplateBuffer_, "subset_visibility_benchmark_clusters");
         device_->SetName(&clusterIndexBuffer_, "subset_visibility_benchmark_cluster_indices");
+        device_->SetName(&drawCommandIndexBuffer_, "subset_visibility_benchmark_draw_command_ids");
         device_->SetName(&baseArgsBuffer_, "subset_visibility_benchmark_base_args");
         device_->SetName(&visibleArgsBuffer_, "subset_visibility_benchmark_visible_args");
         device_->SetName(&tvbArgsBuffer_, "subset_visibility_benchmark_tvb_args");
@@ -1726,6 +1847,7 @@ private:
         templateVerticesBuffer_ = {};
         templateTrianglesBuffer_ = {};
         clusterIndexBuffer_ = {};
+        drawCommandIndexBuffer_ = {};
         baseArgsBuffer_ = {};
         visibleArgsBuffer_ = {};
         tvbArgsBuffer_ = {};
@@ -1880,62 +2002,204 @@ private:
                 autoRunFrame_ = 0;
                 ResetAggregate(&autoRunStats_);
                 ApplyCombo(combos_[autoRunComboIndex_]);
+                mouseLookActive_ = false;
+                SDL_SetWindowRelativeMouseMode(window_, false);
             }
             SDL_Log("[WickedVisibilityPipelineBenchmark] auto-run %s", autoRun_ ? "enabled" : "disabled");
             return;
         }
 
-        if (key == SDLK_R)
+        if (key == SDLK_R || key == SDLK_B)
         {
             autoRun_ = true;
             autoRunComboIndex_ = 0;
             autoRunFrame_ = 0;
             ResetAggregate(&autoRunStats_);
             ApplyCombo(combos_[autoRunComboIndex_]);
+            mouseLookActive_ = false;
+            SDL_SetWindowRelativeMouseMode(window_, false);
+            ResetCameraToScene();
+            SDL_Log("[WickedVisibilityPipelineBenchmark] benchmark sweep started");
             return;
         }
 
-        autoRun_ = false;
+        bool changed = false;
+        bool tierChanged = false;
 
         if (key == SDLK_1)
         {
             activePipeline_ = PipelineStyle::Wicked;
+            changed = true;
         }
         else if (key == SDLK_2)
         {
             activePipeline_ = PipelineStyle::TVB;
+            changed = true;
         }
         else if (key == SDLK_3)
         {
             activePipeline_ = PipelineStyle::Esoterica;
+            changed = true;
         }
-        else if (key == SDLK_Q)
-        {
-            activeScenario_ = ScenarioMode::AllVisible;
-        }
-        else if (key == SDLK_W)
-        {
-            activeScenario_ = ScenarioMode::HighCulling;
-        }
-        else if (key == SDLK_S)
+        else if (key == SDLK_M)
         {
             if (supportsMeshShaders_)
             {
                 activeSuite_ = activeSuite_ == SuiteMode::Portable ? SuiteMode::Mesh : SuiteMode::Portable;
+                changed = true;
             }
         }
-        else if (key == SDLK_UP)
+        else if (key == SDLK_Z)
+        {
+            activeScenario_ = ScenarioMode::AllVisible;
+            changed = true;
+        }
+        else if (key == SDLK_X)
+        {
+            activeScenario_ = ScenarioMode::HighCulling;
+            changed = true;
+        }
+        else if (key == SDLK_UP || key == SDLK_RIGHTBRACKET || key == SDLK_PAGEUP || key == SDLK_EQUALS)
         {
             activeTier_ = (activeTier_ + 1u) % static_cast<uint32_t>(kTierPresets.size());
+            changed = true;
+            tierChanged = true;
         }
-        else if (key == SDLK_DOWN)
+        else if (key == SDLK_DOWN || key == SDLK_LEFTBRACKET || key == SDLK_PAGEDOWN || key == SDLK_MINUS)
         {
             activeTier_ = (activeTier_ + static_cast<uint32_t>(kTierPresets.size()) - 1u) % static_cast<uint32_t>(kTierPresets.size());
+            changed = true;
+            tierChanged = true;
+        }
+        else if (key == SDLK_C)
+        {
+            ResetCameraToScene();
+            SDL_Log("[WickedVisibilityPipelineBenchmark] camera reset near scene center");
+            return;
+        }
+        else if (key == SDLK_V)
+        {
+            validationEnabled_ = !validationEnabled_;
+            SDL_Log("[WickedVisibilityPipelineBenchmark] validation/hash pass -> %s", validationEnabled_ ? "enabled" : "disabled");
+            return;
+        }
+        else if (key == SDLK_P)
+        {
+            SDL_Log(
+                "[WickedVisibilityPipelineBenchmark] snapshot | suite=%s pipeline=%s scenario=%s tier=%s cmd=%u inst=%u cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms visible=%u hash=%u",
+                SuiteName(activeSuite_),
+                PipelineName(activePipeline_),
+                ScenarioName(activeScenario_),
+                kTierPresets[activeTier_].name,
+                activeCommandCount_,
+                activeInstanceCount_,
+                latestMetrics_.cpuMs,
+                latestMetrics_.gpuCullMs,
+                latestMetrics_.gpuDrawMs,
+                latestMetrics_.gpuFrameMs,
+                latestMetrics_.visibleCommands,
+                latestMetrics_.hashValue);
+            return;
+        }
+        else if (key == SDLK_H)
+        {
+            LogStartupControls();
+            LogActiveTier();
+            return;
+        }
+
+        if (!changed)
+        {
+            return;
+        }
+
+        if (autoRun_)
+        {
+            autoRun_ = false;
+            SDL_Log("[WickedVisibilityPipelineBenchmark] auto-run disabled by manual override");
         }
 
         activeCommandCount_ = tierActiveCommandCount_[activeTier_];
         activeInstanceCount_ = tierActiveInstanceCount_[activeTier_];
         countsDirty_ = true;
+
+        if (tierChanged)
+        {
+            LogActiveTier();
+        }
+    }
+
+    void UpdateCamera(float dt)
+    {
+        const bool* keys = SDL_GetKeyboardState(nullptr);
+        if (keys == nullptr)
+        {
+            return;
+        }
+
+        const Vec3 forward = BuildForwardFromYawPitch(cameraYaw_, cameraPitch_);
+        const Vec3 right = BuildRightFromForward(forward);
+        const Vec3 worldUp = Vec3{ 0.0f, 1.0f, 0.0f };
+
+        Vec3 move = {};
+        if (keys[SDL_SCANCODE_W])
+        {
+            move = VecAdd(move, forward);
+        }
+        if (keys[SDL_SCANCODE_S])
+        {
+            move = VecSub(move, forward);
+        }
+        if (keys[SDL_SCANCODE_D])
+        {
+            move = VecAdd(move, right);
+        }
+        if (keys[SDL_SCANCODE_A])
+        {
+            move = VecSub(move, right);
+        }
+        if (keys[SDL_SCANCODE_E])
+        {
+            move = VecAdd(move, worldUp);
+        }
+        if (keys[SDL_SCANCODE_Q])
+        {
+            move = VecSub(move, worldUp);
+        }
+
+        const float speedMul = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) ? 3.0f : 1.0f;
+        const float speed = cameraMoveSpeed_ * speedMul;
+        const Vec3 moveDir = VecNormalize(move);
+        cameraPosition_ = VecAdd(cameraPosition_, VecScale(moveDir, speed * dt));
+    }
+
+    void ResetCameraToScene()
+    {
+        const float distance = std::max(sceneExtent_ * 0.68f, 20.0f);
+        cameraPosition_ = Vec3{ 0.0f, std::max(sceneExtent_ * 0.16f, 3.8f), -distance };
+        cameraYaw_ = 0.0f;
+        cameraPitch_ = -0.18f;
+    }
+
+    void LogStartupControls() const
+    {
+        SDL_Log("[WickedVisibilityPipelineBenchmark] Controls:");
+        SDL_Log("  [R/B] start benchmark auto-run sweep | [SPACE] toggle auto-run");
+        SDL_Log("  [C] reset camera near center");
+        SDL_Log("  Camera: hold RMB to look, WASD move, Q/E vertical, Shift boost");
+        SDL_Log("  [1/2/3] pipeline Wicked/TVB/Esoterica | [M] suite Portable/Mesh");
+        SDL_Log("  [Z/X] scenario AllVisible/HighCulling | [UP/DOWN] or [[/]] or [PgUp/PgDn] triangle tier");
+        SDL_Log("  [V] toggle validation/hash pass | [P] print current perf snapshot | [H] print controls");
+    }
+
+    void LogActiveTier() const
+    {
+        SDL_Log(
+            "[WickedVisibilityPipelineBenchmark] tier=%s (targetTriangles=%llu) activeCommands=%u activeInstances=%u",
+            kTierPresets[activeTier_].name,
+            static_cast<unsigned long long>(kTierPresets[activeTier_].targetTriangles),
+            activeCommandCount_,
+            activeInstanceCount_);
     }
 
     bool RenderFrame(float dt, FrameMetrics* outMetrics)
@@ -1949,30 +2213,18 @@ private:
         const uint64_t cpuBegin = SDL_GetPerformanceCounter();
 
         sceneTime_ += dt;
-        orbitAngle_ += dt * (activeScenario_ == ScenarioMode::HighCulling ? 0.33f : 0.16f);
 
         const float aspect = static_cast<float>(std::max(1u, swapchain_.desc.width)) /
                              static_cast<float>(std::max(1u, swapchain_.desc.height));
 
-        const float scenarioRadius =
-            activeScenario_ == ScenarioMode::HighCulling
-                ? std::max(sceneExtent_ * 0.65f, 18.0f)
-                : std::max(sceneExtent_ * 2.35f, 45.0f);
-        const float scenarioHeight =
-            activeScenario_ == ScenarioMode::HighCulling
-                ? std::max(sceneExtent_ * 0.22f, 6.0f)
-                : std::max(sceneExtent_ * 0.58f, 12.0f);
-        const float fov = activeScenario_ == ScenarioMode::HighCulling ? 0.62f : 0.92f;
-
-        const Vec3 eye = {
-            std::sin(orbitAngle_) * scenarioRadius,
-            scenarioHeight,
-            std::cos(orbitAngle_) * scenarioRadius,
-        };
-        const Vec3 target = { 0.0f, 0.0f, 0.0f };
+        UpdateCamera(dt);
+        const Vec3 forward = BuildForwardFromYawPitch(cameraYaw_, cameraPitch_);
+        const Vec3 eye = cameraPosition_;
+        const Vec3 target = VecAdd(cameraPosition_, forward);
+        const float fov = activeScenario_ == ScenarioMode::HighCulling ? 0.74f : 0.90f;
 
         const Mat4 view = MatLookAtLH(eye, target, Vec3{ 0.0f, 1.0f, 0.0f });
-        const Mat4 proj = MatPerspectiveFovLH(fov, aspect, 0.05f, std::max(sceneExtent_ * 9.0f, 200.0f));
+        const Mat4 proj = MatPerspectiveFovLH(fov, aspect, 0.05f, std::max(sceneExtent_ * 12.0f, 300.0f));
         const Mat4 viewProj = MatMul(view, proj);
 
         SceneCB sceneCB = {};
@@ -1984,8 +2236,8 @@ private:
         sceneCB.activeCommandCount = activeCommandCount_;
         sceneCB.activeInstanceCount = activeInstanceCount_;
         sceneCB.pipelineStyle = static_cast<uint32_t>(activePipeline_);
-        sceneCB.scenarioMode = activeScenario_ == ScenarioMode::HighCulling ? 1u : 0u;
         sceneCB.meshUseVisibleList = (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Mesh) ? 1u : 0u;
+        sceneCB.meshCommandOffset = 0u;
 
         FrameMetrics metrics = {};
         const uint32_t frameIndex = device_->GetBufferIndex();
@@ -2019,8 +2271,7 @@ private:
         ExecuteHashStage(sceneCB, cmd, frameIndex);
         device_->QueryEnd(&timestampQueryHeap_, kTimestampHashEnd, cmd);
 
-        device_->RenderPassBegin(&swapchain_, cmd);
-        device_->RenderPassEnd(cmd);
+        ExecutePresentStage(cmd);
 
         device_->QueryEnd(&timestampQueryHeap_, kTimestampFrameEnd, cmd);
 
@@ -2072,12 +2323,6 @@ private:
                 device_->Dispatch(std::max(1u, activeCommandCount_), 1, 1, cmd);
                 device_->Barrier(cmd);
             }
-            else
-            {
-                device_->BindComputeShader(&csMeshArgs_, cmd);
-                device_->Dispatch(1, 1, 1, cmd);
-                device_->Barrier(cmd);
-            }
         }
         else if (activePipeline_ == PipelineStyle::TVB)
         {
@@ -2123,16 +2368,15 @@ private:
         if (activeSuite_ == SuiteMode::Mesh && supportsMeshShaders_ && activePipeline_ != PipelineStyle::TVB)
         {
             device_->BindPipelineState(&pipelineMesh_, cmd);
-            device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
             BindCommonResources(cmd);
 
-            if (activePipeline_ == PipelineStyle::Esoterica)
+            for (uint32_t dispatchBase = 0; dispatchBase < activeCommandCount_; dispatchBase += kMaxMeshDispatchGroups)
             {
-                device_->DispatchMeshIndirect(&meshDispatchArgsBuffer_, 0, cmd);
-            }
-            else
-            {
-                device_->DispatchMesh(activeCommandCount_, 1, 1, cmd);
+                const uint32_t dispatchCount = std::min(kMaxMeshDispatchGroups, activeCommandCount_ - dispatchBase);
+                SceneCB meshCB = sceneCB;
+                meshCB.meshCommandOffset = dispatchBase;
+                device_->BindDynamicConstantBuffer(meshCB, 0, cmd);
+                device_->DispatchMesh(dispatchCount, 1, 1, cmd);
             }
         }
         else
@@ -2140,6 +2384,20 @@ private:
             device_->BindPipelineState(&pipelineIndexed_, cmd);
             device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
             BindCommonResources(cmd);
+
+            const GPUBuffer* vbs[] = {
+                &vertexBuffer_,
+                &drawCommandIndexBuffer_,
+            };
+            const uint32_t strides[] = {
+                sizeof(Vec3),
+                sizeof(uint32_t),
+            };
+            const uint64_t offsets[] = {
+                0,
+                0,
+            };
+            device_->BindVertexBuffers(vbs, 0, 2, strides, offsets, cmd);
 
             if (activePipeline_ == PipelineStyle::TVB)
             {
@@ -2179,6 +2437,30 @@ private:
         device_->Barrier(cmd);
 
         device_->CopyBuffer(&hashReadback_[frameIndex], 0, &hashBuffer_, 0, sizeof(uint32_t), cmd);
+    }
+
+    void ExecutePresentStage(CommandList cmd)
+    {
+        device_->RenderPassBegin(&swapchain_, cmd);
+
+        wi::Viewport vp;
+        vp.top_left_x = 0.0f;
+        vp.top_left_y = 0.0f;
+        vp.width = static_cast<float>(swapchain_.desc.width);
+        vp.height = static_cast<float>(swapchain_.desc.height);
+        vp.min_depth = 0.0f;
+        vp.max_depth = 1.0f;
+
+        wi::Rect scissor;
+        wiGraphicsRectFromViewport(&scissor, &vp);
+        device_->BindViewports(1, &vp, cmd);
+        device_->BindScissorRects(1, &scissor, cmd);
+
+        device_->BindPipelineState(&pipelinePresent_, cmd);
+        device_->BindResource(&primitiveIDTexture_, 11, cmd);
+        device_->Draw(3, 0, cmd);
+
+        device_->RenderPassEnd(cmd);
     }
 
     void BindCommonResources(CommandList cmd)
@@ -2243,18 +2525,13 @@ private:
 
         if (activePipeline_ == PipelineStyle::Esoterica)
         {
-            const uint32_t expectedVisible = activeScenario_ == ScenarioMode::HighCulling
-                ? (activeCommandCount_ + 3u) / 4u
-                : activeCommandCount_;
-            metrics.visibleCommands = expectedVisible;
-
             if (visibleCountReady_[frameIndex] && visibleCountReadback_[frameIndex].mapped_data != nullptr)
             {
-                const uint32_t gpuVisible = *static_cast<const uint32_t*>(visibleCountReadback_[frameIndex].mapped_data);
-                if (gpuVisible > 0u)
-                {
-                    metrics.visibleCommands = gpuVisible;
-                }
+                metrics.visibleCommands = *static_cast<const uint32_t*>(visibleCountReadback_[frameIndex].mapped_data);
+            }
+            else
+            {
+                metrics.visibleCommands = 0u;
             }
         }
         else
@@ -2276,6 +2553,7 @@ private:
         if (autoRunComboIndex_ >= combos_.size())
         {
             autoRun_ = false;
+            ResetCameraToScene();
             SDL_Log("[WickedVisibilityPipelineBenchmark] auto-run finished");
             return;
         }
@@ -2311,6 +2589,7 @@ private:
         else
         {
             autoRun_ = false;
+            ResetCameraToScene();
             SDL_Log("[WickedVisibilityPipelineBenchmark] auto-run completed all %zu combos", combos_.size());
         }
     }
@@ -2395,17 +2674,19 @@ private:
     void UpdateWindowTitle(const FrameMetrics& metrics)
     {
         const double fps = metrics.cpuMs > 0.0 ? (1000.0 / metrics.cpuMs) : 0.0;
+        const double tierMillions = static_cast<double>(kTierPresets[activeTier_].targetTriangles) / 1'000'000.0;
 
         char title[512];
         std::snprintf(
             title,
             sizeof(title),
-            "Visibility Benchmark [%s] | %s | %s | %s | tier %s | cmd %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | auto=%s",
+            "Visibility Benchmark [%s] | %s | %s | %s | tier %s (%.1fM tris) | cmd %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | auto=%s",
             BackendName(),
             SuiteName(activeSuite_),
             PipelineName(activePipeline_),
             ScenarioName(activeScenario_),
             kTierPresets[activeTier_].name,
+            tierMillions,
             activeCommandCount_,
             activeInstanceCount_,
             fps,
@@ -2431,6 +2712,8 @@ private:
     Shader msCluster_ = {};
     Shader psIndexed_ = {};
     Shader psMesh_ = {};
+    Shader vsPresent_ = {};
+    Shader psPresent_ = {};
 
     Shader csInstanceFilter_ = {};
     Shader csClusterFilter_ = {};
@@ -2441,6 +2724,8 @@ private:
 
     PipelineState pipelineIndexed_ = {};
     PipelineState pipelineMesh_ = {};
+    PipelineState pipelinePresent_ = {};
+    InputLayout indexedInputLayout_ = {};
     RasterizerState rasterState_ = {};
     DepthStencilState depthStencilState_ = {};
     BlendState blendState_ = {};
@@ -2455,6 +2740,7 @@ private:
     GPUBuffer templateVerticesBuffer_ = {};
     GPUBuffer templateTrianglesBuffer_ = {};
     GPUBuffer clusterIndexBuffer_ = {};
+    GPUBuffer drawCommandIndexBuffer_ = {};
 
     GPUBuffer baseArgsBuffer_ = {};
     GPUBuffer visibleArgsBuffer_ = {};
@@ -2487,6 +2773,7 @@ private:
     std::vector<uint32_t> templateVertices_;
     std::vector<uint32_t> templatePackedTriangles_;
     std::vector<uint32_t> clusterDrawIndices_;
+    std::vector<uint32_t> drawCommandIndices_;
     std::vector<IndirectDrawArgsIndexedInstanced> baseArgs_;
     std::vector<ShapeTemplate> shapeTemplates_;
 
@@ -2502,7 +2789,7 @@ private:
     SuiteMode activeSuite_ = SuiteMode::Portable;
     PipelineStyle activePipeline_ = PipelineStyle::Wicked;
     ScenarioMode activeScenario_ = ScenarioMode::AllVisible;
-    uint32_t activeTier_ = 0;
+    uint32_t activeTier_ = 3;
 
     uint32_t activeCommandCount_ = 0;
     uint32_t activeInstanceCount_ = 0;
@@ -2512,10 +2799,16 @@ private:
     bool validationEnabled_ = true;
 
     float sceneTime_ = 0.0f;
-    float orbitAngle_ = 0.0f;
     float sceneExtent_ = 25.0f;
 
-    bool autoRun_ = true;
+    Vec3 cameraPosition_ = { 0.0f, 4.0f, -16.0f };
+    float cameraYaw_ = 0.0f;
+    float cameraPitch_ = -0.10f;
+    bool mouseLookActive_ = false;
+    float mouseLookSensitivity_ = 0.0025f;
+    float cameraMoveSpeed_ = 22.0f;
+
+    bool autoRun_ = false;
     std::vector<ComboConfig> combos_;
     size_t autoRunComboIndex_ = 0;
     uint32_t autoRunFrame_ = 0;
