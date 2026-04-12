@@ -116,7 +116,7 @@ function(wicked_subset_apply_common_flags target)
         target_link_libraries(${target} PRIVATE SDL3::SDL3)
     endif()
 
-    if(NOT MSVC)
+    if(NOT MSVC AND NOT CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
         target_compile_options(${target} PRIVATE -fdeclspec -fms-extensions)
     endif()
 endfunction()
@@ -183,11 +183,17 @@ function(wicked_subset_add_mmgr_object target)
             "$<$<COMPILE_LANGUAGE:CXX>:/EHsc>"
         )
     else()
-        target_compile_options(${target} PRIVATE
-            -fdeclspec
-            -fms-extensions
-            "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions>"
-        )
+        if(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+            target_compile_options(${target} PRIVATE
+                "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions>"
+            )
+        else()
+            target_compile_options(${target} PRIVATE
+                -fdeclspec
+                -fms-extensions
+                "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions>"
+            )
+        endif()
     endif()
     list(APPEND WICKED_SUBSET_OBJECT_TARGETS ${target})
     set(WICKED_SUBSET_OBJECT_TARGETS "${WICKED_SUBSET_OBJECT_TARGETS}" PARENT_SCOPE)

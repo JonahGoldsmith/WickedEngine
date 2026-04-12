@@ -27,6 +27,7 @@ DEFINE_GUID(D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN, 0x5b11d51b, 0x2f4c, 0x4452, 0x
 #include "Utility/D3D12MemAlloc.cpp" // include this here because we use D3D12MA_D3D12_HEADERS_ALREADY_INCLUDED
 #include "Utility/h264.h"
 #include "Utility/dxva.h"
+#include "wiMath.h"
 
 #include <map>
 #include <string>
@@ -2328,7 +2329,8 @@ std::mutex queue_locker;
 				bool success = CreatePipelineState(&pso->desc, &just_in_time_pso, &commandlist.renderpass_info);
 				WI_DX12_ASSERT(success);
 
-				arrput(commandlist.pipelines_worker, new PipelineCacheEntry{ pipeline_hash, new PipelineState(just_in_time_pso) });
+				auto* worker_pipeline_entry = new PipelineCacheEntry{ pipeline_hash, new PipelineState(just_in_time_pso) };
+				arrput(commandlist.pipelines_worker, worker_pipeline_entry);
 
 				auto pipeline_internal = to_internal(&just_in_time_pso);
 				pipeline = pipeline_internal->resource.Get();
@@ -2381,7 +2383,7 @@ std::mutex queue_locker;
 		validationMode = validationMode_;
 
 #ifdef PLATFORM_WINDOWS_DESKTOP
-		HMODULE dxgi = LoadLibraryEx(L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+		HMODULE dxgi = LoadLibraryExW(L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
 		if (dxgi == nullptr)
 		{
 			std::stringstream ss("");
@@ -2390,7 +2392,7 @@ std::mutex queue_locker;
 			wi::platform::Exit();
 		}
 
-		HMODULE dx12 = LoadLibraryEx(L"d3d12.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+		HMODULE dx12 = LoadLibraryExW(L"d3d12.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
 		if (dx12 == nullptr)
 		{
 			std::stringstream ss("");
@@ -3323,19 +3325,20 @@ std::mutex queue_locker;
 		{
 			internal_state->textures[i] = new wi::allocator::shared_ptr<Resource_DX12>();
 			*internal_state->textures[i] = wi::allocator::make_shared<Resource_DX12>();
+			auto& backbuffer = *internal_state->textures[i];
 			dx12_check(device->CreateCommittedResource(
 				&heap_properties,
 				heap_flags,
 				&resource_desc,
 				D3D12_RESOURCE_STATE_PRESENT,
 				&clear_value,
-				PPV_ARGS(internal_state->textures[i]->resource)
+				PPV_ARGS(backbuffer->resource)
 			));
 
-			dx12_check(internal_state->textures[i]->resource->SetName(L"BackBufferXBOX"));
+			dx12_check(backbuffer->resource->SetName(L"BackBufferXBOX"));
 
-			internal_state->textures[i]->rtv.init(this, rtv_desc, internal_state->textures[i]->resource.Get());
-			internal_state->textures[i]->srv.init(this, srv_desc, internal_state->textures[i]->resource.Get());
+			backbuffer->rtv.init(this, rtv_desc, backbuffer->resource.Get());
+			backbuffer->srv.init(this, srv_desc, backbuffer->resource.Get());
 		}
 
 #else
@@ -3469,10 +3472,11 @@ std::mutex queue_locker;
 		{
 			internal_state->textures[i] = new wi::allocator::shared_ptr<Resource_DX12>();
 			*internal_state->textures[i] = wi::allocator::make_shared<Resource_DX12>();
-			internal_state->textures[i]->allocationhandler = allocationhandler;
-			dx12_check(internal_state->swapChain->GetBuffer(i, PPV_ARGS(internal_state->textures[i]->resource)));
-			internal_state->textures[i]->rtv.init(this, rtv_desc, internal_state->textures[i]->resource.Get());
-			internal_state->textures[i]->srv.init(this, srv_desc, internal_state->textures[i]->resource.Get());
+			auto& backbuffer = *internal_state->textures[i];
+			backbuffer->allocationhandler = allocationhandler;
+			dx12_check(internal_state->swapChain->GetBuffer(i, PPV_ARGS(backbuffer->resource)));
+			backbuffer->rtv.init(this, rtv_desc, backbuffer->resource.Get());
+			backbuffer->srv.init(this, srv_desc, backbuffer->resource.Get());
 		}
 #endif // PLATFORM_XBOX
 
@@ -3740,7 +3744,7 @@ std::mutex queue_locker;
 		resourcedesc.Height = desc->height;
 		resourcedesc.MipLevels = texture->desc.mip_levels;
 		resourcedesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-		resourcedesc.DepthOrArraySize = (UINT16)desc->array_size;
+		resourcedesc.DepthOrArraySize = static_cast<UINT16>(desc->array_size);
 		resourcedesc.SampleDesc.Count = desc->sample_count;
 		resourcedesc.SampleDesc.Quality = 0;
 		resourcedesc.Alignment = 0;
@@ -3801,7 +3805,7 @@ std::mutex queue_locker;
 			break;
 		case TextureDesc::Type::TEXTURE_3D:
 			resourcedesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
-			resourcedesc.DepthOrArraySize = (UINT16)desc->depth;
+			resourcedesc.DepthOrArraySize = static_cast<UINT16>(desc->depth);
 			break;
 		default:
 			WI_DX12_ASSERT(0);
@@ -4192,11 +4196,13 @@ std::mutex queue_locker;
 		if (stage == ShaderStage::VS)
 		{
 			std::scoped_lock lck(multidraw_signature_locker);
-			ptrdiff_t cached_index = hmgeti(multidraw_signatures, internal_state->rootSignature.Get());
+			ID3D12RootSignature* root_signature = internal_state->rootSignature.Get();
+			ptrdiff_t cached_index = hmgeti(multidraw_signatures, root_signature);
 			if (cached_index < 0)
 			{
-				hmput(multidraw_signatures, internal_state->rootSignature.Get(), MultiDrawCacheEntry{ internal_state->rootSignature.Get(), new MultiDrawSignature{} });
-				cached_index = hmgeti(multidraw_signatures, internal_state->rootSignature.Get());
+				MultiDrawCacheEntry new_entry = { root_signature, new MultiDrawSignature{} };
+				hmput(multidraw_signatures, root_signature, new_entry);
+				cached_index = hmgeti(multidraw_signatures, root_signature);
 			}
 			MultiDrawSignature& cached = *multidraw_signatures[cached_index].value;
 
@@ -4239,11 +4245,13 @@ std::mutex queue_locker;
 		else if (stage == ShaderStage::MS)
 		{
 			std::scoped_lock lck(multidraw_signature_locker);
-			ptrdiff_t cached_index = hmgeti(multidraw_signatures, internal_state->rootSignature.Get());
+			ID3D12RootSignature* root_signature = internal_state->rootSignature.Get();
+			ptrdiff_t cached_index = hmgeti(multidraw_signatures, root_signature);
 			if (cached_index < 0)
 			{
-				hmput(multidraw_signatures, internal_state->rootSignature.Get(), MultiDrawCacheEntry{ internal_state->rootSignature.Get(), new MultiDrawSignature{} });
-				cached_index = hmgeti(multidraw_signatures, internal_state->rootSignature.Get());
+				MultiDrawCacheEntry new_entry = { root_signature, new MultiDrawSignature{} };
+				hmput(multidraw_signatures, root_signature, new_entry);
+				cached_index = hmgeti(multidraw_signatures, root_signature);
 			}
 			MultiDrawSignature& cached = *multidraw_signatures[cached_index].value;
 
@@ -5764,7 +5772,7 @@ std::mutex queue_locker;
 					wi::xbox::Present(
 						device.Get(),
 						queues[QUEUE_GRAPHICS].queue.Get(),
-						swapchain_internal->textures[swapchain_internal->bufferIndex]->resource.Get(),
+						(*swapchain_internal->textures[swapchain_internal->bufferIndex])->resource.Get(),
 						swapchain->desc.vsync
 					);
 
@@ -6312,7 +6320,9 @@ std::mutex queue_locker;
 
 		D3D12_RESOURCE_BARRIER barrier = {};
 		barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-		barrier.Transition.pResource = internal_state->textures[internal_state->GetBufferIndex()]->resource.Get();
+		const uint32_t backbuffer_index = internal_state->GetBufferIndex();
+		auto& backbuffer = *internal_state->textures[backbuffer_index];
+		barrier.Transition.pResource = backbuffer->resource.Get();
 		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
 		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
 		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
@@ -6326,19 +6336,19 @@ std::mutex queue_locker;
 #ifdef DISABLE_RENDERPASS
 		commandlist.GetGraphicsCommandList()->OMSetRenderTargets(
 			1,
-			&internal_state->textures[internal_state->GetBufferIndex()]->rtv.handle,
+			&backbuffer->rtv.handle,
 			TRUE,
 			nullptr
 		);
 		commandlist.GetGraphicsCommandList()->ClearRenderTargetView(
-			internal_state->textures[internal_state->GetBufferIndex()]->rtv.handle,
+			backbuffer->rtv.handle,
 			swapchain->desc.clear_color,
 			0,
 			nullptr
 		);
 #else
 		D3D12_RENDER_PASS_RENDER_TARGET_DESC RTV = {};
-		RTV.cpuDescriptor = internal_state->textures[internal_state->GetBufferIndex()]->rtv.handle;
+		RTV.cpuDescriptor = backbuffer->rtv.handle;
 		RTV.BeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR;
 		RTV.BeginningAccess.Clear.ClearValue.Color[0] = swapchain->desc.clear_color[0];
 		RTV.BeginningAccess.Clear.ClearValue.Color[1] = swapchain->desc.clear_color[1];

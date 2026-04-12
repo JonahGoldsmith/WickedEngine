@@ -386,11 +386,13 @@ endif()
 if (MSVC)
     add_compile_options(
         /W3 # warning level 3
-        /MP # multi-processor compilation
         /EHsc- # exceptions disabled
         $<$<AND:$<NOT:$<BOOL:${ubsan_active}>>,$<NOT:$<BOOL:${WICKED_ENABLE_RTTI}>>>:/GR-> # runtime type information disabled
         $<$<CONFIG:Release>:/GS-> # security check disabled in Release
     )
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        add_compile_options(/MP) # multi-processor compilation (clang-cl ignores this)
+    endif()
 else()
     set(ubsan_active
          "$<AND:$<BOOL:${WICKED_ENABLE_UBSAN}>,$<OR:$<CONFIG:Debug>,$<BOOL:${WICKED_ENABLE_SAN_ALWAYS}>>>"
@@ -418,19 +420,26 @@ else()
 endif()
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    # CLANG specific compile options:
-    add_compile_options(
-        -fdeclspec
-        -fms-extensions
+    # clang-cl (MSVC frontend) and clang++ (GNU frontend) need different flags:
+    if(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+        add_compile_options(
+            -Wno-nullability-completeness
+            -Wno-unused-private-field
+        )
+    else()
+        add_compile_options(
+            -fdeclspec
+            -fms-extensions
 
-        -Wno-nullability-completeness
-        -Wno-unused-private-field
+            -Wno-nullability-completeness
+            -Wno-unused-private-field
 
-        # Increase Ccache hit rate, note that you also need to set config
-        # options in your Ccache config
-        # see https://ccache.dev/manual/latest.html#_precompiled_headers
-        "SHELL:-Xclang -fno-pch-timestamp"
-    )
+            # Increase Ccache hit rate, note that you also need to set config
+            # options in your Ccache config
+            # see https://ccache.dev/manual/latest.html#_precompiled_headers
+            "SHELL:-Xclang -fno-pch-timestamp"
+        )
+    endif()
     if (USE_LIBCXX)
         add_compile_options(
             $<$<COMPILE_LANGUAGE:CXX>:-stdlib=libc++>

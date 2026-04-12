@@ -95,6 +95,7 @@ extern void * stbds_shmode_func(size_t elemsize, int mode);
 
 #if defined(__GNUC__) || defined(__clang__)
 #define STBDS_HAS_TYPEOF
+#define STBDS_TYPEOF __typeof__
 #ifdef __cplusplus
 #define STBDS_HAS_LITERAL_ARRAY
 #endif
@@ -108,7 +109,7 @@ extern void * stbds_shmode_func(size_t elemsize, int mode);
 
 // this macro takes the address of the argument, but on gcc/clang can accept rvalues
 #if defined(STBDS_HAS_LITERAL_ARRAY) && defined(STBDS_HAS_TYPEOF)
-#define STBDS_ADDRESSOF(typevar, value)     ((typeof(typevar)[1]){value}) // literal array decays to pointer to value
+#define STBDS_ADDRESSOF(typevar, value)     ((STBDS_TYPEOF(typevar)[1]){value}) // literal array decays to pointer to value
 #else
 #define STBDS_ADDRESSOF(typevar, value)     &(value)
 #endif
