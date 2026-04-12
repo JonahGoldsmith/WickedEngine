@@ -60,6 +60,26 @@ set(WICKED_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(WICKED_ENGINE_CONFIG_HEADER "${WICKED_ROOT_DIR}/WickedEngine/EngineConfig.h")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WICKED_ENGINE_CONFIG_HEADER}")
 
+option(
+    WICKED_CLEAN_APPLEDOUBLE_FILES
+    "Remove macOS AppleDouble duplicate files (._* / ._.*) from the source tree at configure time"
+    ON
+)
+if(WICKED_CLEAN_APPLEDOUBLE_FILES)
+    file(GLOB_RECURSE WICKED_APPLEDOUBLE_FILES
+        LIST_DIRECTORIES false
+        "${WICKED_ROOT_DIR}/._*"
+        "${WICKED_ROOT_DIR}/._.*"
+    )
+    if(WICKED_APPLEDOUBLE_FILES)
+        list(LENGTH WICKED_APPLEDOUBLE_FILES WICKED_APPLEDOUBLE_FILE_COUNT)
+        file(REMOVE ${WICKED_APPLEDOUBLE_FILES})
+        message(STATUS
+            "Removed ${WICKED_APPLEDOUBLE_FILE_COUNT} AppleDouble duplicate files (patterns: ._* and ._.*)"
+        )
+    endif()
+endif()
+
 function(wicked_read_engine_config_bool define_name out_var default_value)
     set(_value "${default_value}")
     if(EXISTS "${WICKED_ENGINE_CONFIG_HEADER}")
