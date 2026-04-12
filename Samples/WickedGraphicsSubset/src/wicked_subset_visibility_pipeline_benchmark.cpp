@@ -403,7 +403,9 @@ struct SceneCB
     uint32_t activeCommandCount = 0;
     uint32_t activeInstanceCount = 0;
     uint32_t pipelineStyle = 0;
+    uint32_t scenarioMode = 0;
     uint32_t meshUseVisibleList = 0;
+    uint32_t padding[3] = {};
 };
 
 struct ShapeTemplate
@@ -519,6 +521,24 @@ const char* BackendName()
     return "Metal";
 #else
     return "Vulkan";
+#endif
+}
+
+void* GetNativeWindowHandle(SDL_Window* window)
+{
+#if !defined(__APPLE__) && !defined(_WIN32)
+    return window;
+#else
+    SDL_PropertiesID props = SDL_GetWindowProperties(window);
+    if (props == 0)
+    {
+        return nullptr;
+    }
+#if defined(__APPLE__)
+    return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
+#elif defined(_WIN32)
+    return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+#endif
 #endif
 }
 
@@ -846,8 +866,8 @@ public:
         }
 
         BuildComboList();
-        comboIndex_ = 0;
-        ApplyCombo(combos_[comboIndex_]);
+        autoRunComboIndex_ = 0;
+        ApplyCombo(combos_[autoRunComboIndex_]);
         autoRun_ = true;
 
         SDL_Log(
@@ -1058,7 +1078,7 @@ private:
         idDesc.width = swapchain_.desc.width;
         idDesc.height = swapchain_.desc.height;
         idDesc.format = Format::R32_UINT;
-        idDesc.bind_flags = BindFlag::BIND_RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
+        idDesc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::BIND_SHADER_RESOURCE;
         idDesc.layout = ResourceState::SHADER_RESOURCE;
         if (!device_->CreateTexture(&idDesc, nullptr, &primitiveIDTexture_))
         {
@@ -1070,7 +1090,7 @@ private:
         depthDesc.width = swapchain_.desc.width;
         depthDesc.height = swapchain_.desc.height;
         depthDesc.format = Format::D32_FLOAT;
-        depthDesc.bind_flags = BindFlag::BIND_DEPTH_STENCIL;
+        depthDesc.bind_flags = BindFlag::DEPTH_STENCIL;
         depthDesc.layout = ResourceState::DEPTHSTENCIL;
         if (!device_->CreateTexture(&depthDesc, nullptr, &depthTexture_))
         {
@@ -1118,19 +1138,18 @@ private:
 
     bool CreatePipelines()
     {
-        RasterizerState raster = {};
-        wi::InitRasterizerState(raster);
-        raster.cull_mode = CullMode::CULL_NONE;
-        raster.depth_clip_enable = true;
+        wi::InitRasterizerState(rasterState_);
+        rasterState_.cull_mode = CullMode::CULL_NONE;
+        rasterState_.depth_clip_enable = true;
 
-        DepthStencilState depthStencil = {};
-        wi::InitDepthStencilState(depthStencil);
-        depthStencil.depth_enable = true;
-        depthStencil.depth_write_mask = DepthWriteMask::DEPTH_WRITE_ALL;
-        depthStencil.depth_func = ComparisonFunc::GREATER_EQUAL;
+        wi::InitDepthStencilState(depthStencilState_);
+        depthStencilState_.depth_enable = true;
+        depthStencilState_.depth_write_mask = DepthWriteMask::ALL;
+        depthStencilState_.depth_func = ComparisonFunc::GREATER_EQUAL;
 
-        BlendState blend = {};
-        wi::InitBlendState(blend);
+        wi::InitBlendState(blendState_);
+        blendState_.alpha_to_coverage_enable = false;
+        blendState_.render_target[0].blend_enable = false;
 
         if (!CompileShader(ShaderStage::VS, "vs_indexed", &vsIndexed_))
             return false;
@@ -1152,9 +1171,9 @@ private:
         PipelineStateDesc pso = {};
         pso.vs = &vsIndexed_;
         pso.ps = &psIndexed_;
-        pso.rs = &raster;
-        pso.dss = &depthStencil;
-        pso.bs = &blend;
+        pso.rs = &rasterState_;
+        pso.dss = &depthStencilState_;
+        pso.bs = &blendState_;
         pso.pt = PrimitiveTopology::TRIANGLELIST;
         if (!device_->CreatePipelineState(&pso, &pipelineIndexed_))
         {
@@ -1172,9 +1191,9 @@ private:
             PipelineStateDesc meshPSO = {};
             meshPSO.ms = &msCluster_;
             meshPSO.ps = &psMesh_;
-            meshPSO.rs = &raster;
-            meshPSO.dss = &depthStencil;
-            meshPSO.bs = &blend;
+            meshPSO.rs = &rasterState_;
+            meshPSO.dss = &depthStencilState_;
+            meshPSO.bs = &blendState_;
             meshPSO.pt = PrimitiveTopology::TRIANGLELIST;
             if (!device_->CreatePipelineState(&meshPSO, &pipelineMesh_))
             {
@@ -1670,6 +1689,11 @@ private:
                 std::fprintf(stderr, "CreateBuffer(hashReadback) failed\n");
                 return false;
             }
+            if (!device_->CreateBuffer(&hashReadbackDesc, nullptr, &visibleCountReadback_[i]))
+            {
+                std::fprintf(stderr, "CreateBuffer(visibleCountReadback) failed\n");
+                return false;
+            }
         }
 
         device_->SetName(&vertexBuffer_, "subset_visibility_benchmark_vertices");
@@ -1716,6 +1740,10 @@ private:
         {
             b = {};
         }
+        for (GPUBuffer& b : visibleCountReadback_)
+        {
+            b = {};
+        }
     }
 
     bool CreateTimingResources()
@@ -1742,6 +1770,7 @@ private:
             }
             timestampReady_[i] = false;
             hashReady_[i] = false;
+            visibleCountReady_[i] = false;
         }
 
         return true;
@@ -1855,7 +1884,7 @@ private:
             return;
         }
 
-        if (key == SDLK_r)
+        if (key == SDLK_R)
         {
             autoRun_ = true;
             autoRunComboIndex_ = 0;
@@ -1879,15 +1908,15 @@ private:
         {
             activePipeline_ = PipelineStyle::Esoterica;
         }
-        else if (key == SDLK_q)
+        else if (key == SDLK_Q)
         {
             activeScenario_ = ScenarioMode::AllVisible;
         }
-        else if (key == SDLK_w)
+        else if (key == SDLK_W)
         {
             activeScenario_ = ScenarioMode::HighCulling;
         }
-        else if (key == SDLK_s)
+        else if (key == SDLK_S)
         {
             if (supportsMeshShaders_)
             {
@@ -1954,6 +1983,7 @@ private:
         sceneCB.activeCommandCount = activeCommandCount_;
         sceneCB.activeInstanceCount = activeInstanceCount_;
         sceneCB.pipelineStyle = static_cast<uint32_t>(activePipeline_);
+        sceneCB.scenarioMode = activeScenario_ == ScenarioMode::HighCulling ? 1u : 0u;
         sceneCB.meshUseVisibleList = (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Mesh) ? 1u : 0u;
 
         FrameMetrics metrics = {};
@@ -1978,6 +2008,7 @@ private:
         device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmd);
         ExecuteCullStage(sceneCB, cmd);
         device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmd);
+        device_->CopyBuffer(&visibleCountReadback_[frameIndex], 0, &visibleCountBuffer_, 0, sizeof(uint32_t), cmd);
 
         device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawStart, cmd);
         ExecuteDrawStage(sceneCB, cmd);
@@ -1998,6 +2029,7 @@ private:
 
         timestampReady_[frameIndex] = true;
         hashReady_[frameIndex] = true;
+        visibleCountReady_[frameIndex] = true;
 
         const uint64_t cpuEnd = SDL_GetPerformanceCounter();
         metrics.cpuMs = perfFreq > 0 ? (1000.0 * static_cast<double>(cpuEnd - cpuBegin) / static_cast<double>(perfFreq)) : 0.0;
@@ -2035,9 +2067,8 @@ private:
 
             if (activeSuite_ == SuiteMode::Portable)
             {
-                device_->BindComputeShader(&csCompactArgs_, cmd);
-                const uint32_t compactGroups = (activeCommandCount_ + 63u) / 64u;
-                device_->Dispatch(std::max(1u, compactGroups), 1, 1, cmd);
+                device_->BindComputeShader(&csTVBFilter_, cmd);
+                device_->Dispatch(std::max(1u, activeCommandCount_), 1, 1, cmd);
                 device_->Barrier(cmd);
             }
             else
@@ -2116,8 +2147,8 @@ private:
             }
             else if (activePipeline_ == PipelineStyle::Esoterica)
             {
-                device_->BindIndexBuffer(&clusterIndexBuffer_, wi::IndexBufferFormat::UINT32, 0, cmd);
-                device_->DrawIndexedInstancedIndirectCount(&visibleArgsBuffer_, 0, &visibleCountBuffer_, 0, activeCommandCount_, cmd);
+                device_->BindIndexBuffer(&tvbFilteredIndexBuffer_, wi::IndexBufferFormat::UINT32, 0, cmd);
+                device_->DrawIndexedInstancedIndirectCount(&tvbArgsBuffer_, 0, &visibleCountBuffer_, 0, activeCommandCount_, cmd);
             }
             else
             {
@@ -2211,7 +2242,19 @@ private:
 
         if (activePipeline_ == PipelineStyle::Esoterica)
         {
-            metrics.visibleCommands = 0;
+            const uint32_t expectedVisible = activeScenario_ == ScenarioMode::HighCulling
+                ? (activeCommandCount_ + 3u) / 4u
+                : activeCommandCount_;
+            metrics.visibleCommands = expectedVisible;
+
+            if (visibleCountReady_[frameIndex] && visibleCountReadback_[frameIndex].mapped_data != nullptr)
+            {
+                const uint32_t gpuVisible = *static_cast<const uint32_t*>(visibleCountReadback_[frameIndex].mapped_data);
+                if (gpuVisible > 0u)
+                {
+                    metrics.visibleCommands = gpuVisible;
+                }
+            }
         }
         else
         {
@@ -2397,6 +2440,9 @@ private:
 
     PipelineState pipelineIndexed_ = {};
     PipelineState pipelineMesh_ = {};
+    RasterizerState rasterState_ = {};
+    DepthStencilState depthStencilState_ = {};
+    BlendState blendState_ = {};
 
     Texture primitiveIDTexture_ = {};
     Texture depthTexture_ = {};
@@ -2425,11 +2471,13 @@ private:
 
     GPUBuffer hashBuffer_ = {};
     std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> hashReadback_ = {};
+    std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> visibleCountReadback_ = {};
 
     GPUQueryHeap timestampQueryHeap_ = {};
     std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> timestampReadback_ = {};
     std::array<bool, wi::GraphicsDevice::GetBufferCount()> timestampReady_ = {};
     std::array<bool, wi::GraphicsDevice::GetBufferCount()> hashReady_ = {};
+    std::array<bool, wi::GraphicsDevice::GetBufferCount()> visibleCountReady_ = {};
 
     std::vector<Vec3> vertices_;
     std::vector<GPUInstanceData> instances_;

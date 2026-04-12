@@ -252,6 +252,18 @@ struct IndirectDispatchArgs
 static_assert(sizeof(IndirectDispatchArgs) == 12, "IndirectDispatchArgs ABI mismatch");
 
 #if WICKED_SUBSET_USE_DX12
+// DX12 DrawIndirectCount command signature prefixes a 32-bit root constant.
+struct DrawIndirectCountArgs
+{
+    uint32_t DrawID = 0;
+    IndirectDrawArgsInstanced Draw = {};
+};
+static_assert(sizeof(DrawIndirectCountArgs) == 20, "DrawIndirectCountArgs ABI mismatch");
+#else
+using DrawIndirectCountArgs = IndirectDrawArgsInstanced;
+#endif
+
+#if WICKED_SUBSET_USE_DX12
 // DX12 DispatchMeshIndirectCount command signature prefixes a 32-bit root constant.
 struct MeshIndirectCountArgs
 {
@@ -690,6 +702,7 @@ public:
         meshIndirectArgsBuffer_ = {};
         meshIndirectCountArgsBuffer_ = {};
         meshIndirectCommandCountBuffer_ = {};
+        indirectCountArgsBuffer_ = {};
         swapchain_ = {};
         device_.reset();
 
@@ -986,7 +999,7 @@ private:
             break;
             case DrawMode::DrawIndirectCount:
             {
-                device_->DrawInstancedIndirectCount(&indirectArgsBuffer_, 0, &indirectCountBuffer_, 0, visibleCubeCount_, cmd);
+                device_->DrawInstancedIndirectCount(&indirectCountArgsBuffer_, 0, &indirectCountBuffer_, 0, visibleCubeCount_, cmd);
             }
             break;
             case DrawMode::DispatchMesh:
@@ -1209,6 +1222,7 @@ private:
     {
         std::vector<CubeVertex> vertices(static_cast<size_t>(cubeCount_) * 36u);
         std::vector<IndirectDrawArgsInstanced> drawArgs(cubeCount_);
+        std::vector<DrawIndirectCountArgs> drawCountArgs(cubeCount_);
 
         const uint32_t side = static_cast<uint32_t>(std::ceil(std::cbrt(static_cast<double>(cubeCount_))));
         const float spacing = 2.35f;
@@ -1263,6 +1277,15 @@ private:
                     arg.StartInstanceLocation = 0;
                     drawArgs[index] = arg;
 
+                    DrawIndirectCountArgs countArg = {};
+#if WICKED_SUBSET_USE_DX12
+                    countArg.DrawID = index;
+                    countArg.Draw = arg;
+#else
+                    countArg = arg;
+#endif
+                    drawCountArgs[index] = countArg;
+
                     ++index;
                 }
             }
@@ -1289,6 +1312,16 @@ private:
         if (!device_->CreateBuffer(&argsDesc, drawArgs.data(), &indirectArgsBuffer_))
         {
             std::fprintf(stderr, "CreateBuffer(indirectArgsBuffer) failed\n");
+            return false;
+        }
+
+        GPUBufferDesc countArgsDesc = {};
+        countArgsDesc.usage = Usage::DEFAULT;
+        countArgsDesc.misc_flags = ResourceMiscFlag::INDIRECT_ARGS;
+        countArgsDesc.size = static_cast<uint64_t>(drawCountArgs.size() * sizeof(DrawIndirectCountArgs));
+        if (!device_->CreateBuffer(&countArgsDesc, drawCountArgs.data(), &indirectCountArgsBuffer_))
+        {
+            std::fprintf(stderr, "CreateBuffer(indirectCountArgsBuffer) failed\n");
             return false;
         }
 
@@ -1347,6 +1380,7 @@ private:
 
         device_->SetName(&vertexBuffer_, "subset_indirect_compare_vertices");
         device_->SetName(&indirectArgsBuffer_, "subset_indirect_compare_draw_args");
+        device_->SetName(&indirectCountArgsBuffer_, "subset_indirect_compare_draw_count_args");
         device_->SetName(&indirectCountBuffer_, "subset_indirect_compare_draw_count");
         if (supportsMeshShaders_)
         {
@@ -1375,6 +1409,7 @@ private:
 
     GPUBuffer vertexBuffer_ = {};
     GPUBuffer indirectArgsBuffer_ = {};
+    GPUBuffer indirectCountArgsBuffer_ = {};
     GPUBuffer indirectCountBuffer_ = {};
     GPUBuffer meshIndirectArgsBuffer_ = {};
     GPUBuffer meshIndirectCountArgsBuffer_ = {};

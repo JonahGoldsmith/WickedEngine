@@ -7366,19 +7366,131 @@ std::mutex queue_locker;
 	{
 		predraw(cmd);
 		CommandList_DX12& commandlist = GetCommandList(cmd);
+		if (commandlist.active_pso == nullptr)
+		{
+			WI_DX12_LOG_ERROR("DrawInstancedIndirectCount called without an active graphics pipeline");
+			return;
+		}
+		if (!wiGraphicsGPUResourceIsValid(args) || !wiGraphicsGPUResourceIsValid(count))
+		{
+			WI_DX12_LOG_ERROR("DrawInstancedIndirectCount called with invalid args/count buffer");
+			return;
+		}
 		auto pso_internal = to_internal(commandlist.active_pso);
 		auto args_internal = to_internal(args);
 		auto count_internal = to_internal(count);
-		commandlist.GetGraphicsCommandList()->ExecuteIndirect(pso_internal->drawInstancedIndirectCountCommandSignature.Get(), max_count, args_internal->resource.Get(), args_offset, count_internal->resource.Get(), count_offset);
+		if (pso_internal == nullptr || pso_internal->drawInstancedIndirectCountCommandSignature.Get() == nullptr)
+		{
+			WI_DX12_LOG_ERROR("DrawInstancedIndirectCount command signature is not available for the active pipeline");
+			return;
+		}
+		if (count_offset + sizeof(uint32_t) > count->desc.size)
+		{
+			WI_DX12_LOG_ERROR(
+				"DrawInstancedIndirectCount count buffer is too small: count_offset=%llu size=%llu",
+				(unsigned long long)count_offset,
+				(unsigned long long)count->desc.size
+			);
+			return;
+		}
+		const uint64_t stride = sizeof(uint32_t) + sizeof(D3D12_DRAW_ARGUMENTS);
+		const uint64_t available = args_offset < args->desc.size ? (args->desc.size - args_offset) : 0ull;
+		const uint32_t max_possible = static_cast<uint32_t>(std::min<uint64_t>(max_count, available / stride));
+		if (max_possible == 0)
+		{
+			WI_DX12_LOG_ERROR(
+				"DrawInstancedIndirectCount args buffer is too small for count commands: args_offset=%llu size=%llu stride=%llu requested=%u",
+				(unsigned long long)args_offset,
+				(unsigned long long)args->desc.size,
+				(unsigned long long)stride,
+				(unsigned int)max_count
+			);
+			return;
+		}
+		if (max_possible < max_count)
+		{
+			WI_DX12_LOG_WARN(
+				"DrawInstancedIndirectCount clamping max_count from %u to %u due to args buffer size (offset=%llu size=%llu stride=%llu)",
+				(unsigned int)max_count,
+				(unsigned int)max_possible,
+				(unsigned long long)args_offset,
+				(unsigned long long)args->desc.size,
+				(unsigned long long)stride
+			);
+		}
+		commandlist.GetGraphicsCommandList()->ExecuteIndirect(
+			pso_internal->drawInstancedIndirectCountCommandSignature.Get(),
+			max_possible,
+			args_internal->resource.Get(),
+			args_offset,
+			count_internal->resource.Get(),
+			count_offset
+		);
 	}
 	void GraphicsDevice_DX12::DrawIndexedInstancedIndirectCount(const GPUBuffer* args, uint64_t args_offset, const GPUBuffer* count, uint64_t count_offset, uint32_t max_count, CommandList cmd)
 	{
 		predraw(cmd);
 		CommandList_DX12& commandlist = GetCommandList(cmd);
+		if (commandlist.active_pso == nullptr)
+		{
+			WI_DX12_LOG_ERROR("DrawIndexedInstancedIndirectCount called without an active graphics pipeline");
+			return;
+		}
+		if (!wiGraphicsGPUResourceIsValid(args) || !wiGraphicsGPUResourceIsValid(count))
+		{
+			WI_DX12_LOG_ERROR("DrawIndexedInstancedIndirectCount called with invalid args/count buffer");
+			return;
+		}
 		auto pso_internal = to_internal(commandlist.active_pso);
 		auto args_internal = to_internal(args);
 		auto count_internal = to_internal(count);
-		commandlist.GetGraphicsCommandList()->ExecuteIndirect(pso_internal->drawIndexedInstancedIndirectCountCommandSignature.Get(), max_count, args_internal->resource.Get(), args_offset, count_internal->resource.Get(), count_offset);
+		if (pso_internal == nullptr || pso_internal->drawIndexedInstancedIndirectCountCommandSignature.Get() == nullptr)
+		{
+			WI_DX12_LOG_ERROR("DrawIndexedInstancedIndirectCount command signature is not available for the active pipeline");
+			return;
+		}
+		if (count_offset + sizeof(uint32_t) > count->desc.size)
+		{
+			WI_DX12_LOG_ERROR(
+				"DrawIndexedInstancedIndirectCount count buffer is too small: count_offset=%llu size=%llu",
+				(unsigned long long)count_offset,
+				(unsigned long long)count->desc.size
+			);
+			return;
+		}
+		const uint64_t stride = sizeof(uint32_t) + sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+		const uint64_t available = args_offset < args->desc.size ? (args->desc.size - args_offset) : 0ull;
+		const uint32_t max_possible = static_cast<uint32_t>(std::min<uint64_t>(max_count, available / stride));
+		if (max_possible == 0)
+		{
+			WI_DX12_LOG_ERROR(
+				"DrawIndexedInstancedIndirectCount args buffer is too small for count commands: args_offset=%llu size=%llu stride=%llu requested=%u",
+				(unsigned long long)args_offset,
+				(unsigned long long)args->desc.size,
+				(unsigned long long)stride,
+				(unsigned int)max_count
+			);
+			return;
+		}
+		if (max_possible < max_count)
+		{
+			WI_DX12_LOG_WARN(
+				"DrawIndexedInstancedIndirectCount clamping max_count from %u to %u due to args buffer size (offset=%llu size=%llu stride=%llu)",
+				(unsigned int)max_count,
+				(unsigned int)max_possible,
+				(unsigned long long)args_offset,
+				(unsigned long long)args->desc.size,
+				(unsigned long long)stride
+			);
+		}
+		commandlist.GetGraphicsCommandList()->ExecuteIndirect(
+			pso_internal->drawIndexedInstancedIndirectCountCommandSignature.Get(),
+			max_possible,
+			args_internal->resource.Get(),
+			args_offset,
+			count_internal->resource.Get(),
+			count_offset
+		);
 	}
 	void GraphicsDevice_DX12::Dispatch(uint32_t threadGroupCountX, uint32_t threadGroupCountY, uint32_t threadGroupCountZ, CommandList cmd)
 	{
@@ -7410,10 +7522,66 @@ std::mutex queue_locker;
 	{
 		predraw(cmd);
 		CommandList_DX12& commandlist = GetCommandList(cmd);
+		if (commandlist.active_pso == nullptr)
+		{
+			WI_DX12_LOG_ERROR("DispatchMeshIndirectCount called without an active graphics pipeline");
+			return;
+		}
+		if (!wiGraphicsGPUResourceIsValid(args) || !wiGraphicsGPUResourceIsValid(count))
+		{
+			WI_DX12_LOG_ERROR("DispatchMeshIndirectCount called with invalid args/count buffer");
+			return;
+		}
 		auto pso_internal = to_internal(commandlist.active_pso);
 		auto args_internal = to_internal(args);
 		auto count_internal = to_internal(count);
-		commandlist.GetGraphicsCommandList()->ExecuteIndirect(pso_internal->dispatchMeshIndirectCountCommandSignature.Get(), max_count, args_internal->resource.Get(), args_offset, count_internal->resource.Get(), count_offset);
+		if (pso_internal == nullptr || pso_internal->dispatchMeshIndirectCountCommandSignature.Get() == nullptr)
+		{
+			WI_DX12_LOG_ERROR("DispatchMeshIndirectCount command signature is not available for the active pipeline");
+			return;
+		}
+		if (count_offset + sizeof(uint32_t) > count->desc.size)
+		{
+			WI_DX12_LOG_ERROR(
+				"DispatchMeshIndirectCount count buffer is too small: count_offset=%llu size=%llu",
+				(unsigned long long)count_offset,
+				(unsigned long long)count->desc.size
+			);
+			return;
+		}
+		const uint64_t stride = sizeof(uint32_t) + sizeof(D3D12_DISPATCH_MESH_ARGUMENTS);
+		const uint64_t available = args_offset < args->desc.size ? (args->desc.size - args_offset) : 0ull;
+		const uint32_t max_possible = static_cast<uint32_t>(std::min<uint64_t>(max_count, available / stride));
+		if (max_possible == 0)
+		{
+			WI_DX12_LOG_ERROR(
+				"DispatchMeshIndirectCount args buffer is too small for count commands: args_offset=%llu size=%llu stride=%llu requested=%u",
+				(unsigned long long)args_offset,
+				(unsigned long long)args->desc.size,
+				(unsigned long long)stride,
+				(unsigned int)max_count
+			);
+			return;
+		}
+		if (max_possible < max_count)
+		{
+			WI_DX12_LOG_WARN(
+				"DispatchMeshIndirectCount clamping max_count from %u to %u due to args buffer size (offset=%llu size=%llu stride=%llu)",
+				(unsigned int)max_count,
+				(unsigned int)max_possible,
+				(unsigned long long)args_offset,
+				(unsigned long long)args->desc.size,
+				(unsigned long long)stride
+			);
+		}
+		commandlist.GetGraphicsCommandList()->ExecuteIndirect(
+			pso_internal->dispatchMeshIndirectCountCommandSignature.Get(),
+			max_possible,
+			args_internal->resource.Get(),
+			args_offset,
+			count_internal->resource.Get(),
+			count_offset
+		);
 	}
 	void GraphicsDevice_DX12::CopyResource(const GPUResource* pDst, const GPUResource* pSrc, CommandList cmd)
 	{

@@ -77,6 +77,7 @@ option(WICKED_SUBSET_ENABLE_DX12 "Compile wiGraphicsDevice_DX12.cpp in subset mo
 option(WICKED_SUBSET_ENABLE_VULKAN "Compile wiGraphicsDevice_Vulkan.cpp in subset mode" ${_subset_default_vulkan})
 option(WICKED_SUBSET_ENABLE_METAL "Compile wiGraphicsDevice_Metal.cpp in subset mode" ${_subset_default_metal})
 option(WICKED_SUBSET_BUILD_CUBE_DEMO "Build SDL3 cube demo using Wicked graphics subset" ON)
+option(WICKED_SUBSET_BUILD_VISIBILITY_BENCHMARK_DEMO "Build visibility pipeline benchmark demo using Wicked graphics subset" ON)
 
 if(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_VULKAN)
     set(WICKED_SUBSET_ENABLE_VULKAN ON CACHE BOOL "Compile wiGraphicsDevice_Vulkan.cpp in subset mode" FORCE)
@@ -227,7 +228,7 @@ endif()
 message(STATUS "Wicked subset MMGR coverage mode: ${WICKED_SUBSET_MMGR_COVERAGE_MODE}")
 
 set(WICKED_SUBSET_NEEDS_SDL3 OFF)
-if(WICKED_SUBSET_BUILD_CUBE_DEMO)
+if(WICKED_SUBSET_BUILD_CUBE_DEMO OR WICKED_SUBSET_BUILD_VISIBILITY_BENCHMARK_DEMO)
     set(WICKED_SUBSET_NEEDS_SDL3 ON)
 endif()
 if(WICKED_SUBSET_ENABLE_VULKAN)
@@ -577,6 +578,111 @@ if(WICKED_SUBSET_BUILD_CUBE_DEMO)
     endif()
 
     wicked_subset_copy_shadercompiler_runtime(wicked_subset_cube_indirect_compare_demo)
+endif()
+
+if(WICKED_SUBSET_BUILD_VISIBILITY_BENCHMARK_DEMO)
+    set(WICKED_SUBSET_VISIBILITY_BENCHMARK_DEMO_SOURCES
+        "${WICKED_SUBSET_SRC_DIR}/wicked_subset_visibility_pipeline_benchmark.cpp"
+        "${WICKED_SUBSET_SRC_DIR}/wicked_runtime_stubs.cpp"
+        "${WICKED_SUBSET_SRC_DIR}/wicked_shadercompiler_support_stubs.cpp"
+        "${WICKED_SUBSET_SHADER_DIR}/wicked_subset_visibility_pipeline_benchmark.hlsl"
+        "${WICKED_SUBSET_SHADER_DIR}/wicked_subset_shader_compat.hlsli"
+    )
+
+    if(APPLE)
+        list(APPEND WICKED_SUBSET_VISIBILITY_BENCHMARK_DEMO_SOURCES
+            "${WICKED_SUBSET_SRC_DIR}/platform_window_helpers_apple.mm"
+            "${WICKED_SUBSET_SRC_DIR}/wicked_runtime_apple.mm"
+        )
+    else()
+        list(APPEND WICKED_SUBSET_VISIBILITY_BENCHMARK_DEMO_SOURCES
+            "${WICKED_SUBSET_SRC_DIR}/platform_window_helpers_stub.cpp"
+        )
+    endif()
+
+    add_executable(wicked_subset_visibility_pipeline_benchmark ${WICKED_SUBSET_VISIBILITY_BENCHMARK_DEMO_SOURCES})
+    wicked_subset_apply_common_flags(wicked_subset_visibility_pipeline_benchmark)
+
+    target_compile_definitions(wicked_subset_visibility_pipeline_benchmark PRIVATE
+        WICKED_SUBSET_VISIBILITY_BENCHMARK_SHADER_PATH="${WICKED_SUBSET_SHADER_DIR}/wicked_subset_visibility_pipeline_benchmark.hlsl"
+        WICKED_SUBSET_ENGINE_SHADER_DIR="${WICKED_SUBSET_ENGINE_ROOT}/shaders"
+        WICKED_SUBSET_BACKEND=${WICKED_ENGINECONFIG_SUBSET_BACKEND}
+    )
+
+    wicked_subset_apply_mmgr_settings(wicked_subset_visibility_pipeline_benchmark)
+
+    target_include_directories(wicked_subset_visibility_pipeline_benchmark PRIVATE
+        "${WICKED_SUBSET_SRC_DIR}"
+        "${WICKED_SUBSET_SHADER_DIR}"
+        "${WICKED_SUBSET_ENGINE_ROOT}"
+        "${WICKED_SUBSET_ENGINE_ROOT}/Utility/metal"
+    )
+
+    target_sources(wicked_subset_visibility_pipeline_benchmark PRIVATE
+        $<TARGET_OBJECTS:wicked_subset_shadercompiler_obj>
+    )
+
+    wicked_subset_link_mmgr_runtime_object(wicked_subset_visibility_pipeline_benchmark)
+
+    if(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_METAL)
+        if(NOT APPLE)
+            message(FATAL_ERROR "EngineConfig requests Metal backend (WI_ENGINECONFIG_SUBSET_BACKEND=2), but this platform is not Apple.")
+        endif()
+        if(NOT TARGET wicked_subset_graphics_metal_obj)
+            message(FATAL_ERROR "EngineConfig requests Metal backend (WI_ENGINECONFIG_SUBSET_BACKEND=2), but WICKED_SUBSET_ENABLE_METAL is OFF.")
+        endif()
+        target_sources(wicked_subset_visibility_pipeline_benchmark PRIVATE
+            $<TARGET_OBJECTS:wicked_subset_graphics_metal_obj>
+        )
+    elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_DX12)
+        if(NOT WIN32)
+            message(FATAL_ERROR "EngineConfig requests DX12 backend (WI_ENGINECONFIG_SUBSET_BACKEND=1), but this platform is not Windows.")
+        endif()
+        if(NOT TARGET wicked_subset_graphics_dx12_obj)
+            message(FATAL_ERROR "EngineConfig requests DX12 backend (WI_ENGINECONFIG_SUBSET_BACKEND=1), but WICKED_SUBSET_ENABLE_DX12 is OFF.")
+        endif()
+        target_sources(wicked_subset_visibility_pipeline_benchmark PRIVATE
+            $<TARGET_OBJECTS:wicked_subset_graphics_dx12_obj>
+        )
+        target_link_libraries(wicked_subset_visibility_pipeline_benchmark PRIVATE d3d12 dxgi dxguid)
+    elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_VULKAN)
+        if(NOT TARGET wicked_subset_graphics_vulkan_obj)
+            message(FATAL_ERROR "EngineConfig requests Vulkan backend (WI_ENGINECONFIG_SUBSET_BACKEND=0), but WICKED_SUBSET_ENABLE_VULKAN is OFF.")
+        endif()
+        target_sources(wicked_subset_visibility_pipeline_benchmark PRIVATE
+            $<TARGET_OBJECTS:wicked_subset_graphics_vulkan_obj>
+            "${WICKED_SUBSET_ENGINE_ROOT}/Utility/spirv_reflect.c"
+        )
+    else()
+        message(FATAL_ERROR "Unknown subset backend id: ${WICKED_ENGINECONFIG_SUBSET_BACKEND}")
+    endif()
+
+    if(APPLE)
+        target_compile_options(wicked_subset_visibility_pipeline_benchmark PRIVATE
+            "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>"
+            "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>"
+        )
+    endif()
+
+    target_link_libraries(wicked_subset_visibility_pipeline_benchmark PRIVATE SDL3::SDL3)
+
+    if(APPLE)
+        target_link_libraries(wicked_subset_visibility_pipeline_benchmark PRIVATE
+            "-framework Cocoa"
+            "-framework Foundation"
+            "-framework Metal"
+            "-framework MetalKit"
+            "-framework MetalPerformanceShaders"
+            "-framework QuartzCore"
+            "-framework CoreGraphics"
+            "-framework CoreVideo"
+            "-framework IOKit"
+        )
+    elseif(UNIX)
+        target_link_libraries(wicked_subset_visibility_pipeline_benchmark PRIVATE dl)
+    endif()
+
+    wicked_subset_copy_shadercompiler_runtime(wicked_subset_visibility_pipeline_benchmark)
 endif()
 
 message(STATUS "Wicked graphics subset targets: ${WICKED_SUBSET_OBJECT_TARGETS}")

@@ -15,6 +15,8 @@ static const uint kArgBaseVertexOffset = 12u;
 static const uint kArgStartInstanceOffset = 16u;
 static const uint kIndirectArgStride = 20u;
 
+groupshared uint gTVBVisibleTriCount;
+
 struct InstanceData
 {
     row_major float4x4 world;
@@ -78,27 +80,23 @@ cbuffer SceneCB : register(b0)
     uint activeCommandCount;
     uint activeInstanceCount;
     uint pipelineStyle;
+    uint scenarioMode;
     uint meshUseVisibleList;
+    uint3 _padding0;
 }
 
 bool SphereVisible(float3 center, float radius)
 {
     const float4 clip = mul(float4(center, 1.0), viewProj);
-
-    if (clip.w <= 0.0)
-    {
+    const float w = abs(clip.w);
+    if (w <= 1e-6)
         return false;
-    }
 
     const float radiusX = radius * abs(projectionScale.x);
     const float radiusY = radius * abs(projectionScale.y);
-    const float radiusZ = radius;
-
-    if (clip.x > clip.w + radiusX || clip.x < -clip.w - radiusX)
+    if (clip.x > w + radiusX || clip.x < -w - radiusX)
         return false;
-    if (clip.y > clip.w + radiusY || clip.y < -clip.w - radiusY)
-        return false;
-    if (clip.z > clip.w + radiusZ || clip.z < -radiusZ)
+    if (clip.y > w + radiusY || clip.y < -w - radiusY)
         return false;
 
     return true;
@@ -177,9 +175,7 @@ void cs_instance_filter(uint3 DTid : SV_DispatchThreadID)
     if (instanceIndex >= activeInstanceCount)
         return;
 
-    const InstanceData inst = gInstances[instanceIndex];
-    const bool visible = SphereVisible(inst.bounds.xyz, inst.bounds.w);
-    gInstanceVisibleOut[instanceIndex] = visible ? 1u : 0u;
+    gInstanceVisibleOut[instanceIndex] = 1u;
 }
 
 [numthreads(64, 1, 1)]
@@ -193,15 +189,14 @@ void cs_cluster_filter(uint3 DTid : SV_DispatchThreadID)
     if (gInstanceVisible[command.instanceIndex] == 0u)
         return;
 
-    const InstanceData inst = gInstances[command.instanceIndex];
-    const ClusterTemplate cluster = gClusterTemplates[command.clusterTemplateIndex];
-
-    const float3 localCenter = cluster.bounds.xyz;
-    const float worldRadius = cluster.bounds.w * inst.scale;
-    const float3 worldCenter = mul(float4(localCenter, 1.0), inst.world).xyz;
-
-    if (!SphereVisible(worldCenter, worldRadius))
-        return;
+    if (scenarioMode != 0u)
+    {
+        // Deterministic high-culling mode: keep roughly 1/4 of clusters.
+        uint h = commandIndex * 747796405u + 2891336453u;
+        h = (h >> ((h >> 28u) + 4u)) ^ h;
+        if ((h & 0x3u) != 0u)
+            return;
+    }
 
     uint dstIndex = 0u;
     gVisibleCountOut.InterlockedAdd(0u, 1u, dstIndex);
@@ -231,15 +226,27 @@ void cs_compact_visible_args(uint3 DTid : SV_DispatchThreadID)
 [numthreads(128, 1, 1)]
 void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
 {
-    groupshared uint gsVisibleTriCount;
+    const uint dispatchIndex = Gid.x;
+    uint commandIndex = dispatchIndex;
+    uint drawCommandIndex = dispatchIndex;
 
-    const uint commandIndex = Gid.x;
-    if (commandIndex >= activeCommandCount)
-        return;
+    if (pipelineStyle == kPipelineEsoterica)
+    {
+        const uint visibleCount = gVisibleCount.Load(0u);
+        if (dispatchIndex >= visibleCount)
+            return;
+        commandIndex = gVisibleCommandIndices[dispatchIndex];
+        drawCommandIndex = dispatchIndex;
+    }
+    else
+    {
+        if (dispatchIndex >= activeCommandCount)
+            return;
+    }
 
     if (GTid.x == 0u)
     {
-        gsVisibleTriCount = 0u;
+        gTVBVisibleTriCount = 0u;
     }
     GroupMemoryBarrierWithGroupSync();
 
@@ -272,14 +279,14 @@ void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
         if (!culled)
         {
             uint dstTri = 0u;
-            InterlockedAdd(gsVisibleTriCount, 1u, dstTri);
+            InterlockedAdd(gTVBVisibleTriCount, 1u, dstTri);
 
-            const uint filteredIndexOffset = commandIndex * kMaxClusterIndices + dstTri * 3u;
+            const uint filteredIndexOffset = drawCommandIndex * kMaxClusterIndices + dstTri * 3u;
             gTVBFilteredIndicesOut.Store((filteredIndexOffset + 0u) * 4u, localVertex0);
             gTVBFilteredIndicesOut.Store((filteredIndexOffset + 1u) * 4u, localVertex1);
             gTVBFilteredIndicesOut.Store((filteredIndexOffset + 2u) * 4u, localVertex2);
 
-            const uint primitiveOffset = commandIndex * kMaxClusterTriangles + dstTri;
+            const uint primitiveOffset = drawCommandIndex * kMaxClusterTriangles + dstTri;
             gTVBFilteredPrimitiveIDsOut[primitiveOffset] = command.primitiveBase + GTid.x;
         }
     }
@@ -290,11 +297,11 @@ void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
     {
         StoreIndexedIndirectArg(
             gTVBArgsOut,
-            commandIndex,
-            gsVisibleTriCount * 3u,
-            commandIndex * kMaxClusterIndices,
+            drawCommandIndex,
+            gTVBVisibleTriCount * 3u,
+            drawCommandIndex * kMaxClusterIndices,
             cluster.baseVertex,
-            commandIndex);
+            drawCommandIndex);
     }
 }
 
@@ -326,27 +333,36 @@ struct VSOut
 {
     float4 position : SV_Position;
     nointerpolation uint commandIndex : COMMANDINDEX;
+    nointerpolation uint drawCommandIndex : DRAWCMDINDEX;
 };
 
 VSOut vs_indexed(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 {
     VSOut output;
 
-    const ClusterCommand command = gCommands[instanceID];
+    const uint drawCommandIndex = instanceID;
+    uint commandIndex = drawCommandIndex;
+    if (pipelineStyle == kPipelineEsoterica)
+    {
+        commandIndex = gVisibleCommandIndices[drawCommandIndex];
+    }
+
+    const ClusterCommand command = gCommands[commandIndex];
     const InstanceData inst = gInstances[command.instanceIndex];
 
     const float4 worldPos = mul(float4(gVertices[vertexID], 1.0), inst.world);
     output.position = mul(worldPos, viewProj);
-    output.commandIndex = instanceID;
+    output.commandIndex = commandIndex;
+    output.drawCommandIndex = drawCommandIndex;
 
     return output;
 }
 
 uint ps_indexed(VSOut input, uint primitiveID : SV_PrimitiveID) : SV_Target0
 {
-    if (pipelineStyle == kPipelineTVB)
+    if (pipelineStyle == kPipelineTVB || pipelineStyle == kPipelineEsoterica)
     {
-        const uint primitiveOffset = input.commandIndex * kMaxClusterTriangles + primitiveID;
+        const uint primitiveOffset = input.drawCommandIndex * kMaxClusterTriangles + primitiveID;
         return gTVBFilteredPrimitiveIDs[primitiveOffset] + 1u;
     }
 
