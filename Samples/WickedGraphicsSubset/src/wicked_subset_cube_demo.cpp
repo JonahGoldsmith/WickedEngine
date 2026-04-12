@@ -637,7 +637,7 @@ private:
         vp.max_depth = 1.0f;
 
         wi::Rect scissor;
-        scissor.from_viewport(vp);
+        wi::wiGraphicsRectFromViewport(&scissor, &vp);
 
         device_->BindViewports(1, &vp, cmd);
         device_->BindScissorRects(1, &scissor, cmd);

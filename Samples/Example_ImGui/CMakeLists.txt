@@ -65,13 +65,6 @@ else()
 		Example_ImGui_Lib
 	)
 
-	# Copy shaders to build and source folders just to be safe:
-	add_custom_command(
-		TARGET Example_ImGui POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/ImGuiPS.hlsl ${CMAKE_CURRENT_BINARY_DIR}
-		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/ImGuiVS.hlsl ${CMAKE_CURRENT_BINARY_DIR}
-	)
-
 	set(LIB_DXCOMPILER "libdxcompiler.so")
 endif ()
 
@@ -92,5 +85,7 @@ add_dependencies(Example_ImGui Content)
 
 add_custom_command(
 	TARGET Example_ImGui POST_BUILD
-	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${WICKED_ROOT_DIR}/WickedEngine/${LIB_DXCOMPILER} ${CMAKE_CURRENT_BINARY_DIR}
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${WICKED_ROOT_DIR}/WickedEngine/${LIB_DXCOMPILER} $<TARGET_FILE_DIR:Example_ImGui>
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/ImGuiPS.hlsl $<TARGET_FILE_DIR:Example_ImGui>
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/ImGuiVS.hlsl $<TARGET_FILE_DIR:Example_ImGui>
 )

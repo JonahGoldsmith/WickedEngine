@@ -13,32 +13,24 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     WickedEngine
 )
 
-if(MSVC)
-    add_compile_options(/MP)
-endif()
-
 set_target_properties(${PROJECT_NAME} PROPERTIES
-WIN32_EXECUTABLE YES
+    WIN32_EXECUTABLE YES
 )
 
 if(WICKED_ENABLE_IPO)
-set_target_properties(${PROJEC_NAME} PROPERTIES
-    INTERPROCEDURAL_OPTIMIZATION ON
-    INTERPROCEDURAL_OPTIMIZATION_DEBUG OFF
-)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION ON
+        INTERPROCEDURAL_OPTIMIZATION_DEBUG OFF
+    )
 endif()
 
-set(PLATFORM "Windows")
-add_compile_definitions(WIN32 _WINDOWS)
+target_compile_definitions(${PROJECT_NAME} PRIVATE _WINDOWS)
 
 set(LIBDXCOMPILER_PATH "${WICKED_ROOT_DIR}/WickedEngine/${LIB_DXCOMPILER}")
 set(STARTUP_LUA "${WICKED_ROOT_DIR}/Editor/startup.lua")
-message("libdxcompiler found at ${LIBDXCOMPILER_PATH}")
-message("startup lua found at ${STARTUP_LUA}")
 
-# NOTE: this wont work because client never has prvileges to copy files
 add_custom_command(
     TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${LIBDXCOMPILER_PATH} ${CMAKE_CURRENT_BINARY_DIR}
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${STARTUP_LUA} ${CMAKE_CURRENT_BINARY_DIR}/startup.lua
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${LIBDXCOMPILER_PATH} $<TARGET_FILE_DIR:${PROJECT_NAME}>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${STARTUP_LUA} $<TARGET_FILE_DIR:${PROJECT_NAME}>/startup.lua
 )

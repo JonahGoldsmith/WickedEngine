@@ -108,6 +108,19 @@ namespace wi
 		NS::SharedPtr<MTL::SharedEvent> frame_fence[BUFFERCOUNT][QUEUE_COUNT];
 		
 		NS::SharedPtr<MTL4::ArgumentTableDescriptor> argument_table_desc;
+
+		struct DrawCountICBEncoderState
+		{
+			bool initialized = false;
+			bool failed = false;
+			NS::SharedPtr<MTL::Library> library;
+			NS::SharedPtr<MTL::Function> draw_function;
+			NS::SharedPtr<MTL::Function> draw_indexed_function;
+			NS::SharedPtr<MTL::ComputePipelineState> draw_pipeline;
+			NS::SharedPtr<MTL::ComputePipelineState> draw_indexed_pipeline;
+			uint32_t draw_icb_argument_buffer_size = 0;
+			uint32_t draw_indexed_icb_argument_buffer_size = 0;
+		} drawcount_icb_encoder;
 		
 		Semaphore* semaphore_pool = nullptr;
 		std::mutex semaphore_pool_locker;
@@ -199,6 +212,20 @@ namespace wi
 			VertexBufferBinding vertex_buffers[16];
 			bool dirty_vb = false;
 
+			RenderPassImage* active_renderpass_images = nullptr;
+			const GPUQueryHeap* active_renderpass_occlusionqueries = nullptr;
+			const SwapChain* active_renderpass_swapchain = nullptr;
+			bool active_renderpass_is_swapchain = false;
+
+			struct DrawCountICBState
+			{
+				NS::SharedPtr<MTL::IndirectCommandBuffer> icb;
+				NS::SharedPtr<MTL::Buffer> icb_argument_buffer;
+				uint32_t capacity = 0;
+			};
+			DrawCountICBState draw_count_icb;
+			DrawCountICBState draw_indexed_count_icb;
+
 			GPUBarrier* barriers = nullptr;
 
 			void reset(uint32_t bufferindex)
@@ -230,6 +257,10 @@ namespace wi
 					x = {};
 				}
 				dirty_vb = false;
+				arrsetlen(active_renderpass_images, 0);
+				active_renderpass_occlusionqueries = nullptr;
+				active_renderpass_swapchain = nullptr;
+				active_renderpass_is_swapchain = false;
 				render_width = 0;
 				render_height = 0;
 				dirty_viewport = false;
@@ -272,12 +303,16 @@ namespace wi
 		void binder_flush(CommandList cmd);
 		void barrier_flush(CommandList cmd);
 		void clear_flush(CommandList cmd);
+		bool EnsureDrawCountICBEncoder();
+		bool EnsureDrawCountICBResources(CommandList cmd, bool indexed, uint32_t max_count);
+		bool EndRenderPassForIndirectEncoding(CommandList cmd);
+		bool ResumeRenderPassAfterIndirectEncoding(CommandList cmd);
 
-			CommandList_Metal& GetCommandList(CommandList cmd) const
-			{
-				SDL_assert(wiGraphicsCommandListIsValid(cmd));
-				return *(CommandList_Metal*)cmd.internal_state;
-			}
+		CommandList_Metal& GetCommandList(CommandList cmd) const
+		{
+			SDL_assert(wiGraphicsCommandListIsValid(cmd));
+			return *(CommandList_Metal*)cmd.internal_state;
+		}
 		
 		void pso_validate(CommandList cmd);
 		void predraw(CommandList cmd);
