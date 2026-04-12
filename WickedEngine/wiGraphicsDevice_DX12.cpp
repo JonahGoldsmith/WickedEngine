@@ -3744,7 +3744,7 @@ std::mutex queue_locker;
 		resourcedesc.Height = desc->height;
 		resourcedesc.MipLevels = texture->desc.mip_levels;
 		resourcedesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-		resourcedesc.DepthOrArraySize = static_cast<UINT16>(desc->array_size);
+		resourcedesc.DepthOrArraySize = static_cast<decltype(resourcedesc.DepthOrArraySize)>(desc->array_size);
 		resourcedesc.SampleDesc.Count = desc->sample_count;
 		resourcedesc.SampleDesc.Quality = 0;
 		resourcedesc.Alignment = 0;
@@ -3805,7 +3805,7 @@ std::mutex queue_locker;
 			break;
 		case TextureDesc::Type::TEXTURE_3D:
 			resourcedesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
-			resourcedesc.DepthOrArraySize = static_cast<UINT16>(desc->depth);
+			resourcedesc.DepthOrArraySize = static_cast<decltype(resourcedesc.DepthOrArraySize)>(desc->depth);
 			break;
 		default:
 			WI_DX12_ASSERT(0);
@@ -4200,8 +4200,8 @@ std::mutex queue_locker;
 			ptrdiff_t cached_index = hmgeti(multidraw_signatures, root_signature);
 			if (cached_index < 0)
 			{
-				MultiDrawCacheEntry new_entry = { root_signature, new MultiDrawSignature{} };
-				hmput(multidraw_signatures, root_signature, new_entry);
+				MultiDrawSignature* new_signature = new MultiDrawSignature{};
+				hmput(multidraw_signatures, root_signature, new_signature);
 				cached_index = hmgeti(multidraw_signatures, root_signature);
 			}
 			MultiDrawSignature& cached = *multidraw_signatures[cached_index].value;
@@ -4249,8 +4249,8 @@ std::mutex queue_locker;
 			ptrdiff_t cached_index = hmgeti(multidraw_signatures, root_signature);
 			if (cached_index < 0)
 			{
-				MultiDrawCacheEntry new_entry = { root_signature, new MultiDrawSignature{} };
-				hmput(multidraw_signatures, root_signature, new_entry);
+				MultiDrawSignature* new_signature = new MultiDrawSignature{};
+				hmput(multidraw_signatures, root_signature, new_signature);
 				cached_index = hmgeti(multidraw_signatures, root_signature);
 			}
 			MultiDrawSignature& cached = *multidraw_signatures[cached_index].value;

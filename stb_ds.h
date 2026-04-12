@@ -93,7 +93,8 @@ extern void * stbds_shmode_func(size_t elemsize, int mode);
 }
 #endif
 
-#if defined(__GNUC__) || defined(__clang__)
+// clang-cl (MSVC frontend) doesn't reliably support the compound-literal addressof trick below.
+#if (defined(__GNUC__) || defined(__clang__)) && !(defined(__clang__) && defined(_MSC_VER))
 #define STBDS_HAS_TYPEOF
 #define STBDS_TYPEOF __typeof__
 #ifdef __cplusplus
