@@ -110,6 +110,7 @@ using wi::InputLayout;
 using wi::PipelineState;
 using wi::PipelineStateDesc;
 using wi::PrimitiveTopology;
+using wi::QUEUE_COPY;
 using wi::QUEUE_GRAPHICS;
 using wi::ResourceMiscFlag;
 using wi::Shader;
@@ -929,12 +930,18 @@ private:
         const uint64_t perfFreq = SDL_GetPerformanceFrequency();
         const uint64_t cpuBegin = SDL_GetPerformanceCounter();
 
+        CommandList cmdCopy = {};
+        if (indirectCountDirty_)
+        {
+            cmdCopy = device_->BeginCommandList(QUEUE_COPY);
+        }
         CommandList cmd = device_->BeginCommandList(QUEUE_GRAPHICS);
 
         if (indirectCountDirty_)
         {
+            const CommandList updateCmd = wi::wiGraphicsCommandListIsValid(cmdCopy) ? cmdCopy : cmd;
             const uint32_t indirectCommandCount = visibleCubeCount_;
-            device_->UpdateBuffer(&indirectCountBuffer_, &indirectCommandCount, cmd, sizeof(indirectCommandCount), 0);
+            device_->UpdateBuffer(&indirectCountBuffer_, &indirectCommandCount, updateCmd, sizeof(indirectCommandCount), 0);
             if (supportsMeshShaders_)
             {
                 const IndirectDispatchArgs meshArgs = {
@@ -942,7 +949,7 @@ private:
                     1u,
                     1u,
                 };
-                device_->UpdateBuffer(&meshIndirectArgsBuffer_, &meshArgs, cmd, sizeof(meshArgs), 0);
+                device_->UpdateBuffer(&meshIndirectArgsBuffer_, &meshArgs, updateCmd, sizeof(meshArgs), 0);
                 MeshIndirectCountArgs meshCountArgs = {};
 #if WICKED_SUBSET_USE_DX12
                 meshCountArgs.DrawID = 0u;
@@ -950,9 +957,9 @@ private:
 #else
                 meshCountArgs = meshArgs;
 #endif
-                device_->UpdateBuffer(&meshIndirectCountArgsBuffer_, &meshCountArgs, cmd, sizeof(meshCountArgs), 0);
+                device_->UpdateBuffer(&meshIndirectCountArgsBuffer_, &meshCountArgs, updateCmd, sizeof(meshCountArgs), 0);
                 const uint32_t meshIndirectCommandCount = 1u;
-                device_->UpdateBuffer(&meshIndirectCommandCountBuffer_, &meshIndirectCommandCount, cmd, sizeof(meshIndirectCommandCount), 0);
+                device_->UpdateBuffer(&meshIndirectCommandCountBuffer_, &meshIndirectCommandCount, updateCmd, sizeof(meshIndirectCommandCount), 0);
             }
             indirectCountDirty_ = false;
         }
@@ -1058,10 +1065,26 @@ private:
         device_->RenderPassEnd(cmd);
 
 #if WICKED_SUBSET_FRAME_BUFFERED
-        SubmitDesc submit = {};
-        submit.command_lists = &cmd;
-        submit.command_list_count = 1;
-        slot.submission = device_->SubmitCommandListsEx(submit);
+        SubmissionToken copySubmission = {};
+        if (wi::wiGraphicsCommandListIsValid(cmdCopy))
+        {
+            SubmitDesc copySubmit = {};
+            copySubmit.command_lists = &cmdCopy;
+            copySubmit.command_list_count = 1;
+            copySubmission = device_->SubmitCommandListsEx(copySubmit);
+        }
+        SubmitDesc graphicsSubmit = {};
+        graphicsSubmit.command_lists = &cmd;
+        graphicsSubmit.command_list_count = 1;
+        graphicsSubmit.throttle_cpu = true;
+        graphicsSubmit.max_inflight_per_queue = WICKED_SUBSET_FRAME_SLOT_COUNT;
+        if (copySubmission.IsValid())
+        {
+            graphicsSubmit.submission_dependencies = &copySubmission;
+            graphicsSubmit.submission_dependency_count = 1;
+        }
+        slot.submission = copySubmission;
+        slot.submission.Merge(device_->SubmitCommandListsEx(graphicsSubmit));
         slot.inUse = slot.submission.IsValid();
         taggedHeap_.FreeTag(wi::framealloc::MakeFrameTag(frameTag, wi::framealloc::FrameTagKind::Render));
 #else

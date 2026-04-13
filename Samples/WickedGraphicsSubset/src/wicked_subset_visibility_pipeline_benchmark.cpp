@@ -114,6 +114,7 @@ using wi::PipelineState;
 using wi::PipelineStateDesc;
 using wi::PrimitiveTopology;
 using wi::QUEUE_COMPUTE;
+using wi::QUEUE_COPY;
 using wi::QUEUE_GRAPHICS;
 using wi::RasterizerState;
 using wi::RenderPassImage;
@@ -2446,6 +2447,11 @@ private:
         ReadTimingAndCounters(frameIndex, &metrics);
 
         const bool useAsyncComputeForCull = IsAsyncCullActiveForCurrentMode();
+        CommandList cmdCopy = {};
+        if (countsDirty_)
+        {
+            cmdCopy = device_->BeginCommandList(QUEUE_COPY);
+        }
         CommandList cmdCull = {};
         if (useAsyncComputeForCull)
         {
@@ -2463,9 +2469,10 @@ private:
 
         if (countsDirty_)
         {
-            TransitionBufferState(&baseCountBuffer_, &baseCountBufferState_, ResourceState::COPY_DST, cmdGraphics);
-            device_->UpdateBuffer(&baseCountBuffer_, &activeCommandCount_, cmdGraphics, sizeof(activeCommandCount_), 0);
-            TransitionBufferState(&baseCountBuffer_, &baseCountBufferState_, ResourceState::INDIRECT_ARGUMENT, cmdGraphics);
+            const CommandList updateCmd = wi::wiGraphicsCommandListIsValid(cmdCopy) ? cmdCopy : cmdGraphics;
+            TransitionBufferState(&baseCountBuffer_, &baseCountBufferState_, ResourceState::COPY_DST, updateCmd);
+            device_->UpdateBuffer(&baseCountBuffer_, &activeCommandCount_, updateCmd, sizeof(activeCommandCount_), 0);
+            TransitionBufferState(&baseCountBuffer_, &baseCountBufferState_, ResourceState::INDIRECT_ARGUMENT, updateCmd);
             countsDirty_ = false;
         }
 
@@ -2486,7 +2493,10 @@ private:
         else
         {
             ExecuteCullStage(sceneCBRef, cmdCull);
+#if !WICKED_SUBSET_FRAME_BUFFERED
+            // Legacy single-submit path still requires an explicit same-submit edge.
             device_->WaitCommandList(cmdGraphics, cmdCull);
+#endif
 
             // Cull timestamps are graphics-queue-local in this benchmark path.
             // Keep them valid and deterministic when cull executes on async compute.
@@ -2526,19 +2536,61 @@ private:
         device_->QueryResolve(&timestampQueryHeap_, 0, kTimestampCount, &timestampReadback_[frameIndex], 0, cmdGraphics);
 
 #if WICKED_SUBSET_FRAME_BUFFERED
-        CommandList submitLists[2] = {};
-        uint32_t submitCount = 0;
+        SubmissionToken frameSubmission = {};
+        SubmissionToken copySubmission = {};
+        if (wi::wiGraphicsCommandListIsValid(cmdCopy))
+        {
+            SubmitDesc copySubmit = {};
+            copySubmit.command_lists = &cmdCopy;
+            copySubmit.command_list_count = 1;
+            copySubmission = device_->SubmitCommandListsEx(copySubmit);
+            frameSubmission.Merge(copySubmission);
+        }
+
+        SubmissionToken cullSubmission = {};
         if (useAsyncComputeForCull && wi::wiGraphicsCommandListIsValid(cmdCull))
         {
-            submitLists[submitCount++] = cmdCull;
+            SubmitDesc cullSubmit = {};
+            cullSubmit.command_lists = &cmdCull;
+            cullSubmit.command_list_count = 1;
+            SubmissionToken cullDeps[1] = {};
+            uint32_t cullDepCount = 0;
+            if (copySubmission.IsValid())
+            {
+                cullDeps[cullDepCount++] = copySubmission;
+            }
+            if (cullDepCount > 0)
+            {
+                cullSubmit.submission_dependencies = cullDeps;
+                cullSubmit.submission_dependency_count = cullDepCount;
+            }
+            cullSubmission = device_->SubmitCommandListsEx(cullSubmit);
+            frameSubmission.Merge(cullSubmission);
         }
-        submitLists[submitCount++] = cmdGraphics;
 
-        SubmitDesc submit = {};
-        submit.command_lists = submitLists;
-        submit.command_list_count = submitCount;
-        frameSubmission_[frameIndex] = device_->SubmitCommandListsEx(submit);
-        frameSubmissionValid_[frameIndex] = frameSubmission_[frameIndex].IsValid();
+        SubmitDesc graphicsSubmit = {};
+        graphicsSubmit.command_lists = &cmdGraphics;
+        graphicsSubmit.command_list_count = 1;
+        graphicsSubmit.throttle_cpu = true;
+        graphicsSubmit.max_inflight_per_queue = WICKED_SUBSET_FRAME_SLOT_COUNT;
+        SubmissionToken graphicsDeps[2] = {};
+        uint32_t graphicsDepCount = 0;
+        if (cullSubmission.IsValid())
+        {
+            graphicsDeps[graphicsDepCount++] = cullSubmission;
+        }
+        else if (copySubmission.IsValid())
+        {
+            graphicsDeps[graphicsDepCount++] = copySubmission;
+        }
+        if (graphicsDepCount > 0)
+        {
+            graphicsSubmit.submission_dependencies = graphicsDeps;
+            graphicsSubmit.submission_dependency_count = graphicsDepCount;
+        }
+        frameSubmission.Merge(device_->SubmitCommandListsEx(graphicsSubmit));
+        frameSubmission_[frameIndex] = frameSubmission;
+        frameSubmissionValid_[frameIndex] = frameSubmission.IsValid();
         ++frameSlotCursor_;
         taggedHeap_.FreeTag(wi::framealloc::MakeFrameTag(frameTag, wi::framealloc::FrameTagKind::Render));
 #else

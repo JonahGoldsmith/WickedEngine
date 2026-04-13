@@ -5881,6 +5881,9 @@ std::mutex queue_locker;
 		{
 			return;
 		}
+		const bool throttle_cpu = desc == nullptr ? true : desc->throttle_cpu;
+		const uint32_t max_inflight = desc == nullptr ? (uint32_t)BUFFERCOUNT : desc->max_inflight_per_queue;
+		const uint32_t inflight_limit = std::max(1u, std::min(max_inflight == 0 ? (uint32_t)BUFFERCOUNT : max_inflight, (uint32_t)BUFFERCOUNT));
 
 		uint8_t* selected = nullptr;
 		arrsetlen(selected, cmd_last);
@@ -6132,16 +6135,21 @@ std::mutex queue_locker;
 				dx12_internal::destroy_stb_array(commandlist.pipelines_worker);
 			}
 
-			// Mark the completion of queues for this frame:
-			frame_fence_values[GetBufferIndex()]++;
+			// Flush all queue packets emitted by this submit:
+			if (throttle_cpu)
+			{
+				frame_fence_values[GetBufferIndex()]++;
+			}
 			for (int q = 0; q < QUEUE_COUNT; ++q)
 			{
 				flush_queue((QUEUE_TYPE)q);
 				CommandQueue& queue = queues[q];
 				if (queue.queue == nullptr)
 					continue;
-
-				dx12_check(queue.queue->Signal(frame_fence[GetBufferIndex()][q].Get(), frame_fence_values[GetBufferIndex()]));
+				if (throttle_cpu)
+				{
+					dx12_check(queue.queue->Signal(frame_fence[GetBufferIndex()][q].Get(), frame_fence_values[GetBufferIndex()]));
+				}
 			}
 
 			for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
@@ -6191,7 +6199,7 @@ std::mutex queue_locker;
 			}
 		}
 
-		if (full_sync)
+		if (full_sync && throttle_cpu)
 		{
 			// Sync up every queue to every other queue at the end of the frame:
 			//	Note: it disables overlapping queues into the next frame
@@ -6213,25 +6221,31 @@ std::mutex queue_locker;
 		descriptorheap_res.SignalGPU(queues[QUEUE_GRAPHICS].queue.Get());
 		descriptorheap_sam.SignalGPU(queues[QUEUE_GRAPHICS].queue.Get());
 
-		// From here, we begin a new frame, this affects GetBufferIndex()!
-		FRAMECOUNT++;
-
-		// Initiate stalling CPU when GPU is not yet finished with next frame:
-		const uint32_t bufferindex = GetBufferIndex();
-		for (int queue = 0; queue < QUEUE_COUNT; ++queue)
+		if (throttle_cpu)
 		{
-			if (queues[queue].queue == nullptr)
-				continue;
-			ID3D12Fence* fence = frame_fence[bufferindex][queue].Get();
-			if (fence->GetCompletedValue() < frame_fence_values[GetBufferIndex()])
-			{
-				// nullptr event handle will simply wait immediately:
-				//	https://docs.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12fence-seteventoncompletion#remarks
-				dx12_check(fence->SetEventOnCompletion(frame_fence_values[GetBufferIndex()], nullptr));
-			}
-		}
+			// From here, we begin a new frame, this affects GetBufferIndex()!
+			FRAMECOUNT++;
 
-		allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
+			// Initiate stalling CPU when GPU is not yet finished with next frame:
+			if (FRAMECOUNT >= inflight_limit)
+			{
+				const uint32_t bufferindex = GetBufferIndex();
+				for (int queue = 0; queue < QUEUE_COUNT; ++queue)
+				{
+					if (queues[queue].queue == nullptr)
+						continue;
+					ID3D12Fence* fence = frame_fence[bufferindex][queue].Get();
+					if (fence->GetCompletedValue() < frame_fence_values[GetBufferIndex()])
+					{
+						// nullptr event handle will simply wait immediately:
+						//	https://docs.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12fence-seteventoncompletion#remarks
+						dx12_check(fence->SetEventOnCompletion(frame_fence_values[GetBufferIndex()], nullptr));
+					}
+				}
+			}
+
+			allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
+		}
 
 		uint32_t write_index = 0;
 		for (uint32_t read_index = 0; read_index < cmd_last; ++read_index)

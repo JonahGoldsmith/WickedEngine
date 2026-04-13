@@ -7203,21 +7203,59 @@ using namespace vulkan_internal;
 	CommandList GraphicsDevice_Vulkan::BeginCommandList(QUEUE_TYPE queue)
 	{
 		cmd_locker.lock();
-		uint32_t cmd_current = cmd_sequence++;
-		++cmd_count;
-		if (cmd_current >= commandlists.size())
+		if (!retired_commandlist_slots.empty())
 		{
-			commandlists.push_back(cmd_allocator.allocate());
+			size_t write_index = 0;
+			for (size_t i = 0; i < retired_commandlist_slots.size(); ++i)
+			{
+				const RetiredCommandListSlot& retired = retired_commandlist_slots[i];
+				if (retired.slot < commandlists.size() && IsQueuePointComplete(retired.retire_after))
+				{
+					free_commandlist_slots.push_back(retired.slot);
+					continue;
+				}
+				if (write_index != i)
+				{
+					retired_commandlist_slots[write_index] = retired;
+				}
+				++write_index;
+			}
+			retired_commandlist_slots.resize(write_index);
 		}
-		pending_commandlist_ids.push_back(cmd_current);
+		uint32_t cmd_current = 0;
+		if (!free_commandlist_slots.empty())
+		{
+			cmd_current = free_commandlist_slots.front();
+			free_commandlist_slots.pop_front();
+		}
+		else
+		{
+			cmd_current = (uint32_t)commandlists.size();
+			commandlists.push_back(cmd_allocator.allocate());
+			CommandList_Vulkan* new_commandlist = commandlists[cmd_current];
+			new_commandlist->slot_index = cmd_current;
+			new_commandlist->generation = 0;
+		}
+		CommandList_Vulkan* cmd_internal = commandlists[cmd_current];
+		SDL_assert(cmd_internal != nullptr);
+		++cmd_count;
+		++cmd_sequence;
+		++cmd_internal->generation;
+		if (cmd_internal->generation == 0)
+		{
+			cmd_internal->generation = 1;
+		}
+		cmd_internal->id = EncodeCommandListID(cmd_current, cmd_internal->generation);
+		cmd_internal->sequence_id = cmd_sequence;
+		pending_commandlist_ids.push_back(cmd_internal->id);
 		CommandList cmd;
-		cmd.internal_state = commandlists[cmd_current];
+		cmd.internal_state = cmd_internal;
 		cmd_locker.unlock();
 
-		CommandList_Vulkan& commandlist = GetCommandList(cmd);
+		CommandList_Vulkan& commandlist = *cmd_internal;
 		commandlist.reset(GetBufferIndex());
 		commandlist.queue = queue;
-		commandlist.id = cmd_current;
+		commandlist.slot_index = cmd_current;
 
 		if (commandlist.GetCommandBuffer() == VK_NULL_HANDLE)
 		{
@@ -7323,52 +7361,67 @@ using namespace vulkan_internal;
 
 		return cmd;
 	}
-	void GraphicsDevice_Vulkan::SubmitCommandListsInternal(const uint32_t* selected_commandlists, uint32_t selected_commandlist_count, bool explicit_selection, bool compatibility_full_sync)
+	bool GraphicsDevice_Vulkan::ResolveCommandListID(uint64_t id, uint32_t& out_slot, CommandList_Vulkan*& out_cmd) const
+	{
+		if (id == 0)
+			return false;
+		const uint32_t slot = DecodeCommandListSlot(id);
+		if (slot >= commandlists.size())
+			return false;
+		CommandList_Vulkan* cmd = commandlists[slot];
+		if (cmd == nullptr)
+			return false;
+		if (cmd->slot_index != slot)
+			return false;
+		if (cmd->generation != DecodeCommandListGeneration(id))
+			return false;
+		if (cmd->id != id)
+			return false;
+		out_slot = slot;
+		out_cmd = cmd;
+		return true;
+	}
+	void GraphicsDevice_Vulkan::SubmitCommandListsInternal(
+		const uint64_t* selected_commandlists,
+		uint32_t selected_commandlist_count,
+		bool explicit_selection,
+		bool compatibility_full_sync,
+		bool throttle_cpu,
+		uint32_t max_inflight_per_queue)
 	{
 		std::vector<uint32_t> submit_indices;
 		submit_indices.reserve(selected_commandlist_count > 0 ? selected_commandlist_count : pending_commandlist_ids.size());
-		std::vector<uint8_t> selection_mask(commandlists.size(), 0);
-		std::vector<uint8_t> pending_mask(commandlists.size(), 0);
-		for (uint32_t pending_id : pending_commandlist_ids)
-		{
-			if (pending_id < pending_mask.size())
-			{
-				pending_mask[pending_id] = 1;
-			}
-		}
+		std::vector<uint64_t> selected_ids;
+		selected_ids.reserve(submit_indices.capacity());
 
-		auto add_selected = [&](uint32_t cmd) {
-			if (cmd >= commandlists.size())
+		auto is_pending = [&](uint64_t id) -> bool
+		{
+			return std::find(pending_commandlist_ids.begin(), pending_commandlist_ids.end(), id) != pending_commandlist_ids.end();
+		};
+
+		auto add_selected = [&](uint64_t cmd_id) {
+			uint32_t cmd_slot = 0;
+			CommandList_Vulkan* cmd_ptr = nullptr;
+			if (!ResolveCommandListID(cmd_id, cmd_slot, cmd_ptr))
 				return;
-			if (!pending_mask[cmd])
+			if (!is_pending(cmd_id))
 				return;
-			if (selection_mask[cmd])
+			if (std::find(selected_ids.begin(), selected_ids.end(), cmd_id) != selected_ids.end())
 				return;
-			selection_mask[cmd] = 1;
-			submit_indices.push_back(cmd);
+			selected_ids.push_back(cmd_id);
+			submit_indices.push_back(cmd_slot);
 		};
 
 		if (explicit_selection)
 		{
 			for (uint32_t i = 0; i < selected_commandlist_count; ++i)
 			{
-				const uint32_t selected_id = selected_commandlists[i];
-				if (selected_id >= commandlists.size())
-				{
-					SDL_assert(false); // caller must pass a valid pending command list index
-					continue;
-				}
-				if (!pending_mask[selected_id])
-				{
-					SDL_assert(false); // explicit partial submit must reference command lists that are still pending
-					continue;
-				}
-				add_selected(selected_id);
+				add_selected(selected_commandlists[i]);
 			}
 		}
 		else
 		{
-			for (uint32_t pending_id : pending_commandlist_ids)
+			for (uint64_t pending_id : pending_commandlist_ids)
 			{
 				add_selected(pending_id);
 			}
@@ -7378,27 +7431,32 @@ using namespace vulkan_internal;
 		// the predecessor is automatically included so local WaitCommandList ordering stays correct.
 		bool dependency_added = true;
 		while (dependency_added)
-		{
-			dependency_added = false;
-			for (uint32_t cmd : submit_indices)
 			{
-				CommandList_Vulkan& commandlist = *commandlists[cmd];
-				for (uint32_t dependency_cmd : commandlist.wait_for_commandlist_ids)
+				dependency_added = false;
+				for (uint32_t cmd_slot : submit_indices)
 				{
-					if (dependency_cmd >= commandlists.size())
-						continue;
-					if (!pending_mask[dependency_cmd])
-						continue;
-					if (selection_mask[dependency_cmd])
-						continue;
-					selection_mask[dependency_cmd] = 1;
-					submit_indices.push_back(dependency_cmd);
-					dependency_added = true;
+					CommandList_Vulkan& commandlist = *commandlists[cmd_slot];
+					for (uint64_t dependency_cmd : commandlist.wait_for_commandlist_ids)
+					{
+						uint32_t dependency_slot = 0;
+						CommandList_Vulkan* dependency_cmd_ptr = nullptr;
+						if (!ResolveCommandListID(dependency_cmd, dependency_slot, dependency_cmd_ptr))
+							continue;
+						if (!is_pending(dependency_cmd))
+							continue;
+						if (std::find(selected_ids.begin(), selected_ids.end(), dependency_cmd) != selected_ids.end())
+							continue;
+						selected_ids.push_back(dependency_cmd);
+						submit_indices.push_back(dependency_slot);
+						dependency_added = true;
+					}
 				}
 			}
-		}
 
-		std::sort(submit_indices.begin(), submit_indices.end());
+			std::sort(submit_indices.begin(), submit_indices.end(), [this](uint32_t a, uint32_t b)
+			{
+				return commandlists[a]->sequence_id < commandlists[b]->sequence_id;
+			});
 
 		// Submit resource initialization transitions:
 		{
@@ -7554,23 +7612,36 @@ using namespace vulkan_internal;
 				submitted_queue_mask |= (1u << commandlist.queue);
 			}
 
-			// final submits with fences:
+			// final submits:
+			const uint32_t submit_bufferindex = GetBufferIndex();
 			for (int q = 0; q < QUEUE_COUNT; ++q)
 			{
 				if ((submitted_queue_mask & (1u << q)) == 0)
 					continue;
 				if (queues[q].submit_cmds == nullptr && queues[q].submit_waitSemaphoreInfos == nullptr && queues[q].submit_signalSemaphoreInfos == nullptr && queues[q].swapchains == nullptr)
 					continue;
-				frame_submission_serial[GetBufferIndex()][q] = ++queue_submission_serial[q];
-				queues[q].submit(this, frame_fence[GetBufferIndex()][q], compatibility_full_sync);
+				const uint64_t submitted_value = ++queue_submission_serial[q];
+				frame_submission_serial[submit_bufferindex][q] = throttle_cpu ? submitted_value : 0;
+				VkFence submit_fence = throttle_cpu ? frame_fence[submit_bufferindex][q] : VK_NULL_HANDLE;
+				queues[q].submit(this, submit_fence, compatibility_full_sync);
 			}
 
 			for (uint32_t cmd : submit_indices)
 			{
-				auto it = std::find(pending_commandlist_ids.begin(), pending_commandlist_ids.end(), cmd);
+				CommandList_Vulkan& commandlist = *commandlists[cmd];
+				auto it = std::find(pending_commandlist_ids.begin(), pending_commandlist_ids.end(), commandlist.id);
 				if (it != pending_commandlist_ids.end())
 				{
 					pending_commandlist_ids.erase(it);
+				}
+				const uint64_t retire_value = queue_submission_serial[commandlist.queue];
+				if (retire_value > 0)
+				{
+					retired_commandlist_slots.push_back({ commandlist.slot_index, QueueSyncPoint{ commandlist.queue, retire_value } });
+				}
+				else
+				{
+					free_commandlist_slots.push_back(commandlist.slot_index);
 				}
 			}
 			if (!submit_indices.empty())
@@ -7600,44 +7671,48 @@ using namespace vulkan_internal;
 			}
 		}
 
-		// From here, we begin a new frame, this affects GetBufferIndex()!
-		FRAMECOUNT++;
-
-		// Initiate stalling CPU when GPU is not yet finished with next frame:
-		if (FRAMECOUNT >= BUFFERCOUNT)
+		if (throttle_cpu)
 		{
-			const uint32_t bufferindex = GetBufferIndex();
-			VkFence waitFences[QUEUE_COUNT] = {};
-			uint32_t waitFenceCount = 0;
-			VkFence resetFences[QUEUE_COUNT] = {};
-			uint32_t resetFenceCount = 0;
-			for (int queue = 0; queue < QUEUE_COUNT; ++queue)
+			// From here, we begin a new frame, this affects GetBufferIndex()!
+			FRAMECOUNT++;
+
+			// Initiate stalling CPU when GPU is not yet finished with the next frame slot:
+			const uint32_t inflight_limit = std::max(1u, std::min(max_inflight_per_queue == 0 ? (uint32_t)BUFFERCOUNT : max_inflight_per_queue, (uint32_t)BUFFERCOUNT));
+			if (FRAMECOUNT >= inflight_limit)
 			{
-				VkFence fence = frame_fence[bufferindex][queue];
-				if (fence == VK_NULL_HANDLE)
-					continue;
-				resetFences[resetFenceCount++] = fence;
-				if (vkGetFenceStatus(device, fence) == VK_SUCCESS)
-					continue;
-				waitFences[waitFenceCount++] = fence;
-			}
-			if (waitFenceCount > 0)
-			{
-				while (vulkan_check(vkWaitForFences(device, waitFenceCount, waitFences, VK_TRUE, timeout_value)) == VK_TIMEOUT)
+				const uint32_t bufferindex = GetBufferIndex();
+				VkFence waitFences[QUEUE_COUNT] = {};
+				uint32_t waitFenceCount = 0;
+				VkFence resetFences[QUEUE_COUNT] = {};
+				uint32_t resetFenceCount = 0;
+				for (int queue = 0; queue < QUEUE_COUNT; ++queue)
 				{
-					VULKAN_LOG_ERROR(
-						"[SubmitCommandLists] vkWaitForFences resulted in VK_TIMEOUT, fence statuses:\nQUEUE_GRAPHICS = %s\nQUEUE_COMPUTE = %s\nQUEUE_COPY = %s\nQUEUE_VIDEO_DECODE = %s",
-						frame_fence[bufferindex][QUEUE_GRAPHICS] == VK_NULL_HANDLE ? "OK" : string_VkResult(vkGetFenceStatus(device, frame_fence[bufferindex][QUEUE_GRAPHICS])),
-						frame_fence[bufferindex][QUEUE_COMPUTE] == VK_NULL_HANDLE ? "OK" : string_VkResult(vkGetFenceStatus(device, frame_fence[bufferindex][QUEUE_COMPUTE])),
-						frame_fence[bufferindex][QUEUE_COPY] == VK_NULL_HANDLE ? "OK" : string_VkResult(vkGetFenceStatus(device, frame_fence[bufferindex][QUEUE_COPY])),
-						frame_fence[bufferindex][QUEUE_VIDEO_DECODE] == VK_NULL_HANDLE ? "OK" : string_VkResult(vkGetFenceStatus(device, frame_fence[bufferindex][QUEUE_VIDEO_DECODE]))
-					);
-					std::this_thread::yield();
+					VkFence fence = frame_fence[bufferindex][queue];
+					if (fence == VK_NULL_HANDLE)
+						continue;
+					resetFences[resetFenceCount++] = fence;
+					if (vkGetFenceStatus(device, fence) == VK_SUCCESS)
+						continue;
+					waitFences[waitFenceCount++] = fence;
 				}
-			}
-			if (resetFenceCount > 0)
-			{
-				vulkan_check(vkResetFences(device, resetFenceCount, resetFences));
+				if (waitFenceCount > 0)
+				{
+					while (vulkan_check(vkWaitForFences(device, waitFenceCount, waitFences, VK_TRUE, timeout_value)) == VK_TIMEOUT)
+					{
+						VULKAN_LOG_ERROR(
+							"[SubmitCommandLists] vkWaitForFences resulted in VK_TIMEOUT, fence statuses:\nQUEUE_GRAPHICS = %s\nQUEUE_COMPUTE = %s\nQUEUE_COPY = %s\nQUEUE_VIDEO_DECODE = %s",
+							frame_fence[bufferindex][QUEUE_GRAPHICS] == VK_NULL_HANDLE ? "OK" : string_VkResult(vkGetFenceStatus(device, frame_fence[bufferindex][QUEUE_GRAPHICS])),
+							frame_fence[bufferindex][QUEUE_COMPUTE] == VK_NULL_HANDLE ? "OK" : string_VkResult(vkGetFenceStatus(device, frame_fence[bufferindex][QUEUE_COMPUTE])),
+							frame_fence[bufferindex][QUEUE_COPY] == VK_NULL_HANDLE ? "OK" : string_VkResult(vkGetFenceStatus(device, frame_fence[bufferindex][QUEUE_COPY])),
+							frame_fence[bufferindex][QUEUE_VIDEO_DECODE] == VK_NULL_HANDLE ? "OK" : string_VkResult(vkGetFenceStatus(device, frame_fence[bufferindex][QUEUE_VIDEO_DECODE]))
+						);
+						std::this_thread::yield();
+					}
+				}
+				if (resetFenceCount > 0)
+				{
+					vulkan_check(vkResetFences(device, resetFenceCount, resetFences));
+				}
 			}
 		}
 
@@ -7665,6 +7740,11 @@ using namespace vulkan_internal;
 	SubmissionToken GraphicsDevice_Vulkan::SubmitCommandListsEx(const SubmitDesc& desc)
 	{
 		const bool compatibility_full_sync = compatibility_submit_full_sync;
+		uint64_t submitted_before[QUEUE_COUNT] = {};
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			submitted_before[q] = queue_submission_serial[q];
+		}
 
 		QueueSubmissionStats stats = {};
 		stats.frameIndex = FRAMECOUNT;
@@ -7686,18 +7766,9 @@ using namespace vulkan_internal;
 		}
 
 		const bool explicit_selection = desc.command_lists != nullptr && desc.command_list_count > 0;
-		std::vector<uint8_t> pending_mask(commandlists.size(), 0);
-		for (uint32_t pending_id : pending_commandlist_ids)
-		{
-			if (pending_id < pending_mask.size())
-			{
-				pending_mask[pending_id] = 1;
-			}
-		}
-		std::vector<uint32_t> selected_commandlists;
+		std::vector<uint64_t> selected_commandlists;
 		if (explicit_selection)
 		{
-			std::vector<uint8_t> selected_mask(commandlists.size(), 0);
 			selected_commandlists.reserve(desc.command_list_count);
 			for (uint32_t i = 0; i < desc.command_list_count; ++i)
 			{
@@ -7705,13 +7776,14 @@ using namespace vulkan_internal;
 				if (!wiGraphicsCommandListIsValid(list))
 					continue;
 				const CommandList_Vulkan& commandlist = GetCommandList(list);
-				if (commandlist.id >= commandlists.size())
+				uint32_t resolved_slot = 0;
+				CommandList_Vulkan* resolved_cmd = nullptr;
+				if (!ResolveCommandListID(commandlist.id, resolved_slot, resolved_cmd))
 					continue;
-				if (!pending_mask[commandlist.id])
+				if (std::find(pending_commandlist_ids.begin(), pending_commandlist_ids.end(), commandlist.id) == pending_commandlist_ids.end())
 					continue;
-				if (selected_mask[commandlist.id] != 0)
+				if (std::find(selected_commandlists.begin(), selected_commandlists.end(), commandlist.id) != selected_commandlists.end())
 					continue;
-				selected_mask[commandlist.id] = 1;
 				selected_commandlists.push_back(commandlist.id);
 			}
 			stats.commandListCount = (uint32_t)selected_commandlists.size();
@@ -7735,14 +7807,16 @@ using namespace vulkan_internal;
 			explicit_selection ? selected_commandlists.data() : nullptr,
 			(uint32_t)selected_commandlists.size(),
 			explicit_selection,
-			compatibility_full_sync);
+			compatibility_full_sync,
+			desc.throttle_cpu,
+			desc.max_inflight_per_queue);
 
 		SubmissionToken token = {};
 		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
 		{
 			if (queues[q].queue == VK_NULL_HANDLE)
 				continue;
-			if (frame_submission_serial[GetBufferIndex()][q] == queue_submission_serial[q] && frame_submission_serial[GetBufferIndex()][q] != 0)
+			if (queue_submission_serial[q] > submitted_before[q])
 			{
 				token.Merge(GetLastSubmittedQueuePoint((QUEUE_TYPE)q));
 				stats.queues[q].packetsSubmitted += 1u;
@@ -8148,7 +8222,7 @@ using namespace vulkan_internal;
 	{
 		CommandList_Vulkan& commandlist = GetCommandList(cmd);
 		CommandList_Vulkan& commandlist_wait_for = GetCommandList(wait_for);
-		SDL_assert(commandlist_wait_for.id < commandlist.id); // can't wait for future command list!
+		SDL_assert(commandlist_wait_for.sequence_id < commandlist.sequence_id); // can't wait for future command list!
 		commandlist.wait_for_commandlist_ids.push_back(commandlist_wait_for.id);
 		VkSemaphore semaphore = new_semaphore();
 		commandlist.waits.push_back(semaphore);

@@ -324,7 +324,12 @@ namespace wi
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
 		void precopy(CommandList cmd);
-		void SubmitCommandListsInternal(bool fullsync_compat, const uint8_t* submit_mask, uint32_t cmd_last);
+		void SubmitCommandListsInternal(
+			bool fullsync_compat,
+			bool throttle_cpu,
+			uint32_t max_inflight_per_queue,
+			const uint8_t* submit_mask,
+			uint32_t cmd_last);
 		std::atomic<uint64_t> queue_submit_values[QUEUE_COUNT] = {};
 		NS::SharedPtr<MTL::SharedEvent> queue_submit_fence[QUEUE_COUNT];
 

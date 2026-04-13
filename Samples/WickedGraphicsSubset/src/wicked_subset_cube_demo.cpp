@@ -706,6 +706,8 @@ private:
         SubmitDesc submit = {};
         submit.command_lists = &cmd;
         submit.command_list_count = 1;
+        submit.throttle_cpu = true;
+        submit.max_inflight_per_queue = WICKED_SUBSET_FRAME_SLOT_COUNT;
         slot.submission = device_->SubmitCommandListsEx(submit);
         slot.inUse = slot.submission.IsValid();
         taggedHeap_.FreeTag(wi::framealloc::MakeFrameTag(frameTag, wi::framealloc::FrameTagKind::Render));

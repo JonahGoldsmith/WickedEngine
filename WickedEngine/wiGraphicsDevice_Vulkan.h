@@ -595,17 +595,20 @@ namespace wi
 			semaphore_pool.push_back(semaphore);
 		}
 
-		struct CommandList_Vulkan
-		{
-			VkCommandPool commandPools[BUFFERCOUNT][QUEUE_COUNT] = {};
-			VkCommandBuffer commandBuffers[BUFFERCOUNT][QUEUE_COUNT] = {};
-			uint32_t buffer_index = 0;
+			struct CommandList_Vulkan
+			{
+				VkCommandPool commandPools[BUFFERCOUNT][QUEUE_COUNT] = {};
+				VkCommandBuffer commandBuffers[BUFFERCOUNT][QUEUE_COUNT] = {};
+				uint32_t buffer_index = 0;
 
-			QUEUE_TYPE queue = {};
-			uint32_t id = 0;
-			std::deque<VkSemaphore> waits;
-			std::deque<VkSemaphore> signals;
-			std::deque<uint32_t> wait_for_commandlist_ids;
+				QUEUE_TYPE queue = {};
+				uint64_t id = 0;
+				uint64_t sequence_id = 0;
+				uint32_t slot_index = ~0u;
+				uint32_t generation = 0;
+				std::deque<VkSemaphore> waits;
+				std::deque<VkSemaphore> signals;
+				std::deque<uint64_t> wait_for_commandlist_ids;
 
 			DescriptorBinder binder;
 			DescriptorBinderPool binder_pools[BUFFERCOUNT];
@@ -669,8 +672,15 @@ namespace wi
 		};
 		wi::allocator::BlockAllocator<CommandList_Vulkan, 64> cmd_allocator;
 		std::deque<CommandList_Vulkan*> commandlists;
-		std::deque<uint32_t> pending_commandlist_ids;
-		uint32_t cmd_sequence = 0;
+		std::deque<uint32_t> free_commandlist_slots;
+		struct RetiredCommandListSlot
+		{
+			uint32_t slot = ~0u;
+			QueueSyncPoint retire_after = {};
+		};
+		std::deque<RetiredCommandListSlot> retired_commandlist_slots;
+		std::deque<uint64_t> pending_commandlist_ids;
+		uint64_t cmd_sequence = 0;
 		uint32_t cmd_count = 0;
 		wi::SpinLock cmd_locker;
 
@@ -687,7 +697,26 @@ namespace wi
 
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
-		void SubmitCommandListsInternal(const uint32_t* selected_commandlists, uint32_t selected_commandlist_count, bool explicit_selection, bool compatibility_full_sync);
+		static constexpr uint64_t EncodeCommandListID(uint32_t slot_index, uint32_t generation)
+		{
+			return (uint64_t(generation) << 32u) | uint64_t(slot_index);
+		}
+		static constexpr uint32_t DecodeCommandListSlot(uint64_t id)
+		{
+			return uint32_t(id & 0xFFFFFFFFu);
+		}
+		static constexpr uint32_t DecodeCommandListGeneration(uint64_t id)
+		{
+			return uint32_t(id >> 32u);
+		}
+		bool ResolveCommandListID(uint64_t id, uint32_t& out_slot, CommandList_Vulkan*& out_cmd) const;
+		void SubmitCommandListsInternal(
+			const uint64_t* selected_commandlists,
+			uint32_t selected_commandlist_count,
+			bool explicit_selection,
+			bool compatibility_full_sync,
+			bool throttle_cpu,
+			uint32_t max_inflight_per_queue);
 		void RefreshQueueCompletionCache(QUEUE_TYPE queue) const;
 		bool WaitForQueuePointFallback(QueueSyncPoint point) const;
 

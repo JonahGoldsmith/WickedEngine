@@ -3936,7 +3936,12 @@ using namespace metal_internal;
 		
 		return cmd;
 	}
-	void GraphicsDevice_Metal::SubmitCommandListsInternal(bool fullsync_compat, const uint8_t* submit_mask, uint32_t cmd_last)
+	void GraphicsDevice_Metal::SubmitCommandListsInternal(
+		bool fullsync_compat,
+		bool throttle_cpu,
+		uint32_t max_inflight_per_queue,
+		const uint8_t* submit_mask,
+		uint32_t cmd_last)
 	{
 		allocationhandler->destroylocker.lock();
 		allocationhandler->residency_set->commit();
@@ -4051,9 +4056,12 @@ using namespace metal_internal;
 			arrsetlen(commandlist.pipelines_worker, 0);
 		}
 		
-		// Mark the completion of queues for this frame:
+		// Flush all queue packets emitted by this submit:
 		const uint32_t bufferindex_current = GetBufferIndex();
-		frame_fence_values[GetBufferIndex()]++;
+		if (throttle_cpu)
+		{
+			frame_fence_values[GetBufferIndex()]++;
+		}
 		for (int q = 0; q < QUEUE_COUNT; ++q)
 		{
 			CommandQueue& queue = queues[q];
@@ -4064,7 +4072,10 @@ using namespace metal_internal;
 			
 			queue.submit();
 			
-			queue.queue->signalEvent(frame_fence[GetBufferIndex()][q].get(), frame_fence_values[GetBufferIndex()]);
+			if (throttle_cpu)
+			{
+				queue.queue->signalEvent(frame_fence[GetBufferIndex()][q].get(), frame_fence_values[GetBufferIndex()]);
+			}
 			if (queue_had_work && queue_submit_fence[q].get() != nullptr)
 			{
 				const uint64_t queue_submit_value = queue_submit_values[q].fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -4090,7 +4101,7 @@ using namespace metal_internal;
 		}
 		
 		// Compatibility path enforces full queue-to-queue sync at submit tail.
-		if (fullsync_compat)
+		if (fullsync_compat && throttle_cpu)
 		{
 			for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
 			{
@@ -4120,23 +4131,30 @@ using namespace metal_internal;
 		}
 		cmd_count = pending_count;
 		
-		// From here, we begin a new frame, this affects GetBufferIndex()!
-		FRAMECOUNT++;
-		
-		// Initiate stalling CPU when GPU is not yet finished with next frame:
-		const uint32_t bufferindex = GetBufferIndex();
-		for (int queue = 0; queue < QUEUE_COUNT; ++queue)
+		if (throttle_cpu)
 		{
-			if (queues[queue].queue.get() == nullptr)
-				continue;
-			MTL::SharedEvent* fence = frame_fence[bufferindex][queue].get();
-			if (fence->signaledValue() < frame_fence_values[GetBufferIndex()])
+			// From here, we begin a new frame, this affects GetBufferIndex()!
+			FRAMECOUNT++;
+
+			// Initiate stalling CPU when GPU is not yet finished with next frame:
+			const uint32_t inflight_limit = std::max(1u, std::min(max_inflight_per_queue == 0 ? (uint32_t)BUFFERCOUNT : max_inflight_per_queue, (uint32_t)BUFFERCOUNT));
+			if (FRAMECOUNT >= inflight_limit)
 			{
-				WaitForSharedEventWithAssert(fence, frame_fence_values[GetBufferIndex()], "SubmitCommandLists frame fence");
+				const uint32_t bufferindex = GetBufferIndex();
+				for (int queue = 0; queue < QUEUE_COUNT; ++queue)
+				{
+					if (queues[queue].queue.get() == nullptr)
+						continue;
+					MTL::SharedEvent* fence = frame_fence[bufferindex][queue].get();
+					if (fence->signaledValue() < frame_fence_values[GetBufferIndex()])
+					{
+						WaitForSharedEventWithAssert(fence, frame_fence_values[GetBufferIndex()], "SubmitCommandLists frame fence");
+					}
+				}
 			}
+
+			allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
 		}
-		
-		allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
 	}
 
 	void GraphicsDevice_Metal::SubmitCommandLists()
@@ -4306,7 +4324,12 @@ using namespace metal_internal;
 		}
 		if (selected_count > 0)
 		{
-			SubmitCommandListsInternal(fullsync_compat, submit_mask, cmd_last);
+			SubmitCommandListsInternal(
+				fullsync_compat,
+				desc.throttle_cpu,
+				desc.max_inflight_per_queue,
+				submit_mask,
+				cmd_last);
 		}
 
 		SubmissionToken token = {};
