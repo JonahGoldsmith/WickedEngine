@@ -2016,6 +2016,19 @@ private:
             activeInstanceCount_);
     }
 
+    bool IsAsyncCullActiveForCurrentMode() const
+    {
+#if WICKED_SUBSET_USE_DX12
+        // Portable path currently reuses shared indirect/index buffers without per-frame buffering.
+        // Keep cull on graphics queue on DX12 to avoid cross-queue overlap corruption.
+        if (activeSuite_ == SuiteMode::Portable)
+        {
+            return false;
+        }
+#endif
+        return asyncComputeEnabled_ && supportsAsyncCompute_;
+    }
+
     void ResetAggregate(AggregateStats* stats)
     {
         stats->cpuMs.clear();
@@ -2129,7 +2142,10 @@ private:
             if (supportsAsyncCompute_)
             {
                 asyncComputeEnabled_ = !asyncComputeEnabled_;
-                SDL_Log("[WickedVisibilityPipelineBenchmark] async compute cull queue -> %s", asyncComputeEnabled_ ? "enabled" : "disabled");
+                SDL_Log(
+                    "[WickedVisibilityPipelineBenchmark] async compute cull queue -> requested=%s effective=%s",
+                    asyncComputeEnabled_ ? "enabled" : "disabled",
+                    IsAsyncCullActiveForCurrentMode() ? "enabled" : "disabled");
             }
             else
             {
@@ -2153,7 +2169,7 @@ private:
                 kTierPresets[activeTier_].name,
                 activeCommandCount_,
                 activeInstanceCount_,
-                asyncComputeEnabled_ ? "on" : "off",
+                IsAsyncCullActiveForCurrentMode() ? "on" : "off",
                 hiZOcclusionEnabled_ ? "on" : "off",
                 latestMetrics_.cpuMs,
                 latestMetrics_.gpuCullMs,
@@ -2321,7 +2337,7 @@ private:
         const uint32_t frameIndex = device_->GetBufferIndex();
         ReadTimingAndCounters(frameIndex, &metrics);
 
-        const bool useAsyncComputeForCull = asyncComputeEnabled_ && supportsAsyncCompute_;
+        const bool useAsyncComputeForCull = IsAsyncCullActiveForCurrentMode();
         CommandList cmdCull = {};
         if (useAsyncComputeForCull)
         {
@@ -2842,7 +2858,7 @@ private:
             metrics.gpuCullMs,
             metrics.gpuDrawMs,
             metrics.gpuFrameMs,
-            asyncComputeEnabled_ ? "on" : "off",
+            IsAsyncCullActiveForCurrentMode() ? "on" : "off",
             hiZOcclusionEnabled_ ? "on" : "off",
             autoRun_ ? "on" : "off");
         SDL_SetWindowTitle(window_, title);
