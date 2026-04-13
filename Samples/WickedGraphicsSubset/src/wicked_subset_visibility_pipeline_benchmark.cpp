@@ -942,7 +942,7 @@ public:
             "[WickedVisibilityPipelineBenchmark] initialized | backend=%s | mesh=%s | async_compute=%s | instances=%u | commands=%u | auto-run=%s | camera=fly",
             BackendName(),
             supportsMeshShaders_ ? "yes" : "no",
-            supportsAsyncCompute_ ? "yes" : "no",
+            asyncComputeEnabled_ ? "yes" : "no",
             totalInstanceCount_,
             totalCommandCount_,
             autoRun_ ? "on" : "off");
@@ -2040,15 +2040,7 @@ private:
 
     bool IsAsyncCullActiveForCurrentMode() const
     {
-#if WICKED_SUBSET_USE_DX12
-        // Portable path currently reuses shared indirect/index buffers without per-frame buffering.
-        // Keep cull on graphics queue on DX12 to avoid cross-queue overlap corruption.
-        if (activeSuite_ == SuiteMode::Portable)
-        {
-            return false;
-        }
-#endif
-        return asyncComputeEnabled_ && supportsAsyncCompute_;
+        return asyncComputeEnabled_;
     }
 
     void ResetTransientBufferStates()
@@ -2229,18 +2221,11 @@ private:
         }
         else if (key == SDLK_J)
         {
-            if (supportsAsyncCompute_)
-            {
-                asyncComputeEnabled_ = !asyncComputeEnabled_;
-                SDL_Log(
-                    "[WickedVisibilityPipelineBenchmark] async compute cull queue -> requested=%s effective=%s",
-                    asyncComputeEnabled_ ? "enabled" : "disabled",
-                    IsAsyncCullActiveForCurrentMode() ? "enabled" : "disabled");
-            }
-            else
-            {
-                SDL_Log("[WickedVisibilityPipelineBenchmark] async compute queue is not supported on this backend");
-            }
+            asyncComputeEnabled_ = !asyncComputeEnabled_;
+            SDL_Log(
+                "[WickedVisibilityPipelineBenchmark] async compute cull queue -> requested=%s effective=%s",
+                asyncComputeEnabled_ ? "enabled" : "disabled",
+                IsAsyncCullActiveForCurrentMode() ? "enabled" : "disabled");
             return;
         }
         else if (key == SDLK_O)
@@ -3103,7 +3088,6 @@ private:
     bool hiZOcclusionEnabled_ = true;
     bool hiZOcclusionValid_ = false;
     uint32_t hiZMipCount_ = 1u;
-    bool supportsAsyncCompute_ = true;
     bool asyncComputeEnabled_ = true;
 
     float sceneTime_ = 0.0f;
