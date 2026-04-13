@@ -1876,6 +1876,7 @@ private:
         device_->SetName(&tvbFilteredPrimitiveIDBuffer_, "subset_visibility_benchmark_tvb_primitive_ids");
         device_->SetName(&hashBuffer_, "subset_visibility_benchmark_hash");
 
+        ResetTransientBufferStates();
         return true;
     }
 
@@ -2027,6 +2028,74 @@ private:
         }
 #endif
         return asyncComputeEnabled_ && supportsAsyncCompute_;
+    }
+
+    void ResetTransientBufferStates()
+    {
+        vertexBufferState_ = ResourceState::SHADER_RESOURCE;
+        drawCommandIndexBufferState_ = ResourceState::VERTEX_BUFFER;
+        clusterIndexBufferState_ = ResourceState::INDEX_BUFFER;
+
+        baseCountBufferState_ = ResourceState::INDIRECT_ARGUMENT;
+        visibleCountBufferState_ = ResourceState::UNORDERED_ACCESS;
+        hashBufferState_ = ResourceState::UNORDERED_ACCESS;
+
+        instanceVisibleBufferState_ = ResourceState::UNORDERED_ACCESS;
+        visibleCommandIndicesBufferState_ = ResourceState::UNORDERED_ACCESS;
+        visibleArgsBufferState_ = ResourceState::UNORDERED_ACCESS;
+
+        tvbFilteredIndexBufferState_ = ResourceState::UNORDERED_ACCESS;
+        tvbArgsBufferState_ = ResourceState::UNORDERED_ACCESS;
+        tvbFilteredPrimitiveIDBufferState_ = ResourceState::UNORDERED_ACCESS;
+    }
+
+    void TransitionBufferState(const GPUBuffer* buffer, ResourceState* currentState, ResourceState newState, CommandList cmd)
+    {
+        if (buffer == nullptr || currentState == nullptr || *currentState == newState)
+        {
+            return;
+        }
+        device_->Barrier(wi::wiGraphicsCreateGPUBarrierBuffer(buffer, *currentState, newState), cmd);
+        *currentState = newState;
+    }
+
+    void PrepareDrawBufferStates(CommandList cmd)
+    {
+        const bool meshPath = activeSuite_ == SuiteMode::Mesh && supportsMeshShaders_ && activePipeline_ != PipelineStyle::TVB;
+        if (meshPath)
+        {
+            TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+            TransitionBufferState(&visibleCommandIndicesBuffer_, &visibleCommandIndicesBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+            TransitionBufferState(
+                &visibleCountBuffer_,
+                &visibleCountBufferState_,
+                ResourceState::SHADER_RESOURCE | ResourceState::INDIRECT_ARGUMENT,
+                cmd);
+            return;
+        }
+
+        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::VERTEX_BUFFER, cmd);
+        TransitionBufferState(&drawCommandIndexBuffer_, &drawCommandIndexBufferState_, ResourceState::VERTEX_BUFFER, cmd);
+
+        if (activePipeline_ == PipelineStyle::TVB)
+        {
+            TransitionBufferState(&tvbFilteredIndexBuffer_, &tvbFilteredIndexBufferState_, ResourceState::INDEX_BUFFER, cmd);
+            TransitionBufferState(&tvbArgsBuffer_, &tvbArgsBufferState_, ResourceState::INDIRECT_ARGUMENT, cmd);
+            TransitionBufferState(&tvbFilteredPrimitiveIDBuffer_, &tvbFilteredPrimitiveIDBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+            TransitionBufferState(&baseCountBuffer_, &baseCountBufferState_, ResourceState::INDIRECT_ARGUMENT, cmd);
+        }
+        else if (activePipeline_ == PipelineStyle::Esoterica)
+        {
+            TransitionBufferState(&tvbFilteredIndexBuffer_, &tvbFilteredIndexBufferState_, ResourceState::INDEX_BUFFER, cmd);
+            TransitionBufferState(&tvbArgsBuffer_, &tvbArgsBufferState_, ResourceState::INDIRECT_ARGUMENT, cmd);
+            TransitionBufferState(&tvbFilteredPrimitiveIDBuffer_, &tvbFilteredPrimitiveIDBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+            TransitionBufferState(&visibleCommandIndicesBuffer_, &visibleCommandIndicesBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+        }
+        else
+        {
+            TransitionBufferState(&clusterIndexBuffer_, &clusterIndexBufferState_, ResourceState::INDEX_BUFFER, cmd);
+            TransitionBufferState(&visibleArgsBuffer_, &visibleArgsBufferState_, ResourceState::INDIRECT_ARGUMENT, cmd);
+        }
     }
 
     void ResetAggregate(AggregateStats* stats)
@@ -2355,13 +2424,16 @@ private:
 
         if (countsDirty_)
         {
+            TransitionBufferState(&baseCountBuffer_, &baseCountBufferState_, ResourceState::COPY_DST, cmdGraphics);
             device_->UpdateBuffer(&baseCountBuffer_, &activeCommandCount_, cmdGraphics, sizeof(activeCommandCount_), 0);
+            TransitionBufferState(&baseCountBuffer_, &baseCountBufferState_, ResourceState::INDIRECT_ARGUMENT, cmdGraphics);
             countsDirty_ = false;
         }
 
-        const uint32_t zero = 0;
-        device_->UpdateBuffer(&visibleCountBuffer_, &zero, cmdCull, sizeof(zero), 0);
-        device_->UpdateBuffer(&hashBuffer_, &zero, cmdGraphics, sizeof(zero), 0);
+        TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::UNORDERED_ACCESS, cmdCull);
+        device_->ClearUAV(&visibleCountBuffer_, 0u, cmdCull);
+        TransitionBufferState(&hashBuffer_, &hashBufferState_, ResourceState::UNORDERED_ACCESS, cmdGraphics);
+        device_->ClearUAV(&hashBuffer_, 0u, cmdGraphics);
 
         device_->QueryReset(&timestampQueryHeap_, 0, kTimestampCount, cmdGraphics);
         device_->QueryEnd(&timestampQueryHeap_, kTimestampFrameStart, cmdGraphics);
@@ -2382,9 +2454,23 @@ private:
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
         }
+        TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::COPY_SRC, cmdGraphics);
         device_->CopyBuffer(&visibleCountReadback_[frameIndex], 0, &visibleCountBuffer_, 0, sizeof(uint32_t), cmdGraphics);
+        if (activePipeline_ == PipelineStyle::TVB)
+        {
+            TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::UNORDERED_ACCESS, cmdGraphics);
+        }
+        else
+        {
+            TransitionBufferState(
+                &visibleCountBuffer_,
+                &visibleCountBufferState_,
+                ResourceState::SHADER_RESOURCE | ResourceState::INDIRECT_ARGUMENT,
+                cmdGraphics);
+        }
 
         device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawStart, cmdGraphics);
+        PrepareDrawBufferStates(cmdGraphics);
         ExecuteDrawStage(sceneCB, cmdGraphics);
         device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawEnd, cmdGraphics);
 
@@ -2420,6 +2506,15 @@ private:
 
     void ExecuteCullStage(const SceneCB& sceneCB, CommandList cmd)
     {
+        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+        TransitionBufferState(&instanceVisibleBuffer_, &instanceVisibleBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(&visibleCommandIndicesBuffer_, &visibleCommandIndicesBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(&visibleArgsBuffer_, &visibleArgsBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(&tvbFilteredIndexBuffer_, &tvbFilteredIndexBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(&tvbArgsBuffer_, &tvbArgsBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(&tvbFilteredPrimitiveIDBuffer_, &tvbFilteredPrimitiveIDBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+
         device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
         BindCommonResources(cmd);
         device_->BindResource(&hiZTexture_, 13, cmd);
@@ -2436,11 +2531,14 @@ private:
         const uint32_t instanceGroups = (activeInstanceCount_ + 63u) / 64u;
         device_->Dispatch(std::max(1u, instanceGroups), 1, 1, cmd);
         device_->Barrier(cmd);
+        TransitionBufferState(&instanceVisibleBuffer_, &instanceVisibleBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
 
         device_->BindComputeShader(&csClusterFilter_, cmd);
         const uint32_t commandGroups = (activeCommandCount_ + 63u) / 64u;
         device_->Dispatch(std::max(1u, commandGroups), 1, 1, cmd);
         device_->Barrier(cmd);
+        TransitionBufferState(&visibleCommandIndicesBuffer_, &visibleCommandIndicesBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
+        TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
 
         device_->BindComputeShader(&csCompactArgs_, cmd);
         device_->Dispatch(std::max(1u, commandGroups), 1, 1, cmd);
@@ -2599,7 +2697,9 @@ private:
         device_->Dispatch(groupCountX, groupCountY, 1, cmd);
         device_->Barrier(cmd);
 
+        TransitionBufferState(&hashBuffer_, &hashBufferState_, ResourceState::COPY_SRC, cmd);
         device_->CopyBuffer(&hashReadback_[frameIndex], 0, &hashBuffer_, 0, sizeof(uint32_t), cmd);
+        TransitionBufferState(&hashBuffer_, &hashBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
     }
 
     void ExecutePresentStage(CommandList cmd)
@@ -2928,6 +3028,19 @@ private:
     GPUBuffer hashBuffer_ = {};
     std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> hashReadback_ = {};
     std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> visibleCountReadback_ = {};
+
+    ResourceState vertexBufferState_ = ResourceState::SHADER_RESOURCE;
+    ResourceState drawCommandIndexBufferState_ = ResourceState::VERTEX_BUFFER;
+    ResourceState clusterIndexBufferState_ = ResourceState::INDEX_BUFFER;
+    ResourceState baseCountBufferState_ = ResourceState::INDIRECT_ARGUMENT;
+    ResourceState visibleCountBufferState_ = ResourceState::UNORDERED_ACCESS;
+    ResourceState hashBufferState_ = ResourceState::UNORDERED_ACCESS;
+    ResourceState instanceVisibleBufferState_ = ResourceState::UNORDERED_ACCESS;
+    ResourceState visibleCommandIndicesBufferState_ = ResourceState::UNORDERED_ACCESS;
+    ResourceState visibleArgsBufferState_ = ResourceState::UNORDERED_ACCESS;
+    ResourceState tvbFilteredIndexBufferState_ = ResourceState::UNORDERED_ACCESS;
+    ResourceState tvbArgsBufferState_ = ResourceState::UNORDERED_ACCESS;
+    ResourceState tvbFilteredPrimitiveIDBufferState_ = ResourceState::UNORDERED_ACCESS;
 
     GPUQueryHeap timestampQueryHeap_ = {};
     std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> timestampReadback_ = {};
