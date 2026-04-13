@@ -40,6 +40,7 @@ DEFINE_GUID(D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN, 0x5b11d51b, 0x2f4c, 0x4452, 0x
 #include <cstdlib>
 #include <limits>
 #include <cwchar>
+#include <new>
 #include <intrin.h> // _BitScanReverse64
 
 #if defined(WICKED_MMGR_ENABLED)
@@ -5284,8 +5285,11 @@ std::mutex queue_locker;
 				internal_state->srv = descriptor;
 				return -1;
 			}
-			arrput(internal_state->subresources_srv, descriptor);
-			return int(arrlenu(internal_state->subresources_srv) - 1);
+				const size_t subresource_index = arrlenu(internal_state->subresources_srv);
+				arrsetlen(internal_state->subresources_srv, subresource_index + 1);
+				new (&internal_state->subresources_srv[subresource_index]) SingleDescriptor();
+				internal_state->subresources_srv[subresource_index] = descriptor;
+				return int(subresource_index);
 		}
 		break;
 		case SubresourceType::UAV:
@@ -5343,8 +5347,11 @@ std::mutex queue_locker;
 				internal_state->uav = descriptor;
 				return -1;
 			}
-			arrput(internal_state->subresources_uav, descriptor);
-			return int(arrlenu(internal_state->subresources_uav) - 1);
+				const size_t subresource_index = arrlenu(internal_state->subresources_uav);
+				arrsetlen(internal_state->subresources_uav, subresource_index + 1);
+				new (&internal_state->subresources_uav[subresource_index]) SingleDescriptor();
+				internal_state->subresources_uav[subresource_index] = descriptor;
+				return int(subresource_index);
 		}
 		break;
 		case SubresourceType::RTV:
@@ -5418,8 +5425,11 @@ std::mutex queue_locker;
 				internal_state->rtv = descriptor;
 				return -1;
 			}
-			arrput(internal_state->subresources_rtv, descriptor);
-			return int(arrlenu(internal_state->subresources_rtv) - 1);
+				const size_t subresource_index = arrlenu(internal_state->subresources_rtv);
+				arrsetlen(internal_state->subresources_rtv, subresource_index + 1);
+				new (&internal_state->subresources_rtv[subresource_index]) SingleDescriptor();
+				internal_state->subresources_rtv[subresource_index] = descriptor;
+				return int(subresource_index);
 		}
 		break;
 		case SubresourceType::DSV:
@@ -5486,8 +5496,11 @@ std::mutex queue_locker;
 				internal_state->dsv = descriptor;
 				return -1;
 			}
-			arrput(internal_state->subresources_dsv, descriptor);
-			return int(arrlenu(internal_state->subresources_dsv) - 1);
+				const size_t subresource_index = arrlenu(internal_state->subresources_dsv);
+				arrsetlen(internal_state->subresources_dsv, subresource_index + 1);
+				new (&internal_state->subresources_dsv[subresource_index]) SingleDescriptor();
+				internal_state->subresources_dsv[subresource_index] = descriptor;
+				return int(subresource_index);
 		}
 		break;
 		default:
@@ -5566,8 +5579,11 @@ std::mutex queue_locker;
 				internal_state->srv = descriptor;
 				return -1;
 			}
-			arrput(internal_state->subresources_srv, descriptor);
-			return int(arrlenu(internal_state->subresources_srv) - 1);
+				const size_t subresource_index = arrlenu(internal_state->subresources_srv);
+				arrsetlen(internal_state->subresources_srv, subresource_index + 1);
+				new (&internal_state->subresources_srv[subresource_index]) SingleDescriptor();
+				internal_state->subresources_srv[subresource_index] = descriptor;
+				return int(subresource_index);
 		}
 		break;
 		case SubresourceType::UAV:
@@ -5619,8 +5635,11 @@ std::mutex queue_locker;
 				internal_state->uav = descriptor;
 				return -1;
 			}
-			arrput(internal_state->subresources_uav, descriptor);
-			return int(arrlenu(internal_state->subresources_uav) - 1);
+				const size_t subresource_index = arrlenu(internal_state->subresources_uav);
+				arrsetlen(internal_state->subresources_uav, subresource_index + 1);
+				new (&internal_state->subresources_uav[subresource_index]) SingleDescriptor();
+				internal_state->subresources_uav[subresource_index] = descriptor;
+				return int(subresource_index);
 		}
 		break;
 		default:
