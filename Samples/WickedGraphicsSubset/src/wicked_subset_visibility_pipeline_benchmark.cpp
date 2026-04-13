@@ -2708,58 +2708,74 @@ private:
         cb.hashUAV = device_->GetDescriptorIndex(&hashBuffer_, SubresourceType::UAV);
         cb.meshDispatchArgsUAV = device_->GetDescriptorIndex(meshDispatchArgsBuffer, SubresourceType::UAV);
 
-#if WICKED_SUBSET_USE_VULKAN
-        // Vulkan bindless SRV/UAV storage-buffer descriptors share the same descriptor type.
-        // If SRV allocation is exhausted for a read-write buffer while UAV still exists,
-        // reuse the UAV descriptor index to keep bindless paths functional.
-        auto use_uav_when_srv_missing = [](int32_t& srv, int32_t uav) {
-            if (srv < 0 && uav >= 0)
-            {
-                srv = uav;
-            }
-        };
-        use_uav_when_srv_missing(cb.instanceVisibleSRV, cb.instanceVisibleUAV);
-        use_uav_when_srv_missing(cb.visibleCommandIndicesSRV, cb.visibleCommandIndicesUAV);
-        use_uav_when_srv_missing(cb.visibleCountSRV, cb.visibleCountUAV);
-        use_uav_when_srv_missing(cb.tvbFilteredPrimitiveIDsSRV, cb.tvbFilteredPrimitiveIDsUAV);
-#endif
+        return cb;
+    }
 
-        static bool loggedMissingDescriptor = false;
-        if (!loggedMissingDescriptor)
+    bool ValidateBindlessCB(const SubsetBindlessCB& cb)
+    {
+        struct IndexField
         {
-            const bool missingDescriptor =
-                cb.vertexBufferSRV < 0 ||
-                cb.instanceBufferSRV < 0 ||
-                cb.commandBufferSRV < 0 ||
-                cb.clusterTemplateBufferSRV < 0 ||
-                cb.templateVerticesBufferSRV < 0 ||
-                cb.templateTrianglesBufferSRV < 0 ||
-                cb.instanceVisibleSRV < 0 ||
-                cb.visibleCommandIndicesSRV < 0 ||
-                cb.sourceArgsSRV < 0 ||
-                cb.tvbFilteredPrimitiveIDsSRV < 0 ||
-                cb.visibleCountSRV < 0 ||
-                cb.instanceVisibleUAV < 0 ||
-                cb.visibleCommandIndicesUAV < 0 ||
-                cb.visibleCountUAV < 0 ||
-                cb.visibleArgsUAV < 0 ||
-                cb.tvbFilteredIndicesUAV < 0 ||
-                cb.tvbArgsUAV < 0 ||
-                cb.tvbFilteredPrimitiveIDsUAV < 0 ||
-                cb.hashUAV < 0 ||
-                cb.meshDispatchArgsUAV < 0;
-            if (missingDescriptor)
+            const char* name;
+            int32_t value;
+        };
+        const IndexField fields[] = {
+            { "vertexBufferSRV", cb.vertexBufferSRV },
+            { "instanceBufferSRV", cb.instanceBufferSRV },
+            { "commandBufferSRV", cb.commandBufferSRV },
+            { "clusterTemplateBufferSRV", cb.clusterTemplateBufferSRV },
+            { "templateVerticesBufferSRV", cb.templateVerticesBufferSRV },
+            { "templateTrianglesBufferSRV", cb.templateTrianglesBufferSRV },
+            { "instanceVisibleSRV", cb.instanceVisibleSRV },
+            { "visibleCommandIndicesSRV", cb.visibleCommandIndicesSRV },
+            { "sourceArgsSRV", cb.sourceArgsSRV },
+            { "tvbFilteredPrimitiveIDsSRV", cb.tvbFilteredPrimitiveIDsSRV },
+            { "visibleCountSRV", cb.visibleCountSRV },
+            { "instanceVisibleUAV", cb.instanceVisibleUAV },
+            { "visibleCommandIndicesUAV", cb.visibleCommandIndicesUAV },
+            { "visibleCountUAV", cb.visibleCountUAV },
+            { "visibleArgsUAV", cb.visibleArgsUAV },
+            { "tvbFilteredIndicesUAV", cb.tvbFilteredIndicesUAV },
+            { "tvbArgsUAV", cb.tvbArgsUAV },
+            { "tvbFilteredPrimitiveIDsUAV", cb.tvbFilteredPrimitiveIDsUAV },
+            { "hashUAV", cb.hashUAV },
+            { "meshDispatchArgsUAV", cb.meshDispatchArgsUAV },
+        };
+
+        bool valid = true;
+        std::string missing;
+        for (const IndexField& field : fields)
+        {
+            if (field.value < 0)
             {
-                loggedMissingDescriptor = true;
-                SDL_LogWarn(
-                    SDL_LOG_CATEGORY_APPLICATION,
-                    "[WickedVisibilityPipelineBenchmark] bindless descriptor index missing "
-                    "(some index < 0). Vulkan descriptor heap capacity may be exhausted."
-                );
+                valid = false;
+                if (!missing.empty())
+                {
+                    missing += ", ";
+                }
+                missing += field.name;
             }
         }
 
-        return cb;
+        if (!valid && !bindlessDescriptorFailureLogged_)
+        {
+            bindlessDescriptorFailureLogged_ = true;
+#if WICKED_SUBSET_USE_VULKAN
+            SDL_LogWarn(
+                SDL_LOG_CATEGORY_APPLICATION,
+                "[WickedVisibilityPipelineBenchmark] disabling bindless mode at runtime "
+                "because descriptor indices are missing (%s). "
+                "This adapter likely exhausted Vulkan bindless descriptor capacity for this workload.",
+                missing.c_str());
+#else
+            SDL_LogWarn(
+                SDL_LOG_CATEGORY_APPLICATION,
+                "[WickedVisibilityPipelineBenchmark] disabling bindless mode at runtime "
+                "because descriptor indices are missing (%s).",
+                missing.c_str());
+#endif
+        }
+
+        return valid;
     }
 
     bool RenderFrame(float dt, FrameMetrics* outMetrics)
@@ -3290,9 +3306,16 @@ private:
         if (UseBindlessMode())
         {
             const SubsetBindlessCB bindlessCB = BuildBindlessCB(slot);
-            device_->BindDynamicConstantBuffer(bindlessCB, 1, cmd);
-            device_->BindResource(&primitiveIDTexture_, 11, cmd);
-            return;
+            if (!ValidateBindlessCB(bindlessCB))
+            {
+                activeBindingMode_ = BindingMode::Bindful;
+            }
+            else
+            {
+                device_->BindDynamicConstantBuffer(bindlessCB, 1, cmd);
+                device_->BindResource(&primitiveIDTexture_, 11, cmd);
+                return;
+            }
         }
 
         device_->BindResource(&vertexBuffer_, 0, cmd);
@@ -3671,6 +3694,7 @@ private:
     float hiZOcclusionBias_ = 0.0025f;
     bool asyncComputeEnabled_ = true;
     bool tokenSubmissionEnabled_ = false;
+    bool bindlessDescriptorFailureLogged_ = false;
     bool cullHistoryValid_ = false;
     uint32_t cullReadSlot_ = 0u;
     uint32_t cullWriteSlot_ = 1u;
