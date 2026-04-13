@@ -2528,7 +2528,14 @@ private:
         if (activePipeline_ == PipelineStyle::TVB)
         {
             device_->BindComputeShader(&csTVBFilter_, cmd);
-            device_->Dispatch(std::max(1u, activeCommandCount_), 1, 1, cmd);
+            for (uint32_t dispatchBase = 0; dispatchBase < activeCommandCount_; dispatchBase += kMaxMeshDispatchGroups)
+            {
+                const uint32_t dispatchCount = std::min(kMaxMeshDispatchGroups, activeCommandCount_ - dispatchBase);
+                SceneCB tvbCB = sceneCB;
+                tvbCB.meshCommandOffset = dispatchBase;
+                device_->BindDynamicConstantBuffer(tvbCB, 0, cmd);
+                device_->Dispatch(std::max(1u, dispatchCount), 1, 1, cmd);
+            }
             device_->Barrier(cmd);
             return;
         }
@@ -2553,7 +2560,14 @@ private:
         if (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable)
         {
             device_->BindComputeShader(&csTVBFilter_, cmd);
-            device_->Dispatch(std::max(1u, activeCommandCount_), 1, 1, cmd);
+            for (uint32_t dispatchBase = 0; dispatchBase < activeCommandCount_; dispatchBase += kMaxMeshDispatchGroups)
+            {
+                const uint32_t dispatchCount = std::min(kMaxMeshDispatchGroups, activeCommandCount_ - dispatchBase);
+                SceneCB tvbCB = sceneCB;
+                tvbCB.meshCommandOffset = dispatchBase;
+                device_->BindDynamicConstantBuffer(tvbCB, 0, cmd);
+                device_->Dispatch(std::max(1u, dispatchCount), 1, 1, cmd);
+            }
             device_->Barrier(cmd);
         }
     }

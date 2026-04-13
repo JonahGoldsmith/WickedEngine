@@ -332,7 +332,7 @@ void cs_compact_visible_args(uint3 DTid : SV_DispatchThreadID)
 [numthreads(128, 1, 1)]
 void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
 {
-    const uint dispatchIndex = Gid.x;
+    const uint dispatchIndex = meshCommandOffset + Gid.x;
     uint commandIndex = dispatchIndex;
     uint drawCommandIndex = dispatchIndex;
 
