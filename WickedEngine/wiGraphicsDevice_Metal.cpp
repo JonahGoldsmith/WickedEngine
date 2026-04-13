@@ -29,14 +29,20 @@ namespace wi
 	namespace
 	{
 		static constexpr uint64_t METAL_WAIT_TIMEOUT_MS = 10000;
-		static constexpr uint32_t METAL_ICB_EXECUTION_CHUNK = 16384;
 		static constexpr uint32_t METAL_ICB_BIND_ARGS = 24;
 		static constexpr uint32_t METAL_ICB_BIND_COUNT = 25;
 		static constexpr uint32_t METAL_ICB_BIND_CONTAINER = 26;
 		static constexpr uint32_t METAL_ICB_BIND_PARAMS = 27;
 		static constexpr uint32_t METAL_ICB_BIND_INDEXBUFFER = 28;
+		static constexpr uint32_t METAL_ICB_BIND_EXEC_RANGE = 29;
 		static constexpr uint32_t METAL_ICB_CONTAINER_ID = 0;
 		static constexpr uint32_t METAL_ICB_CONTAINER_BUFFER_INDEX = METAL_ICB_BIND_CONTAINER;
+
+		struct MetalICBExecutionRange
+		{
+			uint32_t location = 0;
+			uint32_t length = 0;
+		};
 
 		struct MetalICBDrawCountEncodeParams
 		{
@@ -89,6 +95,12 @@ struct ICBContainer
 	command_buffer commandBuffer [[id(0)]];
 };
 
+struct ICBExecutionRange
+{
+	uint location;
+	uint length;
+};
+
 struct DrawCountEncodeParams
 {
 	uint maxCount;
@@ -112,7 +124,8 @@ kernel void wicked_encode_draw_indirect_count_icb(
 	device const uchar* argsBytes [[buffer(24)]],
 	device const uint* countPtr [[buffer(25)]],
 	constant ICBContainer& icbContainer [[buffer(26)]],
-	constant DrawCountEncodeParams& params [[buffer(27)]])
+	constant DrawCountEncodeParams& params [[buffer(27)]],
+	device ICBExecutionRange* executionRangeOut [[buffer(29)]])
 {
 	if (commandIndex >= params.maxCount)
 	{
@@ -120,6 +133,11 @@ kernel void wicked_encode_draw_indirect_count_icb(
 	}
 
 	const uint drawCount = min(countPtr[0], params.maxCount);
+	if (commandIndex == 0u)
+	{
+		executionRangeOut[0].location = 0u;
+		executionRangeOut[0].length = drawCount;
+	}
 	render_command cmd(icbContainer.commandBuffer, commandIndex);
 	if (commandIndex < drawCount)
 	{
@@ -148,7 +166,8 @@ kernel void wicked_encode_draw_indexed_indirect_count_icb(
 	device const uint* countPtr [[buffer(25)]],
 	constant ICBContainer& icbContainer [[buffer(26)]],
 	constant DrawCountEncodeParams& params [[buffer(27)]],
-	device const uchar* indexBytes [[buffer(28)]])
+	device const uchar* indexBytes [[buffer(28)]],
+	device ICBExecutionRange* executionRangeOut [[buffer(29)]])
 {
 	if (commandIndex >= params.maxCount)
 	{
@@ -156,6 +175,11 @@ kernel void wicked_encode_draw_indexed_indirect_count_icb(
 	}
 
 	const uint drawCount = min(countPtr[0], params.maxCount);
+	if (commandIndex == 0u)
+	{
+		executionRangeOut[0].location = 0u;
+		executionRangeOut[0].length = drawCount;
+	}
 	render_command cmd(icbContainer.commandBuffer, commandIndex);
 	if (commandIndex < drawCount)
 	{
@@ -199,7 +223,8 @@ kernel void wicked_encode_draw_mesh_indirect_count_icb(
 	device const uchar* argsBytes [[buffer(24)]],
 	device const uint* countPtr [[buffer(25)]],
 	constant ICBContainer& icbContainer [[buffer(26)]],
-	constant DrawCountEncodeParams& params [[buffer(27)]])
+	constant DrawCountEncodeParams& params [[buffer(27)]],
+	device ICBExecutionRange* executionRangeOut [[buffer(29)]])
 {
 	if (commandIndex >= params.maxCount)
 	{
@@ -207,6 +232,11 @@ kernel void wicked_encode_draw_mesh_indirect_count_icb(
 	}
 
 	const uint drawCount = min(countPtr[0], params.maxCount);
+	if (commandIndex == 0u)
+	{
+		executionRangeOut[0].location = 0u;
+		executionRangeOut[0].length = drawCount;
+	}
 	render_command cmd(icbContainer.commandBuffer, commandIndex);
 	if (commandIndex < drawCount)
 	{
@@ -1540,6 +1570,7 @@ using namespace metal_internal;
 		CommandList_Metal& commandlist = GetCommandList(cmd);
 		commandlist.active_cs = nullptr;
 		SDL_assert(commandlist.render_encoder.get() != nullptr);
+		commandlist.active_renderpass_has_draws = true;
 		pso_validate(cmd);
 		binder_flush(cmd);
 		
@@ -1759,13 +1790,14 @@ using namespace metal_internal;
 		if (
 			icb_state.icb.get() != nullptr &&
 			icb_state.icb_argument_buffer.get() != nullptr &&
+			icb_state.icb_execution_range_buffer.get() != nullptr &&
 			icb_state.capacity >= required_capacity
 			)
 		{
 			return true;
 		}
 
-		if (icb_state.icb.get() != nullptr || icb_state.icb_argument_buffer.get() != nullptr)
+		if (icb_state.icb.get() != nullptr || icb_state.icb_argument_buffer.get() != nullptr || icb_state.icb_execution_range_buffer.get() != nullptr)
 		{
 			std::scoped_lock lock(allocationhandler->destroylocker);
 			const uint64_t framecount = allocationhandler->framecount;
@@ -1777,8 +1809,13 @@ using namespace metal_internal;
 			{
 				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr((MTL::Resource*)icb_state.icb_argument_buffer.get()->retain()), framecount));
 			}
+			if (icb_state.icb_execution_range_buffer.get() != nullptr)
+			{
+				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr((MTL::Resource*)icb_state.icb_execution_range_buffer.get()->retain()), framecount));
+			}
 			icb_state.icb.reset();
 			icb_state.icb_argument_buffer.reset();
+			icb_state.icb_execution_range_buffer.reset();
 			icb_state.capacity = 0;
 		}
 
@@ -1797,17 +1834,20 @@ using namespace metal_internal;
 
 		icb_state.icb = NS::TransferPtr(device->newIndirectCommandBuffer(descriptor.get(), required_capacity, MTL::ResourceStorageModePrivate));
 		icb_state.icb_argument_buffer = NS::TransferPtr(device->newBuffer(required_argument_buffer_size, MTL::ResourceStorageModeShared));
-		if (icb_state.icb.get() == nullptr || icb_state.icb_argument_buffer.get() == nullptr)
+		icb_state.icb_execution_range_buffer = NS::TransferPtr(device->newBuffer(sizeof(MetalICBExecutionRange), MTL::ResourceStorageModePrivate));
+		if (icb_state.icb.get() == nullptr || icb_state.icb_argument_buffer.get() == nullptr || icb_state.icb_execution_range_buffer.get() == nullptr)
 		{
 			METAL_LOG_ERROR("[Wicked::Metal] Failed to allocate internal resources for indirect draw count ICB");
 			icb_state.icb.reset();
 			icb_state.icb_argument_buffer.reset();
+			icb_state.icb_execution_range_buffer.reset();
 			icb_state.capacity = 0;
 			return false;
 		}
 
 		allocationhandler->make_resident(icb_state.icb.get());
 		allocationhandler->make_resident(icb_state.icb_argument_buffer.get());
+		allocationhandler->make_resident(icb_state.icb_execution_range_buffer.get());
 		icb_state.capacity = required_capacity;
 		return true;
 	}
@@ -1824,13 +1864,14 @@ using namespace metal_internal;
 		if (
 			icb_state.icb.get() != nullptr &&
 			icb_state.icb_argument_buffer.get() != nullptr &&
+			icb_state.icb_execution_range_buffer.get() != nullptr &&
 			icb_state.capacity >= required_capacity
 			)
 		{
 			return true;
 		}
 
-		if (icb_state.icb.get() != nullptr || icb_state.icb_argument_buffer.get() != nullptr)
+		if (icb_state.icb.get() != nullptr || icb_state.icb_argument_buffer.get() != nullptr || icb_state.icb_execution_range_buffer.get() != nullptr)
 		{
 			std::scoped_lock lock(allocationhandler->destroylocker);
 			const uint64_t framecount = allocationhandler->framecount;
@@ -1842,8 +1883,13 @@ using namespace metal_internal;
 			{
 				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr((MTL::Resource*)icb_state.icb_argument_buffer.get()->retain()), framecount));
 			}
+			if (icb_state.icb_execution_range_buffer.get() != nullptr)
+			{
+				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr((MTL::Resource*)icb_state.icb_execution_range_buffer.get()->retain()), framecount));
+			}
 			icb_state.icb.reset();
 			icb_state.icb_argument_buffer.reset();
+			icb_state.icb_execution_range_buffer.reset();
 			icb_state.capacity = 0;
 		}
 
@@ -1862,17 +1908,20 @@ using namespace metal_internal;
 
 		icb_state.icb = NS::TransferPtr(device->newIndirectCommandBuffer(descriptor.get(), required_capacity, MTL::ResourceStorageModePrivate));
 		icb_state.icb_argument_buffer = NS::TransferPtr(device->newBuffer(required_argument_buffer_size, MTL::ResourceStorageModeShared));
-		if (icb_state.icb.get() == nullptr || icb_state.icb_argument_buffer.get() == nullptr)
+		icb_state.icb_execution_range_buffer = NS::TransferPtr(device->newBuffer(sizeof(MetalICBExecutionRange), MTL::ResourceStorageModePrivate));
+		if (icb_state.icb.get() == nullptr || icb_state.icb_argument_buffer.get() == nullptr || icb_state.icb_execution_range_buffer.get() == nullptr)
 		{
 			METAL_LOG_ERROR("[Wicked::Metal] Failed to allocate internal resources for indirect mesh draw count ICB");
 			icb_state.icb.reset();
 			icb_state.icb_argument_buffer.reset();
+			icb_state.icb_execution_range_buffer.reset();
 			icb_state.capacity = 0;
 			return false;
 		}
 
 		allocationhandler->make_resident(icb_state.icb.get());
 		allocationhandler->make_resident(icb_state.icb_argument_buffer.get());
+		allocationhandler->make_resident(icb_state.icb_execution_range_buffer.get());
 		icb_state.capacity = required_capacity;
 		return true;
 	}
@@ -1915,9 +1964,10 @@ using namespace metal_internal;
 		return true;
 	}
 
-	bool GraphicsDevice_Metal::ResumeRenderPassAfterIndirectEncoding(CommandList cmd)
+	bool GraphicsDevice_Metal::ResumeRenderPassAfterIndirectEncoding(CommandList cmd, bool load_attachments)
 	{
 		CommandList_Metal& commandlist = GetCommandList(cmd);
+		const bool had_draws_before_resume = commandlist.active_renderpass_has_draws;
 		if (commandlist.compute_encoder.get() != nullptr)
 		{
 			commandlist.compute_encoder->endEncoding();
@@ -1949,7 +1999,19 @@ using namespace metal_internal;
 			descriptor->setRenderTargetHeight(size.height);
 			descriptor->setDefaultRasterSampleCount(1);
 			color_attachment_descriptor->setTexture(internal_state->current_drawable->texture());
-			color_attachment_descriptor->setLoadAction(MTL::LoadActionLoad);
+			if (load_attachments)
+			{
+				color_attachment_descriptor->setLoadAction(MTL::LoadActionLoad);
+			}
+			else
+			{
+				color_attachment_descriptor->setLoadAction(MTL::LoadActionClear);
+				color_attachment_descriptor->setClearColor(MTL::ClearColor::Make(
+					commandlist.active_renderpass_swapchain->desc.clear_color[0],
+					commandlist.active_renderpass_swapchain->desc.clear_color[1],
+					commandlist.active_renderpass_swapchain->desc.clear_color[2],
+					commandlist.active_renderpass_swapchain->desc.clear_color[3]));
+			}
 			color_attachment_descriptor->setStoreAction(MTL::StoreActionStore);
 			descriptor->colorAttachments()->setObject(color_attachment_descriptor.get(), 0);
 			commandlist.render_encoder = NS::TransferPtr(commandlist.commandbuffer->renderCommandEncoder(descriptor.get())->retain());
@@ -1963,6 +2025,7 @@ using namespace metal_internal;
 			commandlist.dirty_scissor = true;
 			commandlist.dirty_viewport = true;
 			commandlist.dirty_pso = true;
+			commandlist.active_renderpass_has_draws = load_attachments ? had_draws_before_resume : false;
 			barrier_flush(cmd);
 			return true;
 		}
@@ -1977,14 +2040,18 @@ using namespace metal_internal;
 		RenderPassImage* resume_images = nullptr;
 		arrsetlen(resume_images, arrlenu(commandlist.active_renderpass_images));
 		std::memcpy(resume_images, commandlist.active_renderpass_images, sizeof(RenderPassImage) * arrlenu(commandlist.active_renderpass_images));
-		for (size_t i = 0; i < arrlenu(resume_images); ++i)
+		if (load_attachments)
 		{
-			if (resume_images[i].type == RenderPassImage::Type::RENDERTARGET || resume_images[i].type == RenderPassImage::Type::DEPTH_STENCIL)
+			for (size_t i = 0; i < arrlenu(resume_images); ++i)
 			{
-				resume_images[i].loadop = RenderPassImage::LoadOp::LOAD;
+				if (resume_images[i].type == RenderPassImage::Type::RENDERTARGET || resume_images[i].type == RenderPassImage::Type::DEPTH_STENCIL)
+				{
+					resume_images[i].loadop = RenderPassImage::LoadOp::LOAD;
+				}
 			}
 		}
 		RenderPassBegin(resume_images, (uint32_t)arrlenu(resume_images), commandlist.active_renderpass_occlusionqueries, cmd, RenderPassFlags::RENDER_PASS_FLAG_NONE);
+		commandlist.active_renderpass_has_draws = load_attachments ? had_draws_before_resume : false;
 		arrfree(resume_images);
 		return true;
 	}
@@ -4281,6 +4348,7 @@ using namespace metal_internal;
 		commandlist.active_renderpass_is_swapchain = true;
 		commandlist.active_renderpass_swapchain = swapchain;
 		commandlist.active_renderpass_occlusionqueries = nullptr;
+		commandlist.active_renderpass_has_draws = false;
 		arrsetlen(commandlist.active_renderpass_images, 0);
 		
 		barrier_flush(cmd);
@@ -4455,6 +4523,7 @@ using namespace metal_internal;
 		commandlist.active_renderpass_is_swapchain = false;
 		commandlist.active_renderpass_swapchain = nullptr;
 		commandlist.active_renderpass_occlusionqueries = occlusionqueries;
+		commandlist.active_renderpass_has_draws = false;
 		arrsetlen(commandlist.active_renderpass_images, image_count);
 		if (image_count > 0)
 		{
@@ -4481,6 +4550,7 @@ using namespace metal_internal;
 		commandlist.active_renderpass_is_swapchain = false;
 		commandlist.active_renderpass_swapchain = nullptr;
 		commandlist.active_renderpass_occlusionqueries = nullptr;
+		commandlist.active_renderpass_has_draws = false;
 		arrsetlen(commandlist.active_renderpass_images, 0);
 	}
 	void GraphicsDevice_Metal::BindScissorRects(uint32_t numRects, const Rect* rects, CommandList cmd)
@@ -5006,7 +5076,16 @@ using namespace metal_internal;
 			SDL_assert(false);
 			return;
 		}
-		if (!EndRenderPassForIndirectEncoding(cmd))
+		bool resume_with_load = true;
+		if (!commandlist.active_renderpass_has_draws && commandlist.active_renderpass_occlusionqueries == nullptr)
+		{
+			commandlist.render_encoder->endEncoding();
+			commandlist.render_encoder.reset();
+			commandlist.render_encoder = nullptr;
+			commandlist.dirty_pso = true;
+			resume_with_load = false;
+		}
+		else if (!EndRenderPassForIndirectEncoding(cmd))
 		{
 			return;
 		}
@@ -5045,6 +5124,7 @@ using namespace metal_internal;
 			dispatch_commandlist.argument_table->setAddress(count_internal->gpu_address + count_offset, METAL_ICB_BIND_COUNT);
 			dispatch_commandlist.argument_table->setAddress(dispatch_commandlist.draw_count_icb.icb_argument_buffer->gpuAddress(), METAL_ICB_BIND_CONTAINER);
 			dispatch_commandlist.argument_table->setAddress(to_internal(&params_alloc.buffer)->gpu_address + params_alloc.offset, METAL_ICB_BIND_PARAMS);
+			dispatch_commandlist.argument_table->setAddress(dispatch_commandlist.draw_count_icb.icb_execution_range_buffer->gpuAddress(), METAL_ICB_BIND_EXEC_RANGE);
 			dispatch_commandlist.compute_encoder->setArgumentTable(dispatch_commandlist.argument_table.get());
 
 			uint32_t threads_per_group = (uint32_t)drawcount_icb_encoder.draw_pipeline->threadExecutionWidth();
@@ -5056,7 +5136,7 @@ using namespace metal_internal;
 			encode_success = true;
 		} while (false);
 
-		if (!ResumeRenderPassAfterIndirectEncoding(cmd))
+		if (!ResumeRenderPassAfterIndirectEncoding(cmd, resume_with_load))
 		{
 			return;
 		}
@@ -5076,11 +5156,9 @@ using namespace metal_internal;
 		}
 
 		predraw(cmd);
-		for (uint32_t command_index = 0; command_index < max_count; command_index += METAL_ICB_EXECUTION_CHUNK)
-		{
-			const uint32_t command_count = std::min(METAL_ICB_EXECUTION_CHUNK, max_count - command_index);
-			resume_commandlist.render_encoder->executeCommandsInBuffer(resume_commandlist.draw_count_icb.icb.get(), NS::Range::Make(command_index, command_count));
-		}
+		resume_commandlist.render_encoder->executeCommandsInBuffer(
+			resume_commandlist.draw_count_icb.icb.get(),
+			resume_commandlist.draw_count_icb.icb_execution_range_buffer->gpuAddress());
 	}
 	void GraphicsDevice_Metal::DrawIndexedInstancedIndirectCount(const GPUBuffer* args, uint64_t args_offset, const GPUBuffer* count, uint64_t count_offset, uint32_t max_count, CommandList cmd)
 	{
@@ -5118,7 +5196,16 @@ using namespace metal_internal;
 			SDL_assert(false);
 			return;
 		}
-		if (!EndRenderPassForIndirectEncoding(cmd))
+		bool resume_with_load = true;
+		if (!commandlist.active_renderpass_has_draws && commandlist.active_renderpass_occlusionqueries == nullptr)
+		{
+			commandlist.render_encoder->endEncoding();
+			commandlist.render_encoder.reset();
+			commandlist.render_encoder = nullptr;
+			commandlist.dirty_pso = true;
+			resume_with_load = false;
+		}
+		else if (!EndRenderPassForIndirectEncoding(cmd))
 		{
 			return;
 		}
@@ -5159,6 +5246,7 @@ using namespace metal_internal;
 			dispatch_commandlist.argument_table->setAddress(dispatch_commandlist.draw_indexed_count_icb.icb_argument_buffer->gpuAddress(), METAL_ICB_BIND_CONTAINER);
 			dispatch_commandlist.argument_table->setAddress(to_internal(&params_alloc.buffer)->gpu_address + params_alloc.offset, METAL_ICB_BIND_PARAMS);
 			dispatch_commandlist.argument_table->setAddress(dispatch_commandlist.index_buffer.bufferAddress, METAL_ICB_BIND_INDEXBUFFER);
+			dispatch_commandlist.argument_table->setAddress(dispatch_commandlist.draw_indexed_count_icb.icb_execution_range_buffer->gpuAddress(), METAL_ICB_BIND_EXEC_RANGE);
 			dispatch_commandlist.compute_encoder->setArgumentTable(dispatch_commandlist.argument_table.get());
 
 			uint32_t threads_per_group = (uint32_t)drawcount_icb_encoder.draw_indexed_pipeline->threadExecutionWidth();
@@ -5170,7 +5258,7 @@ using namespace metal_internal;
 			encode_success = true;
 		} while (false);
 
-		if (!ResumeRenderPassAfterIndirectEncoding(cmd))
+		if (!ResumeRenderPassAfterIndirectEncoding(cmd, resume_with_load))
 		{
 			return;
 		}
@@ -5191,11 +5279,9 @@ using namespace metal_internal;
 		}
 
 		predraw(cmd);
-		for (uint32_t command_index = 0; command_index < max_count; command_index += METAL_ICB_EXECUTION_CHUNK)
-		{
-			const uint32_t command_count = std::min(METAL_ICB_EXECUTION_CHUNK, max_count - command_index);
-			resume_commandlist.render_encoder->executeCommandsInBuffer(resume_commandlist.draw_indexed_count_icb.icb.get(), NS::Range::Make(command_index, command_count));
-		}
+		resume_commandlist.render_encoder->executeCommandsInBuffer(
+			resume_commandlist.draw_indexed_count_icb.icb.get(),
+			resume_commandlist.draw_indexed_count_icb.icb_execution_range_buffer->gpuAddress());
 	}
 	void GraphicsDevice_Metal::Dispatch(uint32_t threadGroupCountX, uint32_t threadGroupCountY, uint32_t threadGroupCountZ, CommandList cmd)
 	{
@@ -5261,7 +5347,16 @@ using namespace metal_internal;
 			SDL_assert(false);
 			return;
 		}
-		if (!EndRenderPassForIndirectEncoding(cmd))
+		bool resume_with_load = true;
+		if (!commandlist.active_renderpass_has_draws && commandlist.active_renderpass_occlusionqueries == nullptr)
+		{
+			commandlist.render_encoder->endEncoding();
+			commandlist.render_encoder.reset();
+			commandlist.render_encoder = nullptr;
+			commandlist.dirty_pso = true;
+			resume_with_load = false;
+		}
+		else if (!EndRenderPassForIndirectEncoding(cmd))
 		{
 			return;
 		}
@@ -5300,6 +5395,7 @@ using namespace metal_internal;
 			dispatch_commandlist.argument_table->setAddress(count_internal->gpu_address + count_offset, METAL_ICB_BIND_COUNT);
 			dispatch_commandlist.argument_table->setAddress(dispatch_commandlist.draw_mesh_count_icb.icb_argument_buffer->gpuAddress(), METAL_ICB_BIND_CONTAINER);
 			dispatch_commandlist.argument_table->setAddress(to_internal(&params_alloc.buffer)->gpu_address + params_alloc.offset, METAL_ICB_BIND_PARAMS);
+			dispatch_commandlist.argument_table->setAddress(dispatch_commandlist.draw_mesh_count_icb.icb_execution_range_buffer->gpuAddress(), METAL_ICB_BIND_EXEC_RANGE);
 			dispatch_commandlist.compute_encoder->setArgumentTable(dispatch_commandlist.argument_table.get());
 
 			uint32_t threads_per_group = (uint32_t)drawcount_icb_encoder.draw_mesh_pipeline->threadExecutionWidth();
@@ -5311,7 +5407,7 @@ using namespace metal_internal;
 			encode_success = true;
 		} while (false);
 
-		if (!ResumeRenderPassAfterIndirectEncoding(cmd))
+		if (!ResumeRenderPassAfterIndirectEncoding(cmd, resume_with_load))
 		{
 			return;
 		}
@@ -5325,11 +5421,9 @@ using namespace metal_internal;
 		resume_commandlist.active_pso = saved_active_pso;
 
 		predraw(cmd);
-		for (uint32_t command_index = 0; command_index < max_count; command_index += METAL_ICB_EXECUTION_CHUNK)
-		{
-			const uint32_t command_count = std::min(METAL_ICB_EXECUTION_CHUNK, max_count - command_index);
-			resume_commandlist.render_encoder->executeCommandsInBuffer(resume_commandlist.draw_mesh_count_icb.icb.get(), NS::Range::Make(command_index, command_count));
-		}
+		resume_commandlist.render_encoder->executeCommandsInBuffer(
+			resume_commandlist.draw_mesh_count_icb.icb.get(),
+			resume_commandlist.draw_mesh_count_icb.icb_execution_range_buffer->gpuAddress());
 	}
 	void GraphicsDevice_Metal::CopyResource(const GPUResource* pDst, const GPUResource* pSrc, CommandList cmd)
 	{

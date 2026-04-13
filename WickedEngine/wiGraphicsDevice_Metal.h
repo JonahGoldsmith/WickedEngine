@@ -219,11 +219,13 @@ namespace wi
 			const GPUQueryHeap* active_renderpass_occlusionqueries = nullptr;
 			const SwapChain* active_renderpass_swapchain = nullptr;
 			bool active_renderpass_is_swapchain = false;
+			bool active_renderpass_has_draws = false;
 
 			struct DrawCountICBState
 			{
 				NS::SharedPtr<MTL::IndirectCommandBuffer> icb;
 				NS::SharedPtr<MTL::Buffer> icb_argument_buffer;
+				NS::SharedPtr<MTL::Buffer> icb_execution_range_buffer;
 				uint32_t capacity = 0;
 			};
 			DrawCountICBState draw_count_icb;
@@ -265,6 +267,7 @@ namespace wi
 				active_renderpass_occlusionqueries = nullptr;
 				active_renderpass_swapchain = nullptr;
 				active_renderpass_is_swapchain = false;
+				active_renderpass_has_draws = false;
 				render_width = 0;
 				render_height = 0;
 				dirty_viewport = false;
@@ -311,7 +314,7 @@ namespace wi
 		bool EnsureDrawCountICBResources(CommandList cmd, bool indexed, uint32_t max_count);
 		bool EnsureMeshCountICBResources(CommandList cmd, uint32_t max_count);
 		bool EndRenderPassForIndirectEncoding(CommandList cmd);
-		bool ResumeRenderPassAfterIndirectEncoding(CommandList cmd);
+		bool ResumeRenderPassAfterIndirectEncoding(CommandList cmd, bool load_attachments);
 
 		CommandList_Metal& GetCommandList(CommandList cmd) const
 		{
