@@ -2221,6 +2221,7 @@ private:
         cullReadSlot_ = 0u;
         cullWriteSlot_ = 1u;
         cullCompletionTokens_ = {};
+        lastGraphicsCompletionToken_ = {};
     }
 
     GPUBuffer* VisibleArgsBuffer(uint32_t slot)
@@ -2834,6 +2835,16 @@ private:
                 device_->WaitForToken(QUEUE_GRAPHICS, drawDependency);
             }
         }
+        if (useAsyncComputeForCull && tokenSubmissionEnabled_ && hiZOcclusionEnabled_ && hiZOcclusionValid_)
+        {
+            // Hi-Z is produced on graphics and consumed by async cull. In token mode we
+            // must explicitly serialize this cross-queue handoff frame-to-frame.
+            const SubmissionToken hiZReady = lastGraphicsCompletionToken_;
+            if (hiZReady.value != 0)
+            {
+                device_->WaitForToken(QUEUE_COMPUTE, hiZReady);
+            }
+        }
 
         GPUBuffer* drawVisibleCountBuffer = VisibleCountBuffer(drawSlot);
         ResourceState* drawVisibleCountState = VisibleCountBufferState(drawSlot);
@@ -2910,6 +2921,12 @@ private:
         ExecuteDrawStage(sceneCB, cmdGraphics, drawSlot);
         device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawEnd, cmdGraphics);
 
+        if (useAsyncComputeForCull && tokenSubmissionEnabled_ && hiZOcclusionEnabled_)
+        {
+            // Hi-Z build writes the same texture async cull reads. Keep draw/cull overlap,
+            // but wait before rebuilding Hi-Z to avoid read/write races.
+            device_->WaitCommandList(cmdGraphics, cmdCull);
+        }
         ExecuteHiZBuildStage(sceneCB, cmdGraphics);
 
         device_->QueryEnd(&timestampQueryHeap_, kTimestampHashStart, cmdGraphics);
@@ -2927,6 +2944,10 @@ private:
         if (tokenSubmissionEnabled_)
         {
             submitTokens = device_->SubmitCommandListsExAll();
+            if (submitTokens.validMask & (1u << QUEUE_GRAPHICS))
+            {
+                lastGraphicsCompletionToken_ = submitTokens.perQueue[QUEUE_GRAPHICS];
+            }
         }
         else
         {
@@ -3654,6 +3675,7 @@ private:
     uint32_t cullReadSlot_ = 0u;
     uint32_t cullWriteSlot_ = 1u;
     std::array<SubmissionToken, kCullOutputSlotCount> cullCompletionTokens_ = {};
+    SubmissionToken lastGraphicsCompletionToken_ = {};
 
     float sceneTime_ = 0.0f;
     float sceneExtent_ = 25.0f;
