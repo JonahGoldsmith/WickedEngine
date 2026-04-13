@@ -2040,7 +2040,24 @@ private:
 
     bool IsAsyncCullActiveForCurrentMode() const
     {
-        return asyncComputeEnabled_;
+        if (!asyncComputeEnabled_)
+        {
+            return false;
+        }
+
+        // TVB-style pipelines transition the filtered index stream between INDEX_BUFFER
+        // and UNORDERED_ACCESS each frame. Keep those transitions on graphics queue
+        // to avoid compute-queue state restrictions on DX12.
+        if (activePipeline_ == PipelineStyle::TVB)
+        {
+            return false;
+        }
+        if (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     void ResetTransientBufferStates()
