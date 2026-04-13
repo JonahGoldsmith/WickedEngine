@@ -307,6 +307,16 @@ void cs_cluster_filter(uint3 DTid : SV_DispatchThreadID)
     uint dstIndex = 0u;
     gVisibleCountOut.InterlockedAdd(0u, 1u, dstIndex);
     gVisibleCommandIndicesOut[dstIndex] = commandIndex;
+
+    const uint srcOffset = commandIndex * kIndirectArgStride;
+    const uint dstOffset = dstIndex * kIndirectArgStride;
+
+    [unroll]
+    for (uint i = 0u; i < kIndirectArgDWordCount; ++i)
+    {
+        const uint value = gSourceArgs.Load(srcOffset + i * 4u);
+        gVisibleArgsOut.Store(dstOffset + i * 4u, value);
+    }
 }
 
 [numthreads(64, 1, 1)]
@@ -359,6 +369,59 @@ void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
     const ClusterCommand command = gCommands[commandIndex];
     const InstanceData inst = gInstances[command.instanceIndex];
     const ClusterTemplate cluster = gClusterTemplates[command.clusterTemplateIndex];
+
+    const float3 localCenter = cluster.bounds.xyz;
+    const float worldRadius = cluster.bounds.w * inst.scale;
+    const float3 worldCenter = mul(float4(localCenter, 1.0), inst.world).xyz;
+
+    bool coarseVisible = SphereVisible(worldCenter, worldRadius);
+    if (coarseVisible)
+    {
+        const float4 clipCenter = mul(float4(worldCenter, 1.0), viewProj);
+        if (clipCenter.w <= 1e-6f)
+        {
+            coarseVisible = false;
+        }
+        else
+        {
+            const float invW = 1.0f / clipCenter.w;
+            const float2 ndcCenter = clipCenter.xy * invW;
+            const float ndcDepth = saturate(clipCenter.z * invW);
+            const float2 ndcRadius = float2(
+                worldRadius * abs(projectionScale.x) * abs(invW),
+                worldRadius * abs(projectionScale.y) * abs(invW));
+
+            float2 uvMin = (ndcCenter - ndcRadius) * 0.5f + 0.5f;
+            float2 uvMax = (ndcCenter + ndcRadius) * 0.5f + 0.5f;
+            uvMin = saturate(uvMin);
+            uvMax = saturate(uvMax);
+
+            if (uvMin.x < uvMax.x && uvMin.y < uvMax.y)
+            {
+                const float nearDepth = ComputeApproximateSphereNearDepth(ndcDepth, worldRadius, clipCenter.w);
+                if (IsSphereOccludedByHiZ(uvMin, uvMax, nearDepth))
+                {
+                    coarseVisible = false;
+                }
+            }
+        }
+    }
+
+    if (!coarseVisible || cluster.localTriCount == 0u)
+    {
+        if (GTid.x == 0u)
+        {
+            StoreIndexedIndirectArg(
+                gTVBArgsOut,
+                drawCommandIndex,
+                drawCommandIndex,
+                0u,
+                drawCommandIndex * kMaxClusterIndices,
+                cluster.baseVertex,
+                drawCommandIndex);
+        }
+        return;
+    }
 
     if (GTid.x < cluster.localTriCount)
     {

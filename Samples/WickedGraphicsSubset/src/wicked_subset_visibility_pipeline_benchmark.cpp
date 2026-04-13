@@ -2350,10 +2350,10 @@ private:
     void LogRenderPathSummary() const
     {
         SDL_Log("[WickedVisibilityPipelineBenchmark] Render path summary:");
-        SDL_Log("  Wicked: instance+cluster (sphere+Hi-Z) cull -> compact visible indirect args -> indexed cluster draw");
-        SDL_Log("  TVB: triangle visibility filtering for all active commands -> indexed draw from TVB filtered index stream");
-        SDL_Log("  Esoterica: instance+cluster (sphere+Hi-Z) cull -> compact visible list -> TVB triangle filtering on visible clusters");
-        SDL_Log("  Shared backbone: GPU instance cull, cluster cull, visible list compaction, and Hi-Z depth pyramid build");
+        SDL_Log("  Wicked: instance+cluster (sphere+Hi-Z) cull -> fused visible arg compaction -> indexed cluster draw");
+        SDL_Log("  TVB: triangle visibility filtering with Hi-Z coarse reject -> indexed draw from TVB filtered index stream");
+        SDL_Log("  Esoterica: instance+cluster (sphere+Hi-Z) cull -> TVB triangle filtering on visible clusters");
+        SDL_Log("  Shared backbone: GPU instance cull, cluster cull, TVB filtering, and Hi-Z depth pyramid build");
         SDL_Log("  Queueing: cull can run on async compute queue and graphics waits before draw");
     }
 
@@ -2405,7 +2405,7 @@ private:
         sceneCB.meshCommandOffset = 0u;
         sceneCB.hiZMipCount = hiZMipCount_;
         sceneCB.hiZSourceMip = 0u;
-        sceneCB.hiZEnabled = (hiZOcclusionEnabled_ && activePipeline_ != PipelineStyle::TVB) ? 1u : 0u;
+        sceneCB.hiZEnabled = hiZOcclusionEnabled_ ? 1u : 0u;
         sceneCB.hiZValid = hiZOcclusionValid_ ? 1u : 0u;
 
         FrameMetrics metrics = {};
@@ -2559,10 +2559,6 @@ private:
         device_->Barrier(cmd);
         TransitionBufferState(&visibleCommandIndicesBuffer_, &visibleCommandIndicesBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
         TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
-
-        device_->BindComputeShader(&csCompactArgs_, cmd);
-        device_->Dispatch(std::max(1u, commandGroups), 1, 1, cmd);
-        device_->Barrier(cmd);
 
         if (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable)
         {
