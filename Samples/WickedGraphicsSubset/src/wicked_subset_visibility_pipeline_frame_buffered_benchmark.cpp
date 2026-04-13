@@ -66,6 +66,7 @@
 #include "wiShaderCompiler.h"
 
 #include "platform_window_helpers.h"
+#include "wicked_subset_frame_buffering.h"
 #include "flecs.h"
 
 #ifndef WICKED_SUBSET_VISIBILITY_BENCHMARK_SHADER_PATH
@@ -927,12 +928,12 @@ MeshShapeCPU CreateTorusShape(uint32_t majorSegments, uint32_t minorSegments, fl
     return shape;
 }
 
-class WickedVisibilityPipelineBenchmark
+class WickedVisibilityPipelineFrameBufferedBenchmark
 {
 public:
     bool Initialize()
     {
-        SDL_Log("[WickedVisibilityPipelineBenchmark] Initialize begin");
+        SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] Initialize begin");
 
         if (!SDL_Init(SDL_INIT_VIDEO))
         {
@@ -1029,7 +1030,7 @@ public:
         LogActiveTier();
 
         SDL_Log(
-            "[WickedVisibilityPipelineBenchmark] initialized | backend=%s | mesh=%s | async_compute=%s | token_mode=%s | binding=%s | instances=%u | commands=%u | auto-run=%s | camera=fly",
+            "[WickedVisibilityPipelineFrameBufferedBenchmark] initialized | backend=%s | mesh=%s | async_compute=%s | token_mode=%s | binding=%s | instances=%u | commands=%u | auto-run=%s | camera=fly",
             BackendName(),
             supportsMeshShaders_ ? "yes" : "no",
             asyncComputeEnabled_ ? "yes" : "no",
@@ -1055,6 +1056,7 @@ public:
 
         while (running)
         {
+            ReapCompletedFrameSlots(false);
             SDL_Event event;
             while (SDL_PollEvent(&event))
             {
@@ -1129,7 +1131,7 @@ public:
                     mouseLookActive_ = false;
                     SDL_SetWindowRelativeMouseMode(window_, false);
                     SDL_Log(
-                        "[WickedVisibilityPipelineBenchmark] timed benchmark reached %.1fs, closing application",
+                        "[WickedVisibilityPipelineFrameBufferedBenchmark] timed benchmark reached %.1fs, closing application",
                         kTimedBenchmarkDurationSeconds);
                     running = false;
                     continue;
@@ -1146,7 +1148,7 @@ public:
     {
         if (runFrameCount_ == 0)
         {
-            SDL_Log("[WickedVisibilityPipelineBenchmark] average framerate unavailable (no rendered frames)");
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] average framerate unavailable (no rendered frames)");
             return;
         }
 
@@ -1161,7 +1163,7 @@ public:
         const double avgFpsWall = wallSeconds > 0.0 ? (static_cast<double>(runFrameCount_) / wallSeconds) : avgFpsCpu;
 
         SDL_Log(
-            "[WickedVisibilityPipelineBenchmark] average framerate | frames=%llu | avg_fps=%.2f | avg_cpu_fps=%.2f | avg_cpu_ms=%.3f | runtime=%.2fs",
+            "[WickedVisibilityPipelineFrameBufferedBenchmark] average framerate | frames=%llu | avg_fps=%.2f | avg_cpu_fps=%.2f | avg_cpu_ms=%.3f | runtime=%.2fs",
             static_cast<unsigned long long>(runFrameCount_),
             avgFpsWall,
             avgFpsCpu,
@@ -1171,7 +1173,7 @@ public:
 
     void Shutdown()
     {
-        SDL_Log("[WickedVisibilityPipelineBenchmark] Shutdown begin");
+        SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] Shutdown begin");
 
         if (window_ != nullptr)
         {
@@ -1180,10 +1182,13 @@ public:
 
         if (device_ != nullptr)
         {
+            ReapCompletedFrameSlots(true);
             device_->WaitForGPU();
         }
 
         LogAverageFramerateSummary();
+
+        taggedAllocator_.Reset();
 
         DestroyResources();
 
@@ -1239,11 +1244,11 @@ public:
         }
 
 #if defined(WICKED_MMGR_ENABLED) && WI_ENGINECONFIG_SUBSET_SKIP_SDL_QUIT
-        SDL_Log("[WickedVisibilityPipelineBenchmark] SDL_Quit skipped (MMGR+config)");
+        SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] SDL_Quit skipped (MMGR+config)");
 #else
         SDL_Quit();
 #endif
-        SDL_Log("[WickedVisibilityPipelineBenchmark] Shutdown end");
+        SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] Shutdown end");
     }
 
 private:
@@ -1282,6 +1287,16 @@ private:
         return values[values.size() / 2];
     }
 
+    struct FrameSlot
+    {
+        bool submitted = false;
+        uint64_t frameId = 0;
+        uint64_t submitTag = 0;
+        SubmissionTokenSet submitTokens = {};
+    };
+
+    static constexpr uint32_t kFrameSlotCount = 16;
+
     bool RecreateSwapchain()
     {
         if (device_ == nullptr)
@@ -1289,6 +1304,7 @@ private:
             return false;
         }
 
+        ReapCompletedFrameSlots(true);
         device_->WaitForGPU();
         DestroyRenderTargets();
         return CreateSwapchain();
@@ -1574,11 +1590,11 @@ private:
         if (!bindlessShadersAvailable_)
         {
             activeBindingMode_ = BindingMode::Bindful;
-            SDL_Log("[WickedVisibilityPipelineBenchmark] bindless shader variant unavailable; using bindful mode");
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] bindless shader variant unavailable; using bindful mode");
         }
         else
         {
-            SDL_Log("[WickedVisibilityPipelineBenchmark] bindless shader variant ready (toggle with [K])");
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] bindless shader variant ready (toggle with [K])");
         }
 
         return true;
@@ -1755,19 +1771,27 @@ private:
             globalVertexOffset += shape.vertexCount;
         }
 
-        BuildInstancesAndCommands();
+        if (!BuildInstancesAndCommands())
+        {
+            return false;
+        }
         BuildTierMappings();
 
         return CreateSceneGPUResources();
     }
 
-    void BuildInstancesAndCommands()
+    bool BuildInstancesAndCommands()
     {
         instances_.clear();
         commands_.clear();
         baseArgs_.clear();
 
         ecsWorld_ = std::make_unique<flecs::world>();
+        if (!ecsWorld_)
+        {
+            std::fprintf(stderr, "Failed to create Flecs world\n");
+            return false;
+        }
 
         const uint64_t targetTriangles = kTierPresets.back().targetTriangles;
 
@@ -1842,31 +1866,28 @@ private:
             instance.scale = scale;
             instances_.push_back(instance);
 
-            if (ecsWorld_)
-            {
-                ECSMotion motion = {};
-                motion.shapeIndex = shapeIndex;
-                motion.scale = scale;
-                std::memcpy(motion.color, instance.color, sizeof(motion.color));
-                motion.basePosition = translation;
-                motion.yawRate = yawRate;
-                motion.orbitRadius = orbitRadius;
-                motion.orbitRate = orbitRate;
-                motion.orbitPhase = orbitPhase;
-                motion.bobAmplitude = bobAmplitude;
-                motion.bobRate = bobRate;
-                motion.bobPhase = bobPhase;
+            ECSMotion motion = {};
+            motion.shapeIndex = shapeIndex;
+            motion.scale = scale;
+            std::memcpy(motion.color, instance.color, sizeof(motion.color));
+            motion.basePosition = translation;
+            motion.yawRate = yawRate;
+            motion.orbitRadius = orbitRadius;
+            motion.orbitRate = orbitRate;
+            motion.orbitPhase = orbitPhase;
+            motion.bobAmplitude = bobAmplitude;
+            motion.bobRate = bobRate;
+            motion.bobPhase = bobPhase;
 
-                ECSDynamicState dynamicState = {};
-                dynamicState.position = animatedTranslation;
-                dynamicState.yaw = initialYaw;
-                dynamicState.elapsed = 0.0f;
+            ECSDynamicState dynamicState = {};
+            dynamicState.position = animatedTranslation;
+            dynamicState.yaw = initialYaw;
+            dynamicState.elapsed = 0.0f;
 
-                ecsWorld_->entity()
-                    .set<ECSInstanceLink>({ instanceIndex })
-                    .set<ECSMotion>(motion)
-                    .set<ECSDynamicState>(dynamicState);
-            }
+            ecsWorld_->entity()
+                .set<ECSInstanceLink>({ instanceIndex })
+                .set<ECSMotion>(motion)
+                .set<ECSDynamicState>(dynamicState);
 
             for (uint32_t localCluster = 0; localCluster < shape.clusterCount; ++localCluster)
             {
@@ -1911,6 +1932,7 @@ private:
         }
 
         ecsSnapshotScratch_.resize(totalInstanceCount_);
+        return true;
     }
 
     void BuildTierMappings()
@@ -1953,6 +1975,7 @@ private:
             return;
         }
 
+        // Clamp runaway delta to keep motion deterministic during hitches.
         const float step = std::min(dt, 1.0f / 20.0f);
         ecsWorld_->each([step](ECSMotion& motion, ECSDynamicState& dynamicState) {
             dynamicState.elapsed += step;
@@ -2022,10 +2045,13 @@ private:
 
         desc.stride = sizeof(GPUInstanceData);
         desc.size = static_cast<uint64_t>(instances_.size() * sizeof(GPUInstanceData));
-        if (!device_->CreateBuffer(&desc, instances_.data(), &instanceBuffer_))
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
-            std::fprintf(stderr, "CreateBuffer(instanceBuffer) failed\n");
-            return false;
+            if (!device_->CreateBuffer(&desc, instances_.data(), InstanceBuffer(slot)))
+            {
+                std::fprintf(stderr, "CreateBuffer(instanceBuffer[%u]) failed\n", slot);
+                return false;
+            }
         }
 
         desc.stride = sizeof(GPUClusterCommand);
@@ -2224,7 +2250,12 @@ private:
         }
 
         device_->SetName(&vertexBuffer_, "subset_visibility_benchmark_vertices");
-        device_->SetName(&instanceBuffer_, "subset_visibility_benchmark_instances");
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
+        {
+            char name[128] = {};
+            std::snprintf(name, sizeof(name), "subset_visibility_benchmark_instances_slot%u", slot);
+            device_->SetName(InstanceBuffer(slot), name);
+        }
         device_->SetName(&commandBuffer_, "subset_visibility_benchmark_commands");
         device_->SetName(&clusterTemplateBuffer_, "subset_visibility_benchmark_clusters");
         device_->SetName(&clusterIndexBuffer_, "subset_visibility_benchmark_cluster_indices");
@@ -2259,7 +2290,10 @@ private:
     void DestroySceneGPUResources()
     {
         vertexBuffer_ = {};
-        instanceBuffer_ = {};
+        for (GPUBuffer& b : instanceBuffers_)
+        {
+            b = {};
+        }
         commandBuffer_ = {};
         clusterTemplateBuffer_ = {};
         templateVerticesBuffer_ = {};
@@ -2408,7 +2442,7 @@ private:
         ResetCullFrameOverlap();
 
         SDL_Log(
-            "[WickedVisibilityPipelineBenchmark] combo -> suite=%s | pipeline=%s | scenario=%s | tier=%s | binding=%s | commands=%u | instances=%u",
+            "[WickedVisibilityPipelineFrameBufferedBenchmark] combo -> suite=%s | pipeline=%s | scenario=%s | tier=%s | binding=%s | commands=%u | instances=%u",
             SuiteName(activeSuite_),
             PipelineName(activePipeline_),
             ScenarioName(activeScenario_),
@@ -2430,6 +2464,16 @@ private:
         cullWriteSlot_ = 1u;
         cullCompletionTokens_ = {};
         lastGraphicsCompletionToken_ = {};
+    }
+
+    GPUBuffer* InstanceBuffer(uint32_t slot)
+    {
+        return &instanceBuffers_[slot % kCullOutputSlotCount];
+    }
+
+    ResourceState* InstanceBufferState(uint32_t slot)
+    {
+        return &instanceBufferStates_[slot % kCullOutputSlotCount];
     }
 
     GPUBuffer* VisibleArgsBuffer(uint32_t slot)
@@ -2493,7 +2537,10 @@ private:
     void ResetTransientBufferStates()
     {
         vertexBufferState_ = ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER;
-        instanceBufferState_ = ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER;
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
+        {
+            instanceBufferStates_[slot] = ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER;
+        }
         drawCommandIndexBufferState_ = ResourceState::VERTEX_BUFFER;
         clusterIndexBufferState_ = ResourceState::INDEX_BUFFER;
 
@@ -2526,7 +2573,7 @@ private:
 
     void PrepareDrawBufferStates(CommandList cmd, uint32_t drawSlot)
     {
-        TransitionBufferState(&instanceBuffer_, &instanceBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+        TransitionBufferState(InstanceBuffer(drawSlot), InstanceBufferState(drawSlot), ResourceState::SHADER_RESOURCE, cmd);
 
         GPUBuffer* visibleCommandIndicesBuffer = VisibleCommandIndicesBuffer(drawSlot);
         GPUBuffer* visibleCountBuffer = VisibleCountBuffer(drawSlot);
@@ -2599,7 +2646,6 @@ private:
             case SDLK_EQUALS:
             case SDLK_MINUS:
             case SDLK_J:
-            case SDLK_T:
             case SDLK_V:
             case SDLK_O:
             case SDLK_COMMA:
@@ -2688,7 +2734,6 @@ private:
         if (!tokenSubmissionEnabled_)
         {
             tokenSubmissionEnabled_ = true;
-            resetOverlap = true;
             changed = true;
         }
         uint32_t parityTierIndex = activeTier_;
@@ -2721,16 +2766,16 @@ private:
             {
                 SDL_LogWarn(
                     SDL_LOG_CATEGORY_APPLICATION,
-                    "[WickedVisibilityPipelineBenchmark] parity requested Mesh path but mesh shaders are unsupported on this backend; using Portable fallback");
+                    "[WickedVisibilityPipelineFrameBufferedBenchmark] parity requested Mesh path but mesh shaders are unsupported on this backend; using Portable fallback");
             }
             if (forceLog && fallbackBindless)
             {
                 SDL_LogWarn(
                     SDL_LOG_CATEGORY_APPLICATION,
-                    "[WickedVisibilityPipelineBenchmark] parity requested Bindless path but bindless shaders are unavailable; using Bindful fallback");
+                    "[WickedVisibilityPipelineFrameBufferedBenchmark] parity requested Bindless path but bindless shaders are unavailable; using Bindful fallback");
             }
             SDL_Log(
-                "[WickedVisibilityPipelineBenchmark] benchmark parity preset applied "
+                "[WickedVisibilityPipelineFrameBufferedBenchmark] benchmark parity preset applied "
                 "| suite=%s pipeline=%s binding=%s async=on tokens=on flecs=on hiz=on padding=%.2f bias=%.6f validation=on tier=%s",
                 SuiteName(activeSuite_),
                 PipelineName(activePipeline_),
@@ -2762,7 +2807,7 @@ private:
                 mouseLookActive_ = false;
                 SDL_SetWindowRelativeMouseMode(window_, false);
             }
-            SDL_Log("[WickedVisibilityPipelineBenchmark] auto-run %s", autoRun_ ? "enabled" : "disabled");
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] auto-run %s", autoRun_ ? "enabled" : "disabled");
             return;
         }
 
@@ -2781,12 +2826,12 @@ private:
             if (timedBenchmarkMode_)
             {
                 SDL_Log(
-                    "[WickedVisibilityPipelineBenchmark] timed benchmark started (%.0fs) and will close automatically",
+                    "[WickedVisibilityPipelineFrameBufferedBenchmark] timed benchmark started (%.0fs) and will close automatically",
                     kTimedBenchmarkDurationSeconds);
             }
             else
             {
-                SDL_Log("[WickedVisibilityPipelineBenchmark] benchmark sweep started");
+                SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] benchmark sweep started");
             }
             return;
         }
@@ -2802,7 +2847,7 @@ private:
                     autoRun_ = false;
                     timedBenchmarkMode_ = false;
                     timedBenchmarkStartTick_ = 0;
-                    SDL_Log("[WickedVisibilityPipelineBenchmark] auto-run disabled by benchmark parity mode");
+                    SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] auto-run disabled by benchmark parity mode");
                 }
                 timedBenchmarkMode_ = true;
                 timedBenchmarkStartTick_ = SDL_GetPerformanceCounter();
@@ -2810,21 +2855,21 @@ private:
                 SDL_SetWindowRelativeMouseMode(window_, false);
                 ResetCameraForBenchmarkParity();
                 SDL_Log(
-                    "[WickedVisibilityPipelineBenchmark] benchmark parity mode -> enabled (Mesh+Wicked+Bindless+150M, auto-close %.0fs)",
+                    "[WickedVisibilityPipelineFrameBufferedBenchmark] benchmark parity mode -> enabled (Mesh+Wicked+Bindless+150M, auto-close %.0fs)",
                     kTimedBenchmarkDurationSeconds);
             }
             else
             {
                 timedBenchmarkMode_ = false;
                 timedBenchmarkStartTick_ = 0;
-                SDL_Log("[WickedVisibilityPipelineBenchmark] benchmark parity mode -> disabled");
+                SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] benchmark parity mode -> disabled");
             }
             return;
         }
 
         if (benchmarkParityMode_ && IsBenchmarkParityLockedKey(key))
         {
-            SDL_Log("[WickedVisibilityPipelineBenchmark] benchmark parity mode locks this key ([U] disables parity)");
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] benchmark parity mode locks this key ([U] disables parity)");
             return;
         }
 
@@ -2879,13 +2924,13 @@ private:
         else if (key == SDLK_C)
         {
             ResetCameraToScene();
-            SDL_Log("[WickedVisibilityPipelineBenchmark] camera reset near scene center");
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] camera reset near scene center");
             return;
         }
         else if (key == SDLK_V)
         {
             validationEnabled_ = !validationEnabled_;
-            SDL_Log("[WickedVisibilityPipelineBenchmark] validation/hash pass -> %s", validationEnabled_ ? "enabled" : "disabled");
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] validation/hash pass -> %s", validationEnabled_ ? "enabled" : "disabled");
             return;
         }
         else if (key == SDLK_J)
@@ -2893,71 +2938,68 @@ private:
             asyncComputeEnabled_ = !asyncComputeEnabled_;
             ResetCullFrameOverlap();
             SDL_Log(
-                "[WickedVisibilityPipelineBenchmark] async compute cull queue -> requested=%s effective=%s",
+                "[WickedVisibilityPipelineFrameBufferedBenchmark] async compute cull queue -> requested=%s effective=%s",
                 asyncComputeEnabled_ ? "enabled" : "disabled",
                 IsAsyncCullActiveForCurrentMode() ? "enabled" : "disabled");
             return;
         }
         else if (key == SDLK_T)
         {
-            tokenSubmissionEnabled_ = !tokenSubmissionEnabled_;
-            ResetCullFrameOverlap();
             SDL_Log(
-                "[WickedVisibilityPipelineBenchmark] tokenized submission mode -> %s",
-                tokenSubmissionEnabled_ ? "enabled" : "disabled");
+                "[WickedVisibilityPipelineFrameBufferedBenchmark] tokenized submission mode is always enabled in frame-buffered variant");
             return;
         }
         else if (key == SDLK_O)
         {
             hiZOcclusionEnabled_ = !hiZOcclusionEnabled_;
-            SDL_Log("[WickedVisibilityPipelineBenchmark] Hi-Z occlusion -> %s", hiZOcclusionEnabled_ ? "enabled" : "disabled");
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] Hi-Z occlusion -> %s", hiZOcclusionEnabled_ ? "enabled" : "disabled");
             return;
         }
         else if (key == SDLK_COMMA)
         {
             cullPaddingPixels_ = std::max(0.0f, cullPaddingPixels_ - 1.0f);
-            SDL_Log("[WickedVisibilityPipelineBenchmark] cull padding -> %.2f px", cullPaddingPixels_);
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] cull padding -> %.2f px", cullPaddingPixels_);
             return;
         }
         else if (key == SDLK_PERIOD)
         {
             cullPaddingPixels_ = std::min(64.0f, cullPaddingPixels_ + 1.0f);
-            SDL_Log("[WickedVisibilityPipelineBenchmark] cull padding -> %.2f px", cullPaddingPixels_);
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] cull padding -> %.2f px", cullPaddingPixels_);
             return;
         }
         else if (key == SDLK_SEMICOLON)
         {
             hiZOcclusionBias_ = std::max(0.0f, hiZOcclusionBias_ - 0.0005f);
-            SDL_Log("[WickedVisibilityPipelineBenchmark] Hi-Z occlusion bias -> %.6f", hiZOcclusionBias_);
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] Hi-Z occlusion bias -> %.6f", hiZOcclusionBias_);
             return;
         }
         else if (key == SDLK_APOSTROPHE)
         {
             hiZOcclusionBias_ = std::min(0.05f, hiZOcclusionBias_ + 0.0005f);
-            SDL_Log("[WickedVisibilityPipelineBenchmark] Hi-Z occlusion bias -> %.6f", hiZOcclusionBias_);
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] Hi-Z occlusion bias -> %.6f", hiZOcclusionBias_);
             return;
         }
         else if (key == SDLK_K)
         {
             if (!bindlessShadersAvailable_)
             {
-                SDL_Log("[WickedVisibilityPipelineBenchmark] bindless toggle unavailable (variant failed to compile)");
+                SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] bindless toggle unavailable (variant failed to compile)");
                 return;
             }
             activeBindingMode_ = activeBindingMode_ == BindingMode::Bindful ? BindingMode::Bindless : BindingMode::Bindful;
-            SDL_Log("[WickedVisibilityPipelineBenchmark] resource binding mode -> %s", BindingModeName(activeBindingMode_));
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] resource binding mode -> %s", BindingModeName(activeBindingMode_));
             return;
         }
         else if (key == SDLK_Y)
         {
             ecsMotionEnabled_ = !ecsMotionEnabled_;
-            SDL_Log("[WickedVisibilityPipelineBenchmark] flecs motion update -> %s", ecsMotionEnabled_ ? "enabled" : "disabled");
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] flecs motion update -> %s", ecsMotionEnabled_ ? "enabled" : "disabled");
             return;
         }
         else if (key == SDLK_P)
         {
             SDL_Log(
-                "[WickedVisibilityPipelineBenchmark] snapshot | suite=%s pipeline=%s scenario=%s tier=%s binding=%s cmd=%u inst=%u async=%s tokens=%s hiz=%s flecs_motion=%s parity=%s cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms visible=%u hash=%u",
+                "[WickedVisibilityPipelineFrameBufferedBenchmark] snapshot | suite=%s pipeline=%s scenario=%s tier=%s binding=%s cmd=%u inst=%u async=%s tokens=%s hiz=%s flecs_motion=%s parity=%s cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms visible=%u hash=%u",
                 SuiteName(activeSuite_),
                 PipelineName(activePipeline_),
                 ScenarioName(activeScenario_),
@@ -2996,7 +3038,7 @@ private:
             autoRun_ = false;
             timedBenchmarkMode_ = false;
             timedBenchmarkStartTick_ = 0;
-            SDL_Log("[WickedVisibilityPipelineBenchmark] auto-run disabled by manual override");
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] auto-run disabled by manual override");
         }
 
         activeCommandCount_ = tierActiveCommandCount_[activeTier_];
@@ -3064,14 +3106,14 @@ private:
 
     void LogStartupControls() const
     {
-        SDL_Log("[WickedVisibilityPipelineBenchmark] Controls:");
+        SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] Controls:");
         SDL_Log("  [R] start benchmark auto-run sweep | [B] start timed benchmark (30s auto-close) | [SPACE] toggle auto-run");
         SDL_Log("  [C] reset camera near center");
         SDL_Log("  Camera: hold RMB to look, WASD move, Q/E vertical, Shift boost");
         SDL_Log("  [1/2/3] pipeline Wicked/TVB/Esoterica | [M] suite Portable/Mesh");
         SDL_Log("  [Z/X] scenario AllVisible/HighCulling | [UP/DOWN] or [[/]] or [PgUp/PgDn] triangle tier");
         SDL_Log("  [U] toggle benchmark parity run (locks Mesh+Wicked+Bindless+150M + async/tokens/hiz/padding/bias/flecs/validation, auto-closes in 30s)");
-        SDL_Log("  [J] toggle async compute cull queue | [T] toggle tokenized submission mode");
+        SDL_Log("  [J] toggle async compute cull queue | [T] tokenized submission is fixed ON in this frame-buffered build");
         SDL_Log("  [O] toggle Hi-Z occlusion | [;/' ] decrease/increase Hi-Z occlusion bias | [V] toggle validation/hash pass");
         SDL_Log("  [,/.] decrease/increase cull padding pixels");
         SDL_Log("  [K] toggle bindful/bindless resource mode | [Y] toggle Flecs motion update");
@@ -3080,14 +3122,14 @@ private:
 
     void LogRenderPathSummary() const
     {
-        SDL_Log("[WickedVisibilityPipelineBenchmark] Render path summary:");
+        SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] Render path summary:");
         SDL_Log("  Wicked: instance+cluster (sphere+Hi-Z) cull -> fused visible arg compaction -> indexed cluster draw");
         SDL_Log("  TVB: triangle visibility filtering with Hi-Z coarse reject -> indexed draw from TVB filtered index stream");
         SDL_Log("  Esoterica: instance+cluster (sphere+Hi-Z) cull -> TVB triangle filtering on visible clusters");
         SDL_Log("  Shared backbone: GPU instance cull, cluster cull, TVB filtering, and Hi-Z depth pyramid build");
-        SDL_Log("  Motion: Flecs ECS updates per-instance orbit+bob+yaw, then updates the GPU instance buffer each frame");
+        SDL_Log("  Motion: Flecs ECS updates per-instance orbit+bob+yaw, then uploads the cull slot instance snapshot");
         SDL_Log("  Queueing: async mode uses one-frame-lag ping-pong so frame N draw can overlap frame N+1 cull");
-        SDL_Log("  Queue sync: [T] token mode removes forced end-of-frame cross-queue waits and uses explicit slot-token waits");
+        SDL_Log("  Queue sync: token mode is always enabled, removing forced end-of-frame cross-queue waits");
         SDL_Log("  Parity: [U] locks Mesh+Wicked+Bindless at 150M and starts a 30s timed run");
         SDL_Log("  Resource binding: [K] toggles bindful slots vs bindless descriptor-index CB");
     }
@@ -3095,7 +3137,7 @@ private:
     void LogActiveTier() const
     {
         SDL_Log(
-            "[WickedVisibilityPipelineBenchmark] tier=%s (targetTriangles=%llu) activeCommands=%u activeInstances=%u",
+            "[WickedVisibilityPipelineFrameBufferedBenchmark] tier=%s (targetTriangles=%llu) activeCommands=%u activeInstances=%u",
             kTierPresets[activeTier_].name,
             static_cast<unsigned long long>(kTierPresets[activeTier_].targetTriangles),
             activeCommandCount_,
@@ -3110,6 +3152,7 @@ private:
     SubsetBindlessCB BuildBindlessCB(uint32_t slot)
     {
         SubsetBindlessCB cb = {};
+        GPUBuffer* instanceBuffer = InstanceBuffer(slot);
         GPUBuffer* visibleCommandIndicesBuffer = VisibleCommandIndicesBuffer(slot);
         GPUBuffer* visibleCountBuffer = VisibleCountBuffer(slot);
         GPUBuffer* visibleArgsBuffer = VisibleArgsBuffer(slot);
@@ -3119,7 +3162,7 @@ private:
         GPUBuffer* meshDispatchArgsBuffer = MeshDispatchArgsBuffer(slot);
 
         cb.vertexBufferSRV = device_->GetDescriptorIndex(&vertexBuffer_, SubresourceType::SRV);
-        cb.instanceBufferSRV = device_->GetDescriptorIndex(&instanceBuffer_, SubresourceType::SRV);
+        cb.instanceBufferSRV = device_->GetDescriptorIndex(instanceBuffer, SubresourceType::SRV);
         cb.commandBufferSRV = device_->GetDescriptorIndex(&commandBuffer_, SubresourceType::SRV);
         cb.clusterTemplateBufferSRV = device_->GetDescriptorIndex(&clusterTemplateBuffer_, SubresourceType::SRV);
         cb.templateVerticesBufferSRV = device_->GetDescriptorIndex(&templateVerticesBuffer_, SubresourceType::SRV);
@@ -3194,20 +3237,78 @@ private:
 #if WICKED_SUBSET_USE_VULKAN
             SDL_LogWarn(
                 SDL_LOG_CATEGORY_APPLICATION,
-                "[WickedVisibilityPipelineBenchmark] disabling bindless mode at runtime "
+                "[WickedVisibilityPipelineFrameBufferedBenchmark] disabling bindless mode at runtime "
                 "because descriptor indices are missing (%s). "
                 "This adapter likely exhausted Vulkan bindless descriptor capacity for this workload.",
                 missing.c_str());
 #else
             SDL_LogWarn(
                 SDL_LOG_CATEGORY_APPLICATION,
-                "[WickedVisibilityPipelineBenchmark] disabling bindless mode at runtime "
+                "[WickedVisibilityPipelineFrameBufferedBenchmark] disabling bindless mode at runtime "
                 "because descriptor indices are missing (%s).",
                 missing.c_str());
 #endif
         }
 
         return valid;
+    }
+
+    void RetireFrameSlot(FrameSlot& slot)
+    {
+        taggedAllocator_.ReleaseTag(slot.submitTag);
+        slot = {};
+    }
+
+    void ReapCompletedFrameSlots(bool wait_for_all)
+    {
+        if (device_ == nullptr)
+            return;
+
+        for (FrameSlot& slot : frameSlots_)
+        {
+            if (!slot.submitted)
+                continue;
+
+            if (wait_for_all || wicked_subset::IsTokenSetComplete(*device_, slot.submitTokens))
+            {
+                if (wait_for_all)
+                {
+                    wicked_subset::WaitTokenSet(*device_, slot.submitTokens);
+                }
+                RetireFrameSlot(slot);
+            }
+        }
+    }
+
+    FrameSlot& AcquireFrameSlot()
+    {
+        ReapCompletedFrameSlots(false);
+        for (;;)
+        {
+            FrameSlot& slot = frameSlots_[frameSlotCursor_];
+            frameSlotCursor_ = (frameSlotCursor_ + 1u) % kFrameSlotCount;
+            if (!slot.submitted)
+            {
+                slot.frameId = nextFrameId_++;
+                slot.submitTag = wicked_subset::MakeFrameTag(slot.frameId, wicked_subset::FrameAllocTag::GPUUntilFence);
+                return slot;
+            }
+            wicked_subset::WaitTokenSet(*device_, slot.submitTokens);
+            RetireFrameSlot(slot);
+        }
+    }
+
+    uint32_t CountInFlightSlots() const
+    {
+        uint32_t in_flight = 0;
+        for (const FrameSlot& slot : frameSlots_)
+        {
+            if (slot.submitted)
+            {
+                ++in_flight;
+            }
+        }
+        return in_flight;
     }
 
     bool RenderFrame(float dt, FrameMetrics* outMetrics)
@@ -3221,6 +3322,9 @@ private:
         {
             ApplyBenchmarkParityPreset(false);
         }
+
+        tokenSubmissionEnabled_ = true;
+        FrameSlot& frameSlot = AcquireFrameSlot();
 
         const uint64_t perfFreq = SDL_GetPerformanceFrequency();
         const uint64_t cpuBegin = SDL_GetPerformanceCounter();
@@ -3325,9 +3429,11 @@ private:
             const uint64_t instanceUploadBytes = static_cast<uint64_t>(activeInstanceCount_) * sizeof(GPUInstanceData);
             if (instanceUploadBytes > 0u)
             {
-                TransitionBufferState(&instanceBuffer_, &instanceBufferState_, ResourceState::COPY_DST, cmdCull);
-                device_->UpdateBuffer(&instanceBuffer_, ecsSnapshotScratch_.data(), cmdCull, instanceUploadBytes, 0);
-                TransitionBufferState(&instanceBuffer_, &instanceBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmdCull);
+                GPUBuffer* cullInstanceBuffer = InstanceBuffer(cullSlot);
+                ResourceState* cullInstanceState = InstanceBufferState(cullSlot);
+                TransitionBufferState(cullInstanceBuffer, cullInstanceState, ResourceState::COPY_DST, cmdCull);
+                device_->UpdateBuffer(cullInstanceBuffer, ecsSnapshotScratch_.data(), cmdCull, instanceUploadBytes, 0);
+                TransitionBufferState(cullInstanceBuffer, cullInstanceState, ResourceState::SHADER_RESOURCE_COMPUTE, cmdCull);
             }
         }
 
@@ -3419,6 +3525,17 @@ private:
             device_->SubmitCommandLists();
         }
 
+        frameSlot.submitTokens = submitTokens;
+        frameSlot.submitted = submitTokens.validMask != 0;
+        if (frameSlot.submitted)
+        {
+            (void)taggedAllocator_.Allocate<uint8_t>(frameSlot.submitTag, 1, 0);
+        }
+        else
+        {
+            RetireFrameSlot(frameSlot);
+        }
+
         if (useAsyncComputeForCull)
         {
             if (tokenSubmissionEnabled_)
@@ -3481,7 +3598,7 @@ private:
                                           (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable);
 
         TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
-        TransitionBufferState(&instanceBuffer_, &instanceBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
+        TransitionBufferState(InstanceBuffer(cullSlot), InstanceBufferState(cullSlot), ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
         TransitionBufferState(&instanceVisibleBuffer_, &instanceVisibleBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(visibleCommandIndicesBuffer, VisibleCommandIndicesBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(visibleCountBuffer, VisibleCountBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
@@ -3552,7 +3669,7 @@ private:
         // Keep resources that async cull can touch in compute-compatible states.
         // This avoids compute-queue transitions from graphics-only states (for example: INDEX).
         TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
-        TransitionBufferState(&instanceBuffer_, &instanceBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
+        TransitionBufferState(InstanceBuffer(slot), InstanceBufferState(slot), ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
         TransitionBufferState(VisibleCommandIndicesBuffer(slot), VisibleCommandIndicesBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(VisibleCountBuffer(slot), VisibleCountBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(MeshDispatchArgsBuffer(slot), MeshDispatchArgsBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
@@ -3746,6 +3863,7 @@ private:
 
     void BindCommonResources(CommandList cmd, uint32_t slot)
     {
+        GPUBuffer* instanceBuffer = InstanceBuffer(slot);
         GPUBuffer* visibleCommandIndicesBuffer = VisibleCommandIndicesBuffer(slot);
         GPUBuffer* visibleCountBuffer = VisibleCountBuffer(slot);
         GPUBuffer* visibleArgsBuffer = VisibleArgsBuffer(slot);
@@ -3770,7 +3888,7 @@ private:
         }
 
         device_->BindResource(&vertexBuffer_, 0, cmd);
-        device_->BindResource(&instanceBuffer_, 1, cmd);
+        device_->BindResource(instanceBuffer, 1, cmd);
         device_->BindResource(&commandBuffer_, 2, cmd);
         device_->BindResource(&clusterTemplateBuffer_, 3, cmd);
         device_->BindResource(&templateVerticesBuffer_, 4, cmd);
@@ -3858,7 +3976,7 @@ private:
         {
             autoRun_ = false;
             ResetCameraToScene();
-            SDL_Log("[WickedVisibilityPipelineBenchmark] auto-run finished");
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] auto-run finished");
             return;
         }
 
@@ -3894,7 +4012,7 @@ private:
         {
             autoRun_ = false;
             ResetCameraToScene();
-            SDL_Log("[WickedVisibilityPipelineBenchmark] auto-run completed all %zu combos", combos_.size());
+            SDL_Log("[WickedVisibilityPipelineFrameBufferedBenchmark] auto-run completed all %zu combos", combos_.size());
         }
     }
 
@@ -3968,7 +4086,7 @@ private:
             << "\n";
 
         SDL_Log(
-            "[WickedVisibilityPipelineBenchmark] csv row | suite=%s pipeline=%s scenario=%s tier=%s avg_gpu=%.3fms p95=%.3fms",
+            "[WickedVisibilityPipelineFrameBufferedBenchmark] csv row | suite=%s pipeline=%s scenario=%s tier=%s avg_gpu=%.3fms p95=%.3fms",
             SuiteName(combo.suite),
             PipelineName(combo.pipeline),
             ScenarioName(combo.scenario),
@@ -3981,12 +4099,13 @@ private:
     {
         const double fps = metrics.cpuMs > 0.0 ? (1000.0 / metrics.cpuMs) : 0.0;
         const double tierMillions = static_cast<double>(kTierPresets[activeTier_].targetTriangles) / 1'000'000.0;
+        const uint32_t inFlightSlots = CountInFlightSlots();
 
         char title[512];
         std::snprintf(
             title,
             sizeof(title),
-            "Visibility Benchmark [%s] | %s | %s | %s | %s | tier %s (%.1fM tris) | cmd %u vis %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | async=%s tokens=%s hiz=%s flecs=%s parity=%s auto=%s",
+            "Visibility Benchmark FB [%s] | %s | %s | %s | %s | tier %s (%.1fM tris) | cmd %u vis %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | inflight %u/%u | async=%s tokens=%s hiz=%s flecs=%s parity=%s auto=%s",
             BackendName(),
             SuiteName(activeSuite_),
             PipelineName(activePipeline_),
@@ -4002,6 +4121,8 @@ private:
             metrics.gpuCullMs,
             metrics.gpuDrawMs,
             metrics.gpuFrameMs,
+            inFlightSlots,
+            kFrameSlotCount,
             IsAsyncCullActiveForCurrentMode() ? "on" : "off",
             tokenSubmissionEnabled_ ? "on" : "off",
             hiZOcclusionEnabled_ ? "on" : "off",
@@ -4061,7 +4182,7 @@ private:
     Texture hiZTexture_ = {};
 
     GPUBuffer vertexBuffer_ = {};
-    GPUBuffer instanceBuffer_ = {};
+    std::array<GPUBuffer, kCullOutputSlotCount> instanceBuffers_ = {};
     GPUBuffer commandBuffer_ = {};
     GPUBuffer clusterTemplateBuffer_ = {};
     GPUBuffer templateVerticesBuffer_ = {};
@@ -4088,7 +4209,7 @@ private:
     std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> visibleCountReadback_ = {};
 
     ResourceState vertexBufferState_ = ResourceState::SHADER_RESOURCE;
-    ResourceState instanceBufferState_ = ResourceState::SHADER_RESOURCE;
+    std::array<ResourceState, kCullOutputSlotCount> instanceBufferStates_ = {};
     ResourceState drawCommandIndexBufferState_ = ResourceState::VERTEX_BUFFER;
     ResourceState clusterIndexBufferState_ = ResourceState::INDEX_BUFFER;
     ResourceState baseCountBufferState_ = ResourceState::INDIRECT_ARGUMENT;
@@ -4148,10 +4269,13 @@ private:
     float cullPaddingPixels_ = 6.0f;
     float hiZOcclusionBias_ = 0.0025f;
     bool asyncComputeEnabled_ = true;
-    bool tokenSubmissionEnabled_ = false;
+    bool tokenSubmissionEnabled_ = true;
     bool bindlessDescriptorFailureLogged_ = false;
     bool ecsMotionEnabled_ = true;
-    bool benchmarkParityMode_ = false;
+    wicked_subset::FrameTaggedHeapAllocator taggedAllocator_;
+    std::array<FrameSlot, kFrameSlotCount> frameSlots_ = {};
+    uint32_t frameSlotCursor_ = 0;
+    uint64_t nextFrameId_ = 1;
     bool cullHistoryValid_ = false;
     uint32_t cullReadSlot_ = 0u;
     uint32_t cullWriteSlot_ = 1u;
@@ -4169,6 +4293,7 @@ private:
     float mouseLookSensitivity_ = 0.0025f;
     float cameraMoveSpeed_ = 22.0f;
 
+    bool benchmarkParityMode_ = false;
     bool autoRun_ = false;
     bool timedBenchmarkMode_ = false;
     uint64_t timedBenchmarkStartTick_ = 0;
@@ -4203,7 +4328,7 @@ int main(int argc, char** argv)
 
     SetWorkingDirectoryToExecutableDir(argv != nullptr ? argv[0] : nullptr);
 
-    WickedVisibilityPipelineBenchmark app;
+    WickedVisibilityPipelineFrameBufferedBenchmark app;
     if (!app.Initialize())
     {
         app.Shutdown();

@@ -353,6 +353,151 @@ if(WICKED_FULL_ENABLE_MMGR AND NOT WICKED_BUILD_FULL_ENGINE)
 endif()
 message(STATUS "MMGR status: subset=${WICKED_SUBSET_ENABLE_MMGR}, full=${WICKED_FULL_ENABLE_MMGR}, coverage=${WICKED_MMGR_COVERAGE_MODE}")
 
+option(WICKED_ENABLE_MIMALLOC_OVERRIDE
+    "Use local mimalloc checkout to override malloc/free/new/delete for final app targets"
+    ON
+)
+set(WICKED_MIMALLOC_SOURCE_DIR "" CACHE PATH "Path to local mimalloc source directory (must contain CMakeLists.txt and include/mimalloc.h)")
+
+if(WICKED_ENABLE_MIMALLOC_OVERRIDE)
+    if(WICKED_SUBSET_ENABLE_MMGR OR WICKED_FULL_ENABLE_MMGR)
+        message(FATAL_ERROR
+            "WICKED_ENABLE_MIMALLOC_OVERRIDE=ON conflicts with MMGR global override mode "
+            "(WI_ENGINECONFIG_ENABLE_MMGR / WICKED_*_ENABLE_MMGR). Disable MMGR to use mimalloc override."
+        )
+    endif()
+
+    set(_wicked_mimalloc_candidates)
+    if(NOT WICKED_MIMALLOC_SOURCE_DIR STREQUAL "")
+        list(APPEND _wicked_mimalloc_candidates "${WICKED_MIMALLOC_SOURCE_DIR}")
+    endif()
+    list(APPEND _wicked_mimalloc_candidates
+        "${WICKED_ROOT_DIR}/mimalloc"
+        "${WICKED_ROOT_DIR}/mimalloc-main"
+        "${WICKED_ROOT_DIR}/mimalloc-main 2"
+    )
+
+    set(_wicked_mimalloc_resolved_dir "")
+    foreach(_wicked_candidate IN LISTS _wicked_mimalloc_candidates)
+        if(EXISTS "${_wicked_candidate}/CMakeLists.txt" AND EXISTS "${_wicked_candidate}/include/mimalloc.h")
+            set(_wicked_mimalloc_resolved_dir "${_wicked_candidate}")
+            break()
+        endif()
+    endforeach()
+
+    if(_wicked_mimalloc_resolved_dir STREQUAL "")
+        message(FATAL_ERROR
+            "WICKED_ENABLE_MIMALLOC_OVERRIDE is ON, but no local mimalloc checkout was found.\n"
+            "Set WICKED_MIMALLOC_SOURCE_DIR to a directory containing CMakeLists.txt and include/mimalloc.h."
+        )
+    endif()
+
+    set(WICKED_MIMALLOC_SOURCE_DIR "${_wicked_mimalloc_resolved_dir}" CACHE PATH
+        "Path to local mimalloc source directory (must contain CMakeLists.txt and include/mimalloc.h)" FORCE
+    )
+    message(STATUS "Wicked: configuring local mimalloc from '${WICKED_MIMALLOC_SOURCE_DIR}'")
+
+    # Keep official mimalloc override mode enabled; we wire it at final executable targets.
+    set(MI_OVERRIDE ON CACHE BOOL "" FORCE)
+    set(MI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(MI_BUILD_SHARED ON CACHE BOOL "" FORCE)
+    set(MI_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    set(MI_BUILD_OBJECT ON CACHE BOOL "" FORCE)
+    set(MI_USE_CXX OFF CACHE BOOL "" FORCE)
+    if(WIN32)
+        set(MI_WIN_REDIRECT ON CACHE BOOL "" FORCE)
+    endif()
+
+    if(MSVC AND WIN32)
+        # Windows redirection requires the DLL CRT (/MD, /MDd).
+        set(CMAKE_MSVC_RUNTIME_LIBRARY
+            "$<$<CONFIG:Debug>:MultiThreadedDebugDLL>$<$<NOT:$<CONFIG:Debug>>:MultiThreadedDLL>"
+            CACHE STRING "MSVC runtime library" FORCE
+        )
+        message(STATUS "Wicked: mimalloc override on Windows uses /MDd (Debug) and /MD (non-Debug).")
+    endif()
+
+    add_subdirectory("${WICKED_MIMALLOC_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/_deps/wicked_mimalloc" EXCLUDE_FROM_ALL)
+
+    set(WICKED_MIMALLOC_VERIFY_SOURCE "${WICKED_ROOT_DIR}/WickedEngine/wiMimallocStartup.cpp")
+
+    add_library(wicked_mimalloc_override INTERFACE)
+    target_compile_definitions(wicked_mimalloc_override INTERFACE WICKED_USE_MIMALLOC_OVERRIDE=1)
+    target_sources(wicked_mimalloc_override INTERFACE "${WICKED_MIMALLOC_VERIFY_SOURCE}")
+
+    if(WIN32)
+        target_link_libraries(wicked_mimalloc_override INTERFACE mimalloc)
+    else()
+        # Prefer the official static full-project override on Unix-like platforms:
+        # the single mimalloc object should be linked into the final executable.
+        target_sources(wicked_mimalloc_override INTERFACE $<TARGET_OBJECTS:mimalloc-obj>)
+        target_link_libraries(wicked_mimalloc_override INTERFACE mimalloc-static)
+    endif()
+
+    if(WIN32)
+        set(WICKED_MIMALLOC_RUNTIME_COPY_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/wicked_copy_mimalloc_runtime.cmake")
+        file(WRITE "${WICKED_MIMALLOC_RUNTIME_COPY_SCRIPT}" [=[
+if(NOT DEFINED src OR NOT DEFINED dst)
+  message(FATAL_ERROR "wicked_copy_mimalloc_runtime.cmake requires -Dsrc and -Ddst")
+endif()
+
+file(TO_CMAKE_PATH "${src}" _src)
+file(TO_CMAKE_PATH "${dst}" _dst)
+
+if(_src STREQUAL _dst)
+  return()
+endif()
+
+foreach(_name IN ITEMS
+  "mimalloc.dll"
+  "mimalloc-redirect.dll"
+  "mimalloc-redirect32.dll"
+  "mimalloc-redirect64.dll"
+  "mimalloc-redirect-arm64.dll"
+  "mimalloc-redirect-arm64ec.dll"
+)
+  if(EXISTS "${_src}/${_name}")
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_src}/${_name}" "${_dst}/${_name}")
+  endif()
+endforeach()
+]=])
+    endif()
+endif()
+
+function(wicked_use_mimalloc_override target_name)
+    if(NOT WICKED_ENABLE_MIMALLOC_OVERRIDE)
+        return()
+    endif()
+
+    if(NOT TARGET "${target_name}")
+        message(FATAL_ERROR "wicked_use_mimalloc_override() called for unknown target: ${target_name}")
+    endif()
+
+    get_target_property(_wicked_target_type "${target_name}" TYPE)
+    if(NOT _wicked_target_type STREQUAL "EXECUTABLE")
+        message(FATAL_ERROR
+            "wicked_use_mimalloc_override() must be attached to final executable targets. "
+            "Target '${target_name}' has type '${_wicked_target_type}'."
+        )
+    endif()
+
+    target_link_libraries("${target_name}" PRIVATE wicked_mimalloc_override)
+
+    if(WIN32)
+        add_custom_command(
+            TARGET "${target_name}" POST_BUILD
+            COMMAND "${CMAKE_COMMAND}"
+                -Dsrc="$<TARGET_FILE_DIR:mimalloc>"
+                -Ddst="$<TARGET_FILE_DIR:${target_name}>"
+                -P "${WICKED_MIMALLOC_RUNTIME_COPY_SCRIPT}"
+            COMMENT "Copy mimalloc runtime DLLs next to ${target_name}"
+            VERBATIM
+        )
+    endif()
+
+    message(STATUS "Wicked: mimalloc allocator override enabled for '${target_name}'")
+endfunction()
+
 if(WICKED_ENABLE_ASAN)
     set(SANITIZE_OPTIONS "-fsanitize=address")
 endif()
@@ -494,4 +639,22 @@ if (WICKED_BUILD_FULL_ENGINE)
     if (WICKED_WINDOWS_TEMPLATE)
         add_subdirectory(Samples/Template_Windows)
     endif()
+endif()
+
+if(WICKED_ENABLE_MIMALLOC_OVERRIDE)
+    # Apply allocator override at final executable level for graphics-subset sample apps.
+    # If you add your own sample executable, call:
+    #   wicked_use_mimalloc_override(<your_target>)
+    set(WICKED_MIMALLOC_FINAL_TARGETS
+        wicked_subset_cube_demo
+        wicked_subset_cube_indirect_compare_demo
+        wicked_subset_cube_indirect_compare_frame_buffered_demo
+        wicked_subset_visibility_pipeline_benchmark
+        wicked_subset_visibility_pipeline_frame_buffered_benchmark
+    )
+    foreach(_wicked_mimalloc_target IN LISTS WICKED_MIMALLOC_FINAL_TARGETS)
+        if(TARGET "${_wicked_mimalloc_target}")
+            wicked_use_mimalloc_override("${_wicked_mimalloc_target}")
+        endif()
+    endforeach()
 endif()

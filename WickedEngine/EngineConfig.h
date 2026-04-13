@@ -51,7 +51,7 @@
 #endif
 
 #ifndef WI_ENGINECONFIG_SUBSET_BACKEND
-#define WI_ENGINECONFIG_SUBSET_BACKEND 0
+#define WI_ENGINECONFIG_SUBSET_BACKEND 2
 #endif
 
 #if WI_ENGINECONFIG_SUBSET_BACKEND < WI_ENGINECONFIG_SUBSET_BACKEND_AUTO || \
@@ -75,6 +75,17 @@
 // 1 = skip SDL_Quit() in app shutdown to avoid close-time stalls in platform teardown.
 #ifndef WI_ENGINECONFIG_SUBSET_SKIP_SDL_QUIT
 #define WI_ENGINECONFIG_SUBSET_SKIP_SDL_QUIT 0
+#endif
+
+// Graphics device frame-buffer ring size used for backend allocator/fence context arrays.
+// Increase this when testing deep engine-owned overlap (for example 16 in-flight frames).
+// Note: larger values increase CPU/GPU bookkeeping memory.
+#ifndef WI_ENGINECONFIG_GRAPHICSDEVICE_BUFFERCOUNT
+#define WI_ENGINECONFIG_GRAPHICSDEVICE_BUFFERCOUNT 16
+#endif
+
+#if WI_ENGINECONFIG_GRAPHICSDEVICE_BUFFERCOUNT < 2
+#error "EngineConfig.h: WI_ENGINECONFIG_GRAPHICSDEVICE_BUFFERCOUNT must be >= 2."
 #endif
 
 #if WI_ENGINECONFIG_WICKED_CMAKE_BUILD

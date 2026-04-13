@@ -9,15 +9,19 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -65,6 +69,7 @@
 #include "wiShaderCompiler.h"
 
 #include "platform_window_helpers.h"
+#include "wicked_subset_frame_buffering.h"
 
 #ifndef WICKED_SUBSET_CUBE_INDIRECT_COMPARE_SHADER_PATH
 #define WICKED_SUBSET_CUBE_INDIRECT_COMPARE_SHADER_PATH ""
@@ -107,10 +112,113 @@ using wi::ResourceMiscFlag;
 using wi::Shader;
 using wi::ShaderModel;
 using wi::ShaderStage;
+using wi::SubmissionTokenSet;
 using wi::SwapChain;
 using wi::SwapChainDesc;
 using wi::Usage;
 using wi::ValidationMode;
+
+template<typename T>
+class BlockingQueue
+{
+public:
+    explicit BlockingQueue(size_t capacity)
+        : capacity_(capacity)
+    {
+    }
+
+    bool Push(const T& value)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cvNotFull_.wait(lock, [this]() {
+            return shutdown_ || queue_.size() < capacity_;
+        });
+        if (shutdown_)
+        {
+            return false;
+        }
+        queue_.push_back(value);
+        cvNotEmpty_.notify_one();
+        return true;
+    }
+    bool TryPush(const T& value)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (shutdown_ || queue_.size() >= capacity_)
+        {
+            return false;
+        }
+        queue_.push_back(value);
+        cvNotEmpty_.notify_one();
+        return true;
+    }
+
+    bool Pop(T* out)
+    {
+        if (out == nullptr)
+            return false;
+
+        std::unique_lock<std::mutex> lock(mutex_);
+        cvNotEmpty_.wait(lock, [this]() {
+            return shutdown_ || !queue_.empty();
+        });
+        if (queue_.empty())
+        {
+            return false;
+        }
+        *out = std::move(queue_.front());
+        queue_.pop_front();
+        cvNotFull_.notify_one();
+        return true;
+    }
+
+    bool TryPop(T* out)
+    {
+        if (out == nullptr)
+            return false;
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (queue_.empty())
+        {
+            return false;
+        }
+        *out = std::move(queue_.front());
+        queue_.pop_front();
+        cvNotFull_.notify_one();
+        return true;
+    }
+
+    size_t Size() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return queue_.size();
+    }
+
+    void Shutdown()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            shutdown_ = true;
+        }
+        cvNotEmpty_.notify_all();
+        cvNotFull_.notify_all();
+    }
+
+    void Reset()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.clear();
+        shutdown_ = false;
+    }
+
+private:
+    size_t capacity_ = 0;
+    mutable std::mutex mutex_;
+    std::condition_variable cvNotEmpty_;
+    std::condition_variable cvNotFull_;
+    std::deque<T> queue_;
+    bool shutdown_ = false;
+};
 
 #if defined(WICKED_MMGR_ENABLED)
 void* SDLCALL SDLMmgrMalloc(size_t size)
@@ -444,12 +552,18 @@ void SetWorkingDirectoryToExecutableDir(const char* argv0)
     }
 }
 
-class WickedBackendCubeIndirectCompareDemo
+class WickedBackendCubeIndirectCompareFrameBufferedDemo
 {
 public:
+    WickedBackendCubeIndirectCompareFrameBufferedDemo()
+        : gameQueue_(kFrameSlotCount)
+        , renderQueue_(kFrameSlotCount)
+    {
+    }
+
     bool Initialize()
     {
-        SDL_Log("[WickedBackendCubeIndirectCompareDemo] Initialize begin");
+        SDL_Log("[WickedBackendCubeIndirectCompareFrameBufferedDemo] Initialize begin");
 
         if (!SDL_Init(SDL_INIT_VIDEO))
         {
@@ -461,7 +575,7 @@ public:
 #if defined(__APPLE__) && WICKED_SUBSET_USE_METAL
         flags = static_cast<SDL_WindowFlags>(flags | SDL_WINDOW_METAL);
 #endif
-        window_ = SDL_CreateWindow("Wicked Cube Indirect Compare", 1280, 720, flags);
+        window_ = SDL_CreateWindow("Wicked Cube Indirect Compare (Frame Buffered)", 1280, 720, flags);
         if (window_ == nullptr)
         {
             std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -530,8 +644,14 @@ public:
             return false;
         }
 
+        if (!StartPipelineThreads())
+        {
+            std::fprintf(stderr, "Failed to start game/render pipeline threads\n");
+            return false;
+        }
+
         SDL_Log(
-            "[WickedBackendCubeIndirectCompareDemo] initialized, cubes=%u, mesh=%s, mesh_count=%s",
+            "[WickedBackendCubeIndirectCompareFrameBufferedDemo] initialized, cubes=%u, mesh=%s, mesh_count=%s",
             cubeCount_,
             supportsMeshShaders_ ? "yes" : "no",
             supportsMeshIndirectCount_ ? "yes" : "no");
@@ -543,12 +663,14 @@ public:
         bool running = true;
         uint64_t prevTick = SDL_GetPerformanceCounter();
         const uint64_t perfFreq = SDL_GetPerformanceFrequency();
-
-        double fpsAccum = 0.0;
-        uint32_t fpsFrames = 0;
+        uint64_t titleTickBegin = prevTick;
+        uint32_t submittedFramesForTitle = 0;
 
         while (running)
         {
+            ReapCompletedFrameSlots(false);
+            submittedFramesForTitle += PumpExecuteQueue(1);
+
             bool resizeRequested = false;
             SDL_Event event;
             while (SDL_PollEvent(&event))
@@ -597,7 +719,7 @@ public:
                     {
                         autoCycleModes_ = !autoCycleModes_;
                         modeTimerSeconds_ = 0.0;
-                        SDL_Log("[WickedBackendCubeIndirectCompareDemo] auto-cycle %s", autoCycleModes_ ? "enabled" : "disabled");
+                        SDL_Log("[WickedBackendCubeIndirectCompareFrameBufferedDemo] auto-cycle %s", autoCycleModes_ ? "enabled" : "disabled");
                     }
                     else if (event.key.key == SDLK_UP)
                     {
@@ -622,11 +744,15 @@ public:
 
             if (resizeRequested)
             {
-                if (!RecreateSwapchain())
+                if (!RestartPipelineForResize())
                 {
                     running = false;
                     break;
                 }
+                prevTick = SDL_GetPerformanceCounter();
+                titleTickBegin = prevTick;
+                submittedFramesForTitle = 0;
+                continue;
             }
 
             const uint64_t nowTick = SDL_GetPerformanceCounter();
@@ -644,51 +770,84 @@ public:
                 }
             }
 
-            double cpuFrameMs = 0.0;
-            if (!RenderFrame(dt, &cpuFrameMs))
+            FrameSlot* slot = TryAcquireFrameSlot();
+            if (slot != nullptr)
             {
-                running = false;
-                break;
-            }
-            AccumulateModeStats(rawDt, cpuFrameMs);
+                slot->mode = drawMode_;
+                slot->visibleCubeCount = visibleCubeCount_;
+                slot->rawDt = rawDt;
 
-            fpsAccum += rawDt;
-            ++fpsFrames;
-            if (fpsAccum >= 0.5)
+                GameTask task;
+                task.slot = slot;
+                task.dt = dt;
+                task.rawDt = rawDt;
+                if (!gameQueue_.TryPush(task))
+                {
+                    // Keep frame pacing smooth: don't block main thread on a saturated queue.
+                    ++queueBackpressureSkips_;
+                    RetireFrameSlot(*slot);
+                    SDL_Delay(0);
+                }
+            }
+            else
             {
-                const double fps = static_cast<double>(fpsFrames) / fpsAccum;
+                // No free slot currently: avoid hard blocking and keep frame pacing smooth.
+                ++slotWaitCount_;
+                SDL_Delay(0);
+            }
+
+            submittedFramesForTitle += PumpExecuteQueue(1);
+
+            const uint64_t titleNowTick = SDL_GetPerformanceCounter();
+            const double titleWindowSeconds = static_cast<double>(titleNowTick - titleTickBegin) / static_cast<double>(perfFreq);
+            if (titleWindowSeconds >= 0.5)
+            {
+                const double fps = static_cast<double>(submittedFramesForTitle) / std::max(1e-9, titleWindowSeconds);
                 const ModeStats& stats = modeStats_[ModeToIndex(drawMode_)];
                 const double avgCpuMs = stats.frames > 0 ? (stats.cpuMsAccum / static_cast<double>(stats.frames)) : 0.0;
+                const uint32_t inFlightSlots = CountInFlightSlots();
 
-                char title[320];
+                char title[384];
                 std::snprintf(
                     title,
                     sizeof(title),
-                    "Wicked Cube Compare (%s) | %s | cubes %u/%u | FPS %.1f | CPU %.2f ms | 1/2/3/4/5/6 mode, Up/Down cubes, Space auto",
+                    "Wicked Cube Compare FB (%s) | %s | cubes %u/%u | FPS %.1f | CPU %.2f ms | inflight %u/%u | pipe sim/prep=%zu/%zu | waits=%llu backp=%llu | 1/2/3/4/5/6 mode, Up/Down cubes, Space auto",
                     BackendName(),
                     DrawModeName(drawMode_),
                     visibleCubeCount_,
                     cubeCount_,
                     fps,
-                    avgCpuMs);
+                    avgCpuMs,
+                    inFlightSlots,
+                    kFrameSlotCount,
+                    gameQueue_.Size(),
+                    renderQueue_.Size(),
+                    static_cast<unsigned long long>(slotWaitCount_),
+                    static_cast<unsigned long long>(queueBackpressureSkips_));
                 SDL_SetWindowTitle(window_, title);
 
-                fpsAccum = 0.0;
-                fpsFrames = 0;
+                titleTickBegin = titleNowTick;
+                submittedFramesForTitle = 0;
             }
         }
 
+        StopPipelineThreads(true);
         LogModeStats(drawMode_);
     }
 
     void Shutdown()
     {
-        SDL_Log("[WickedBackendCubeIndirectCompareDemo] Shutdown begin");
+        SDL_Log("[WickedBackendCubeIndirectCompareFrameBufferedDemo] Shutdown begin");
+
+        StopPipelineThreads(true);
 
         if (device_ != nullptr)
         {
+            ReapCompletedFrameSlots(true);
             device_->WaitForGPU();
         }
+
+        taggedAllocator_.Reset();
 
         pipeline_ = {};
         pipelineMesh_ = {};
@@ -721,11 +880,11 @@ public:
         }
 
 #if defined(WICKED_MMGR_ENABLED) && WI_ENGINECONFIG_SUBSET_SKIP_SDL_QUIT
-        SDL_Log("[WickedBackendCubeIndirectCompareDemo] SDL_Quit skipped (MMGR+config)");
+        SDL_Log("[WickedBackendCubeIndirectCompareFrameBufferedDemo] SDL_Quit skipped (MMGR+config)");
 #else
         SDL_Quit();
 #endif
-        SDL_Log("[WickedBackendCubeIndirectCompareDemo] Shutdown end");
+        SDL_Log("[WickedBackendCubeIndirectCompareFrameBufferedDemo] Shutdown end");
     }
 
 private:
@@ -746,6 +905,33 @@ private:
         double frameSecondsAccum = 0.0;
         double cpuMsAccum = 0.0;
         uint64_t frames = 0;
+    };
+
+    struct FrameSlot
+    {
+        bool inUse = false;
+        bool submitted = false;
+        bool failed = false;
+        uint64_t frameId = 0;
+        uint64_t updateTag = 0;
+        uint64_t preparedTag = 0;
+        uint64_t submitTag = 0;
+        DrawMode mode = DrawMode::Draw;
+        uint32_t visibleCubeCount = 0;
+        double rawDt = 0.0;
+        uint64_t cpuFrameBeginTick = 0;
+        SceneCB sceneCB = {};
+        bool sceneCBValid = false;
+        SubmissionTokenSet submitTokens = {};
+    };
+
+    static constexpr uint32_t kFrameSlotCount = 16;
+
+    struct GameTask
+    {
+        FrameSlot* slot = nullptr;
+        float dt = 0.0f;
+        double rawDt = 0.0;
     };
 
     static constexpr uint32_t ModeToIndex(DrawMode mode)
@@ -818,7 +1004,7 @@ private:
         if (!IsDrawModeSupported(mode))
         {
             SDL_Log(
-                "[WickedBackendCubeIndirectCompareDemo] mode %s is not supported on backend %s",
+                "[WickedBackendCubeIndirectCompareFrameBufferedDemo] mode %s is not supported on backend %s",
                 DrawModeName(mode),
                 BackendName());
             return;
@@ -832,7 +1018,7 @@ private:
         LogModeStats(drawMode_);
         drawMode_ = mode;
         modeTimerSeconds_ = 0.0;
-        SDL_Log("[WickedBackendCubeIndirectCompareDemo] mode -> %s", DrawModeName(drawMode_));
+        SDL_Log("[WickedBackendCubeIndirectCompareFrameBufferedDemo] mode -> %s", DrawModeName(drawMode_));
     }
 
     void SetVisibleCubeCount(uint32_t count)
@@ -843,12 +1029,12 @@ private:
             return;
         }
         visibleCubeCount_ = clamped;
-        SDL_Log("[WickedBackendCubeIndirectCompareDemo] visible cubes -> %u", visibleCubeCount_);
+        SDL_Log("[WickedBackendCubeIndirectCompareFrameBufferedDemo] visible cubes -> %u", visibleCubeCount_);
     }
 
-    void AccumulateModeStats(double frameSeconds, double cpuMs)
+    void AccumulateModeStats(DrawMode mode, double frameSeconds, double cpuMs)
     {
-        ModeStats& stats = modeStats_[ModeToIndex(drawMode_)];
+        ModeStats& stats = modeStats_[ModeToIndex(mode)];
         stats.frameSecondsAccum += frameSeconds;
         stats.cpuMsAccum += cpuMs;
         ++stats.frames;
@@ -865,7 +1051,7 @@ private:
         const double fps = static_cast<double>(stats.frames) / std::max(1e-9, stats.frameSecondsAccum);
         const double avgCpuMs = stats.cpuMsAccum / static_cast<double>(stats.frames);
         SDL_Log(
-            "[WickedBackendCubeIndirectCompareDemo] mode summary | %s | frames=%llu | FPS=%.2f | CPU(ms)=%.3f | cubes=%u",
+            "[WickedBackendCubeIndirectCompareFrameBufferedDemo] mode summary | %s | frames=%llu | FPS=%.2f | CPU(ms)=%.3f | cubes=%u",
             DrawModeName(mode),
             static_cast<unsigned long long>(stats.frames),
             fps,
@@ -875,12 +1061,77 @@ private:
         stats = {};
     }
 
-    bool RenderFrame(float dt, double* cpuFrameMs)
+    void RetireFrameSlot(FrameSlot& slot)
+    {
+        taggedAllocator_.ReleaseTag(slot.updateTag);
+        taggedAllocator_.ReleaseTag(slot.preparedTag);
+        taggedAllocator_.ReleaseTag(slot.submitTag);
+        slot = {};
+    }
+
+    void ReapCompletedFrameSlots(bool wait_for_all)
     {
         if (device_ == nullptr)
+            return;
+
+        for (FrameSlot& slot : frameSlots_)
         {
-            return false;
+            if (!slot.inUse || !slot.submitted)
+                continue;
+
+            if (wait_for_all || wicked_subset::IsTokenSetComplete(*device_, slot.submitTokens))
+            {
+                if (wait_for_all)
+                {
+                    wicked_subset::WaitTokenSet(*device_, slot.submitTokens);
+                }
+                RetireFrameSlot(slot);
+            }
         }
+    }
+
+    FrameSlot* TryAcquireFrameSlot()
+    {
+        ReapCompletedFrameSlots(false);
+
+        for (uint32_t i = 0; i < kFrameSlotCount; ++i)
+        {
+            FrameSlot& slot = frameSlots_[frameSlotCursor_];
+            frameSlotCursor_ = (frameSlotCursor_ + 1u) % kFrameSlotCount;
+
+            if (!slot.inUse)
+            {
+                slot.inUse = true;
+                slot.submitted = false;
+                slot.failed = false;
+                slot.frameId = nextFrameId_++;
+                slot.updateTag = wicked_subset::MakeFrameTag(slot.frameId, wicked_subset::FrameAllocTag::UpdateScratch);
+                slot.preparedTag = wicked_subset::MakeFrameTag(slot.frameId, wicked_subset::FrameAllocTag::PreparedPersistent);
+                slot.submitTag = wicked_subset::MakeFrameTag(slot.frameId, wicked_subset::FrameAllocTag::GPUUntilFence);
+                return &slot;
+            }
+        }
+
+        return nullptr;
+    }
+
+    uint32_t CountInFlightSlots() const
+    {
+        uint32_t in_flight = 0;
+        for (const FrameSlot& slot : frameSlots_)
+        {
+            if (slot.inUse)
+            {
+                ++in_flight;
+            }
+        }
+        return in_flight;
+    }
+
+    bool PrepareFrameGame(FrameSlot& slot, float dt, double rawDt)
+    {
+        slot.rawDt = rawDt;
+        slot.cpuFrameBeginTick = SDL_GetPerformanceCounter();
 
         sceneTimeSeconds_ += dt;
         sceneOrbitAngle_ += dt * orbitSpeed_;
@@ -894,23 +1145,28 @@ private:
         const Vec3 target = { 0.0f, 0.0f, 0.0f };
         const float aspect = static_cast<float>(std::max(1u, swapchain_.desc.width)) /
                              static_cast<float>(std::max(1u, swapchain_.desc.height));
-
         const Mat4 view = MatLookAtLH(eye, target, Vec3{ 0.0f, 1.0f, 0.0f });
         const Mat4 proj = MatPerspectiveFovLH(0.92f, aspect, 0.05f, std::max(100.0f, sceneExtent_ * 8.0f));
         const Mat4 viewProj = MatMul(view, proj);
 
-        SceneCB sceneCB = {};
-        std::memcpy(sceneCB.viewProj, viewProj.m, sizeof(sceneCB.viewProj));
-        sceneCB.timeSeconds = sceneTimeSeconds_;
+        std::memcpy(slot.sceneCB.viewProj, viewProj.m, sizeof(slot.sceneCB.viewProj));
+        slot.sceneCB.timeSeconds = sceneTimeSeconds_;
+        slot.sceneCBValid = true;
+        return true;
+    }
 
-        const uint64_t perfFreq = SDL_GetPerformanceFrequency();
-        const uint64_t cpuBegin = SDL_GetPerformanceCounter();
+    bool RecordFrameCommands(FrameSlot& slot)
+    {
+        if (device_ == nullptr || !slot.sceneCBValid)
+        {
+            return false;
+        }
 
         CommandList cmd = device_->BeginCommandList(QUEUE_GRAPHICS);
 
-        if (visibleCubeCount_ != submittedVisibleCubeCount_)
+        if (slot.visibleCubeCount != submittedVisibleCubeCount_)
         {
-            submittedVisibleCubeCount_ = visibleCubeCount_;
+            submittedVisibleCubeCount_ = slot.visibleCubeCount;
             const uint32_t indirectCommandCount = submittedVisibleCubeCount_;
             device_->UpdateBuffer(&indirectCountBuffer_, &indirectCommandCount, cmd, sizeof(indirectCommandCount), 0);
             if (supportsMeshShaders_)
@@ -950,20 +1206,20 @@ private:
         device_->BindViewports(1, &vp, cmd);
         device_->BindScissorRects(1, &scissor, cmd);
         const bool meshMode =
-            drawMode_ == DrawMode::DispatchMesh ||
-            drawMode_ == DrawMode::DispatchMeshIndirect ||
-            drawMode_ == DrawMode::DispatchMeshIndirectCount;
+            slot.mode == DrawMode::DispatchMesh ||
+            slot.mode == DrawMode::DispatchMeshIndirect ||
+            slot.mode == DrawMode::DispatchMeshIndirectCount;
 
         if (meshMode)
         {
             device_->BindPipelineState(&pipelineMesh_, cmd);
-            device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
+            device_->BindDynamicConstantBuffer(slot.sceneCB, 0, cmd);
             device_->BindResource(&vertexBuffer_, 0, cmd);
         }
         else
         {
             device_->BindPipelineState(&pipeline_, cmd);
-            device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
+            device_->BindDynamicConstantBuffer(slot.sceneCB, 0, cmd);
 
             const GPUBuffer* vbs[] = {
                 &vertexBuffer_,
@@ -977,11 +1233,11 @@ private:
             device_->BindVertexBuffers(vbs, 0, 1, strides, offsets, cmd);
         }
 
-        switch (drawMode_)
+        switch (slot.mode)
         {
             case DrawMode::Draw:
             {
-                for (uint32_t i = 0; i < visibleCubeCount_; ++i)
+                for (uint32_t i = 0; i < slot.visibleCubeCount; ++i)
                 {
                     device_->Draw(36, i * 36u, cmd);
                 }
@@ -990,7 +1246,7 @@ private:
             case DrawMode::DrawIndirect:
             {
                 const uint64_t argStride = sizeof(IndirectDrawArgsInstanced);
-                for (uint32_t i = 0; i < visibleCubeCount_; ++i)
+                for (uint32_t i = 0; i < slot.visibleCubeCount; ++i)
                 {
                     device_->DrawInstancedIndirect(&indirectArgsBuffer_, argStride * static_cast<uint64_t>(i), cmd);
                 }
@@ -998,12 +1254,12 @@ private:
             break;
             case DrawMode::DrawIndirectCount:
             {
-                device_->DrawInstancedIndirectCount(&indirectCountArgsBuffer_, 0, &indirectCountBuffer_, 0, visibleCubeCount_, cmd);
+                device_->DrawInstancedIndirectCount(&indirectCountArgsBuffer_, 0, &indirectCountBuffer_, 0, slot.visibleCubeCount, cmd);
             }
             break;
             case DrawMode::DispatchMesh:
             {
-                device_->DispatchMesh(visibleCubeCount_, 1, 1, cmd);
+                device_->DispatchMesh(slot.visibleCubeCount, 1, 1, cmd);
             }
             break;
             case DrawMode::DispatchMeshIndirect:
@@ -1019,16 +1275,163 @@ private:
         }
 
         device_->RenderPassEnd(cmd);
+        return true;
+    }
 
-        (void)device_->SubmitCommandListsExAll();
-
-        const uint64_t cpuEnd = SDL_GetPerformanceCounter();
-        if (cpuFrameMs != nullptr)
+    bool ExecuteFrameSlot(FrameSlot& slot)
+    {
+        if (!slot.inUse)
         {
-            *cpuFrameMs = perfFreq > 0 ? (1000.0 * static_cast<double>(cpuEnd - cpuBegin) / static_cast<double>(perfFreq)) : 0.0;
+            return false;
         }
 
+        if (slot.failed)
+        {
+            RetireFrameSlot(slot);
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(deviceSubmitMutex_);
+            slot.failed = !RecordFrameCommands(slot);
+            if (!slot.failed)
+            {
+                slot.submitTokens = device_->SubmitCommandListsExAll();
+            }
+        }
+        if (slot.failed)
+        {
+            RetireFrameSlot(slot);
+            return false;
+        }
+
+        slot.submitted = slot.submitTokens.validMask != 0;
+
+        taggedAllocator_.ReleaseTag(slot.updateTag);
+        slot.updateTag = 0;
+        taggedAllocator_.ReleaseTag(slot.preparedTag);
+        slot.preparedTag = 0;
+
+        const uint64_t perfFreq = SDL_GetPerformanceFrequency();
+        const uint64_t cpuEnd = SDL_GetPerformanceCounter();
+        const double cpuFrameMs = perfFreq > 0
+            ? (1000.0 * static_cast<double>(cpuEnd - slot.cpuFrameBeginTick) / static_cast<double>(perfFreq))
+            : 0.0;
+        AccumulateModeStats(slot.mode, slot.rawDt, cpuFrameMs);
+
+        if (slot.submitted)
+        {
+            (void)taggedAllocator_.Allocate<uint8_t>(slot.submitTag, 1, 0);
+        }
+        else
+        {
+            RetireFrameSlot(slot);
+        }
         return true;
+    }
+
+    uint32_t PumpExecuteQueue(uint32_t maxCount = UINT32_MAX)
+    {
+        uint32_t processed = 0;
+        FrameSlot* slot = nullptr;
+        while (processed < maxCount && renderQueue_.TryPop(&slot))
+        {
+            if (slot != nullptr)
+            {
+                ExecuteFrameSlot(*slot);
+                ++processed;
+            }
+        }
+        return processed;
+    }
+
+    static int SDLCALL GameThreadEntry(void* userData)
+    {
+        WickedBackendCubeIndirectCompareFrameBufferedDemo* app =
+            static_cast<WickedBackendCubeIndirectCompareFrameBufferedDemo*>(userData);
+        return app != nullptr ? app->GameThreadMain() : 0;
+    }
+
+    int GameThreadMain()
+    {
+        GameTask task = {};
+        while (gameQueue_.Pop(&task))
+        {
+            if (task.slot == nullptr)
+            {
+                continue;
+            }
+
+            task.slot->failed = !PrepareFrameGame(*task.slot, task.dt, task.rawDt);
+            if (!renderQueue_.Push(task.slot))
+            {
+                break;
+            }
+        }
+        return 0;
+    }
+
+    bool StartPipelineThreads()
+    {
+        if (pipelineThreadsRunning_)
+        {
+            return true;
+        }
+
+        gameQueue_.Reset();
+        renderQueue_.Reset();
+
+        gameThread_ = SDL_CreateThread(&WickedBackendCubeIndirectCompareFrameBufferedDemo::GameThreadEntry, "subset_game_thread", this);
+        if (gameThread_ == nullptr)
+        {
+            return false;
+        }
+
+        pipelineThreadsRunning_ = true;
+        return true;
+    }
+
+    void StopPipelineThreads(bool flushExecuteQueue)
+    {
+        if (!pipelineThreadsRunning_)
+        {
+            return;
+        }
+
+        gameQueue_.Shutdown();
+        if (gameThread_ != nullptr)
+        {
+            SDL_WaitThread(gameThread_, nullptr);
+            gameThread_ = nullptr;
+        }
+
+        renderQueue_.Shutdown();
+        if (flushExecuteQueue)
+        {
+            PumpExecuteQueue();
+        }
+
+        for (FrameSlot& slot : frameSlots_)
+        {
+            if (slot.inUse && !slot.submitted)
+            {
+                RetireFrameSlot(slot);
+            }
+        }
+
+        gameQueue_.Reset();
+        renderQueue_.Reset();
+        pipelineThreadsRunning_ = false;
+    }
+
+    bool RestartPipelineForResize()
+    {
+        StopPipelineThreads(true);
+        if (!RecreateSwapchain())
+        {
+            return false;
+        }
+        return StartPipelineThreads();
     }
 
     bool RecreateSwapchain()
@@ -1044,11 +1447,11 @@ private:
         if (width <= 0 || height <= 0)
         {
             // Minimized / zero drawable size: defer swapchain recreation.
-            SDL_Log("[WickedBackendCubeIndirectCompareDemo] RecreateSwapchain deferred (drawable %dx%d)", width, height);
+            SDL_Log("[WickedBackendCubeIndirectCompareFrameBufferedDemo] RecreateSwapchain deferred (drawable %dx%d)", width, height);
             return true;
         }
         SDL_Log(
-            "[WickedBackendCubeIndirectCompareDemo] RecreateSwapchain request: old=%ux%u new=%dx%d valid=%d",
+            "[WickedBackendCubeIndirectCompareFrameBufferedDemo] RecreateSwapchain request: old=%ux%u new=%dx%d valid=%d",
             swapchain_.desc.width,
             swapchain_.desc.height,
             width,
@@ -1060,10 +1463,11 @@ private:
             swapchain_.desc.height == static_cast<uint32_t>(height))
         {
             // Skip redundant recreate when SDL emits duplicate resize events with unchanged size.
-            SDL_Log("[WickedBackendCubeIndirectCompareDemo] RecreateSwapchain skipped (size unchanged)");
+            SDL_Log("[WickedBackendCubeIndirectCompareFrameBufferedDemo] RecreateSwapchain skipped (size unchanged)");
             return true;
         }
 
+        ReapCompletedFrameSlots(true);
         device_->WaitForGPU();
         return CreateSwapchain();
     }
@@ -1426,11 +1830,24 @@ private:
     float orbitSpeed_ = 0.20f;
     float sceneExtent_ = 16.0f;
 
+    wicked_subset::FrameTaggedHeapAllocator taggedAllocator_;
+    std::array<FrameSlot, kFrameSlotCount> frameSlots_ = {};
+    uint32_t frameSlotCursor_ = 0;
+    uint64_t nextFrameId_ = 1;
+
     DrawMode drawMode_ = DrawMode::Draw;
     std::array<ModeStats, kDrawModeCount> modeStats_ = {};
     bool autoCycleModes_ = false;
     double modeTimerSeconds_ = 0.0;
     double modeAutoSwitchSeconds_ = 6.0;
+
+    BlockingQueue<GameTask> gameQueue_;
+    BlockingQueue<FrameSlot*> renderQueue_;
+    SDL_Thread* gameThread_ = nullptr;
+    bool pipelineThreadsRunning_ = false;
+    std::mutex deviceSubmitMutex_;
+    uint64_t slotWaitCount_ = 0;
+    uint64_t queueBackpressureSkips_ = 0;
 };
 
 } // namespace
@@ -1449,7 +1866,7 @@ int main(int argc, char** argv)
 
     SetWorkingDirectoryToExecutableDir(argv != nullptr ? argv[0] : nullptr);
 
-    WickedBackendCubeIndirectCompareDemo app;
+    WickedBackendCubeIndirectCompareFrameBufferedDemo app;
     if (!app.Initialize())
     {
         app.Shutdown();

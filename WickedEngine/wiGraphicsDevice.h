@@ -114,7 +114,7 @@ namespace wi
 	class GraphicsDevice
 	{
 	protected:
-		static constexpr uint32_t BUFFERCOUNT = 2;
+		static constexpr uint32_t BUFFERCOUNT = WI_ENGINECONFIG_GRAPHICSDEVICE_BUFFERCOUNT;
 		uint64_t FRAMECOUNT = 0;
 		size_t SHADER_IDENTIFIER_SIZE = 0;
 		size_t TOPLEVEL_ACCELERATION_STRUCTURE_INSTANCE_SIZE = 0;
