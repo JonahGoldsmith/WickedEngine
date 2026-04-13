@@ -106,6 +106,19 @@ namespace wi
 		
 		uint64_t frame_fence_values[BUFFERCOUNT] = {};
 		NS::SharedPtr<MTL::SharedEvent> frame_fence[BUFFERCOUNT][QUEUE_COUNT];
+		mutable std::mutex submission_token_locker;
+		mutable uint64_t submission_token_values[QUEUE_COUNT] = {};
+		NS::SharedPtr<MTL::SharedEvent> submission_token_events[QUEUE_COUNT];
+		struct UploadJob
+		{
+			UploadTicket ticket = {};
+			NS::SharedPtr<MTL::Buffer> staging_buffer;
+			NS::SharedPtr<MTL4::CommandBuffer> commandbuffer;
+			NS::SharedPtr<MTL4::CommandAllocator> commandallocator;
+		};
+		mutable std::mutex upload_locker;
+		mutable std::deque<UploadJob> inflight_uploads;
+		mutable SubmissionTokenSet pending_implicit_uploads = {};
 		
 		NS::SharedPtr<MTL4::ArgumentTableDescriptor> argument_table_desc;
 
@@ -326,6 +339,11 @@ namespace wi
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
 		void precopy(CommandList cmd);
+		SubmissionToken allocate_submission_token(QUEUE_TYPE queue) const;
+		void retire_completed_uploads() const;
+		SubmissionTokenSet consume_pending_implicit_uploads() const;
+		SubmissionTokenSet SubmitCommandListsInternal(bool safe_mode);
+		UploadTicket UploadAsyncInternal(const UploadDesc& upload, bool implicit_dependency) const;
 
 	public:
 		GraphicsDevice_Metal(ValidationMode validationMode = ValidationMode::Disabled, GPUPreference preference = GPUPreference::Discrete);
@@ -359,6 +377,12 @@ namespace wi
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
 		void SubmitCommandLists() override;
+		SubmissionTokenSet SubmitCommandListsExAll() override;
+		void WaitForToken(QUEUE_TYPE queue, SubmissionToken token) override;
+		bool IsTokenComplete(SubmissionToken token) const override;
+		UploadTicket UploadAsync(const UploadDesc& upload) override;
+		bool IsUploadComplete(UploadTicket ticket) const override;
+		void WaitUpload(UploadTicket ticket) override;
 
 		void WaitForGPU() const override;
 		void ClearPipelineStateCache() override;

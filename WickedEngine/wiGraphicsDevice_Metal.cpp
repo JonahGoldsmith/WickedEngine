@@ -13,6 +13,7 @@
 
 #include <Metal/MTL4AccelerationStructure.hpp>
 #include <cmath>
+#include <memory>
 
 #if defined(WICKED_MMGR_ENABLED)
 // MMGR include must come after standard/project includes to avoid macro collisions in system headers.
@@ -2254,6 +2255,8 @@ using namespace metal_internal;
 		
 		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
 		{
+			submission_token_events[q] = NS::TransferPtr(device->newSharedEvent());
+			submission_token_events[q]->setSignaledValue(0);
 			for (uint32_t i = 0; i < BUFFERCOUNT; ++i)
 			{
 				if (queues[q].queue.get() == nullptr)
@@ -2268,6 +2271,7 @@ using namespace metal_internal;
 	GraphicsDevice_Metal::~GraphicsDevice_Metal()
 	{
 		WaitForGPU();
+		retire_completed_uploads();
 		ClearPipelineStateCache();
 
 		{
@@ -2442,29 +2446,16 @@ using namespace metal_internal;
 		{
 			if (buffer->mapped_data == nullptr)
 			{
-				NS::SharedPtr<MTL::Buffer> uploadbuffer = NS::TransferPtr(device->newBuffer(desc->size, MTL::ResourceStorageModeShared | MTL::ResourceOptionCPUCacheModeWriteCombined));
-				init_callback(uploadbuffer->contents());
-				NS::SharedPtr<NS::AutoreleasePool> autorelease_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init()); // scoped drain!
-				NS::SharedPtr<MTL4::CommandBuffer> commandbuffer = NS::TransferPtr(device->newCommandBuffer());
-				NS::SharedPtr<MTL4::CommandAllocator> commandallocator = NS::TransferPtr(device->newCommandAllocator());
-				commandbuffer->beginCommandBuffer(commandallocator.get());
-				allocationhandler->destroylocker.lock();
-				allocationhandler->residency_set->addAllocation(uploadbuffer.get());
-				allocationhandler->residency_set->commit();
-				allocationhandler->destroylocker.unlock();
-				MTL4::ComputeCommandEncoder* encoder = commandbuffer->computeCommandEncoder();
-				encoder->copyFromBuffer(uploadbuffer.get(), 0, internal_state->buffer.get(), 0, desc->size);
-				encoder->endEncoding();
-				commandbuffer->endCommandBuffer();
-				MTL4::CommandBuffer* cmds[] = {commandbuffer.get()};
-				uploadqueue->commit(cmds, SDL_arraysize(cmds));
-				NS::SharedPtr<MTL::SharedEvent> event = NS::TransferPtr(device->newSharedEvent());
-				event->setSignaledValue(0);
-				uploadqueue->signalEvent(event.get(), 1);
-				WaitForSharedEventWithAssert(event.get(), 1, "CreateBuffer2 upload");
-				allocationhandler->destroylocker.lock();
-				allocationhandler->residency_set->removeAllocation(uploadbuffer.get());
-				allocationhandler->destroylocker.unlock();
+				std::vector<uint8_t> init_data(desc->size);
+				init_callback(init_data.data());
+				UploadDesc upload = {};
+				upload.type = UploadDesc::Type::BUFFER;
+				upload.queue = QUEUE_COPY;
+				upload.src_data = init_data.data();
+				upload.src_size = desc->size;
+				upload.dst_buffer = buffer;
+				upload.dst_offset = 0;
+				UploadAsyncInternal(upload, true);
 			}
 			else
 			{
@@ -2727,92 +2718,69 @@ using namespace metal_internal;
 		
 		if (initial_data != nullptr)
 		{
-			NS::SharedPtr<MTL4::CommandAllocator> commandallocator;
-			NS::SharedPtr<MTL4::CommandBuffer> commandbuffer;
-			MTL4::ComputeCommandEncoder* encoder = nullptr;
-			NS::SharedPtr<MTL::Buffer> uploadbuffer;
-			NS::SharedPtr<NS::AutoreleasePool> autorelease_pool; // scoped drain!
-			uint8_t* upload_data = nullptr;
 			if (internal_state->buffer.get() != nullptr)
 			{
 				// readback or upload, linear memory:
-				upload_data = (uint8_t*)internal_state->buffer->contents();
-			}
-			else if (descriptor->storageMode() == MTL::StorageModePrivate)
-			{
-				autorelease_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
-				uploadbuffer = NS::TransferPtr(device->newBuffer(internal_state->texture->allocatedSize(), MTL::ResourceStorageModeShared | MTL::ResourceOptionCPUCacheModeWriteCombined));
-				upload_data = (uint8_t*)uploadbuffer->contents();
-				commandallocator = NS::TransferPtr(device->newCommandAllocator());
-				commandbuffer = NS::TransferPtr(device->newCommandBuffer());
-				commandbuffer->beginCommandBuffer(commandallocator.get());
-				allocationhandler->destroylocker.lock();
-				allocationhandler->residency_set->addAllocation(uploadbuffer.get());
-				allocationhandler->residency_set->commit();
-				allocationhandler->destroylocker.unlock();
-				encoder = commandbuffer->computeCommandEncoder();
-			}
-			
-			const uint32_t data_stride = GetFormatStride(desc->format);
-			uint32_t initDataIdx = 0;
-			uint64_t src_offset = 0;
-			for (uint32_t slice = 0; slice < desc->array_size; ++slice)
-			{
-				uint32_t width = desc->width;
-				uint32_t height = desc->height;
-				uint32_t depth = desc->depth;
-				for (uint32_t mip = 0; mip < texture->desc.mip_levels; ++mip)
+				const uint32_t data_stride = GetFormatStride(desc->format);
+				uint32_t initDataIdx = 0;
+				uint64_t src_offset = 0;
+				uint8_t* upload_data = (uint8_t*)internal_state->buffer->contents();
+				for (uint32_t slice = 0; slice < desc->array_size; ++slice)
 				{
-					const SubresourceData& subresourceData = initial_data[initDataIdx++];
-					const uint32_t block_size = GetFormatBlockSize(desc->format);
-					const uint32_t num_blocks_x = std::max(1u, width / block_size);
-					const uint32_t num_blocks_y = std::max(1u, height / block_size);
-					const uint64_t datasize = data_stride * num_blocks_x * num_blocks_y * depth;
-					MTL::Region region = {};
-					region.size.width = width;
-					region.size.height = height;
-					region.size.depth = depth;
-					if (internal_state->buffer.get() != nullptr)
+					uint32_t width = desc->width;
+					uint32_t height = desc->height;
+					uint32_t depth = desc->depth;
+					for (uint32_t mip = 0; mip < texture->desc.mip_levels; ++mip)
 					{
-						// readback or upload, linear memory:
+						const SubresourceData& subresourceData = initial_data[initDataIdx++];
+						const uint32_t block_size = GetFormatBlockSize(desc->format);
+						const uint32_t num_blocks_x = std::max(1u, width / block_size);
+						const uint32_t num_blocks_y = std::max(1u, height / block_size);
+						const uint64_t datasize = data_stride * num_blocks_x * num_blocks_y * depth;
 						std::memcpy(upload_data + src_offset, subresourceData.data_ptr, datasize);
-					}
-					else if (descriptor->storageMode() == MTL::StorageModePrivate)
-					{
-						std::memcpy(upload_data + src_offset, subresourceData.data_ptr, datasize);
-						MTL::Origin origin = {};
-						MTL::Size size = {};
-						size.width = width;
-						size.height = height;
-						size.depth = depth;
-						encoder->copyFromBuffer(uploadbuffer.get(), src_offset, subresourceData.row_pitch, subresourceData.slice_pitch, size, internal_state->texture.get(), slice, mip, origin);
-						width = std::max(1u, width / 2);
-						height = std::max(1u, height / 2);
-					}
-					else
-					{
-						internal_state->texture->replaceRegion(region, mip, slice, subresourceData.data_ptr, subresourceData.row_pitch, datasize);
+						depth = std::max(1u, depth / 2);
+						src_offset += datasize;
 						width = std::max(block_size, width / 2);
 						height = std::max(block_size, height / 2);
 					}
-					depth = std::max(1u, depth / 2);
-					src_offset += datasize;
 				}
 			}
-			
-			if (commandbuffer.get() != nullptr)
+			else if (descriptor->storageMode() == MTL::StorageModePrivate)
 			{
-				encoder->endEncoding();
-				commandbuffer->endCommandBuffer();
-				MTL4::CommandBuffer* cmds[] = {commandbuffer.get()};
-				uploadqueue->commit(cmds, SDL_arraysize(cmds));
-				NS::SharedPtr<MTL::SharedEvent> event = NS::TransferPtr(device->newSharedEvent());
-				event->setSignaledValue(0);
-				uploadqueue->signalEvent(event.get(), 1);
-				WaitForSharedEventWithAssert(event.get(), 1, "CreateTexture upload");
-				allocationhandler->destroylocker.lock();
-				allocationhandler->residency_set->removeAllocation(uploadbuffer.get());
-				allocationhandler->destroylocker.unlock();
+				UploadDesc upload = {};
+				upload.type = UploadDesc::Type::TEXTURE;
+				upload.queue = QUEUE_COPY;
+				upload.dst_texture = texture;
+				upload.subresources = initial_data;
+				upload.subresource_count = GetTextureSubresourceCount(texture->desc);
+				upload.texture_final_layout = texture->desc.layout;
+				UploadAsyncInternal(upload, true);
+			}
+			else
+			{
+				uint32_t initDataIdx = 0;
+				for (uint32_t slice = 0; slice < desc->array_size; ++slice)
+				{
+					uint32_t width = desc->width;
+					uint32_t height = desc->height;
+					uint32_t depth = desc->depth;
+					for (uint32_t mip = 0; mip < texture->desc.mip_levels; ++mip)
+					{
+						const SubresourceData& subresourceData = initial_data[initDataIdx++];
+						const uint32_t block_size = GetFormatBlockSize(desc->format);
+						const uint32_t num_blocks_x = std::max(1u, width / block_size);
+						const uint32_t num_blocks_y = std::max(1u, height / block_size);
+						const uint64_t datasize = GetFormatStride(desc->format) * num_blocks_x * num_blocks_y * depth;
+						MTL::Region region = {};
+						region.size.width = width;
+						region.size.height = height;
+						region.size.depth = depth;
+						internal_state->texture->replaceRegion(region, mip, slice, subresourceData.data_ptr, subresourceData.row_pitch, datasize);
+						depth = std::max(1u, depth / 2);
+						width = std::max(block_size, width / 2);
+						height = std::max(block_size, height / 2);
+					}
+				}
 			}
 		}
 		
@@ -3997,15 +3965,299 @@ using namespace metal_internal;
 		
 		return cmd;
 	}
-	void GraphicsDevice_Metal::SubmitCommandLists()
+	SubmissionToken GraphicsDevice_Metal::allocate_submission_token(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT)
+			queue = QUEUE_COPY;
+		std::scoped_lock lock(submission_token_locker);
+		SubmissionToken token = {};
+		token.queue = queue;
+		token.value = ++submission_token_values[queue];
+		return token;
+	}
+
+	void GraphicsDevice_Metal::retire_completed_uploads() const
+	{
+		std::scoped_lock upload_lock(upload_locker);
+		for (size_t i = 0; i < inflight_uploads.size();)
+		{
+			if (!IsTokenComplete(inflight_uploads[i].ticket.done))
+			{
+				++i;
+				continue;
+			}
+
+			if (inflight_uploads[i].staging_buffer.get() != nullptr)
+			{
+				std::scoped_lock residency_lock(allocationhandler->destroylocker);
+				allocationhandler->residency_set->removeAllocation(inflight_uploads[i].staging_buffer.get());
+			}
+			inflight_uploads.erase(inflight_uploads.begin() + i);
+		}
+	}
+
+	SubmissionTokenSet GraphicsDevice_Metal::consume_pending_implicit_uploads() const
+	{
+		std::scoped_lock lock(upload_locker);
+		SubmissionTokenSet result = pending_implicit_uploads;
+		pending_implicit_uploads = {};
+		return result;
+	}
+
+	UploadTicket GraphicsDevice_Metal::UploadAsyncInternal(const UploadDesc& upload, bool implicit_dependency) const
+	{
+		retire_completed_uploads();
+
+		UploadTicket ticket = {};
+		if (upload.src_data == nullptr || upload.src_size == 0)
+			return ticket;
+
+		QUEUE_TYPE token_queue = upload.queue;
+		if (token_queue >= QUEUE_COUNT)
+			token_queue = QUEUE_COPY;
+
+		switch (upload.type)
+		{
+		case UploadDesc::Type::BUFFER:
+		{
+			if (upload.dst_buffer == nullptr)
+				return ticket;
+			auto internal_state = to_internal(upload.dst_buffer);
+			if (internal_state == nullptr || internal_state->buffer.get() == nullptr)
+				return ticket;
+
+			if (upload.dst_buffer->mapped_data != nullptr)
+			{
+				std::memcpy((uint8_t*)upload.dst_buffer->mapped_data + upload.dst_offset, upload.src_data, (size_t)upload.src_size);
+				return ticket;
+			}
+
+			NS::SharedPtr<NS::AutoreleasePool> autorelease_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+			NS::SharedPtr<MTL::Buffer> staging = NS::TransferPtr(device->newBuffer(upload.src_size, MTL::ResourceStorageModeShared | MTL::ResourceOptionCPUCacheModeWriteCombined));
+			if (staging.get() == nullptr)
+				return ticket;
+			std::memcpy(staging->contents(), upload.src_data, (size_t)upload.src_size);
+
+			NS::SharedPtr<MTL4::CommandAllocator> commandallocator = NS::TransferPtr(device->newCommandAllocator());
+			NS::SharedPtr<MTL4::CommandBuffer> commandbuffer = NS::TransferPtr(device->newCommandBuffer());
+			commandbuffer->beginCommandBuffer(commandallocator.get());
+
+			{
+				std::scoped_lock residency_lock(allocationhandler->destroylocker);
+				allocationhandler->residency_set->addAllocation(staging.get());
+				allocationhandler->residency_set->commit();
+			}
+
+			MTL4::ComputeCommandEncoder* encoder = commandbuffer->computeCommandEncoder();
+			encoder->copyFromBuffer(staging.get(), 0, internal_state->buffer.get(), upload.dst_offset, upload.src_size);
+			encoder->endEncoding();
+			commandbuffer->endCommandBuffer();
+
+			ticket.done = allocate_submission_token(token_queue);
+			MTL4::CommandBuffer* cmds[] = { commandbuffer.get() };
+			uploadqueue->commit(cmds, SDL_arraysize(cmds));
+			uploadqueue->signalEvent(submission_token_events[ticket.done.queue].get(), ticket.done.value);
+
+			UploadJob job = {};
+			job.ticket = ticket;
+			job.staging_buffer = staging;
+			job.commandbuffer = commandbuffer;
+			job.commandallocator = commandallocator;
+
+			{
+				std::scoped_lock lock(upload_locker);
+				inflight_uploads.emplace_back(std::move(job));
+				if (implicit_dependency)
+				{
+					pending_implicit_uploads.validMask |= 1u << ticket.done.queue;
+					pending_implicit_uploads.perQueue[ticket.done.queue] = ticket.done;
+				}
+			}
+			return ticket;
+		}
+		case UploadDesc::Type::TEXTURE:
+		{
+			if (upload.dst_texture == nullptr || upload.subresources == nullptr)
+				return ticket;
+			auto internal_state = to_internal(upload.dst_texture);
+			if (internal_state == nullptr)
+				return ticket;
+
+			const uint32_t subresource_count = upload.subresource_count == 0 ? GetTextureSubresourceCount(upload.dst_texture->desc) : upload.subresource_count;
+			if (subresource_count == 0)
+				return ticket;
+
+			if (internal_state->buffer.get() != nullptr)
+			{
+				// Linear readback/upload textures are CPU-visible and don't require GPU copy.
+				const uint32_t data_stride = GetFormatStride(upload.dst_texture->desc.format);
+				uint64_t src_offset = 0;
+				for (uint32_t i = 0; i < subresource_count; ++i)
+				{
+					const SubresourceData& subresource = upload.subresources[i];
+					const uint64_t datasize = std::min<uint64_t>(subresource.slice_pitch, data_stride * subresource.row_pitch);
+					std::memcpy((uint8_t*)upload.dst_texture->mapped_subresources[i].data_ptr, subresource.data_ptr, (size_t)datasize);
+					src_offset += datasize;
+				}
+				(void)src_offset;
+				return ticket;
+			}
+
+			if (internal_state->texture.get() == nullptr || internal_state->texture->storageMode() != MTL::StorageModePrivate)
+			{
+				// Shared texture: direct CPU upload path.
+				uint32_t initDataIdx = 0;
+				for (uint32_t slice = 0; slice < upload.dst_texture->desc.array_size; ++slice)
+				{
+					uint32_t width = upload.dst_texture->desc.width;
+					uint32_t height = upload.dst_texture->desc.height;
+					uint32_t depth = upload.dst_texture->desc.depth;
+					for (uint32_t mip = 0; mip < upload.dst_texture->desc.mip_levels && initDataIdx < subresource_count; ++mip)
+					{
+						const SubresourceData& subresourceData = upload.subresources[initDataIdx++];
+						const uint32_t block_size = GetFormatBlockSize(upload.dst_texture->desc.format);
+						const uint32_t num_blocks_x = std::max(1u, width / block_size);
+						const uint32_t num_blocks_y = std::max(1u, height / block_size);
+						const uint64_t datasize = GetFormatStride(upload.dst_texture->desc.format) * num_blocks_x * num_blocks_y * depth;
+						MTL::Region region = {};
+						region.size.width = width;
+						region.size.height = height;
+						region.size.depth = depth;
+						internal_state->texture->replaceRegion(region, mip, slice, subresourceData.data_ptr, subresourceData.row_pitch, datasize);
+						depth = std::max(1u, depth / 2);
+						width = std::max(block_size, width / 2);
+						height = std::max(block_size, height / 2);
+					}
+				}
+				return ticket;
+			}
+
+			NS::SharedPtr<NS::AutoreleasePool> autorelease_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+			NS::SharedPtr<MTL::Buffer> staging = NS::TransferPtr(device->newBuffer(internal_state->texture->allocatedSize(), MTL::ResourceStorageModeShared | MTL::ResourceOptionCPUCacheModeWriteCombined));
+			if (staging.get() == nullptr)
+				return ticket;
+
+			uint8_t* upload_data = (uint8_t*)staging->contents();
+			uint32_t initDataIdx = 0;
+			uint64_t src_offset = 0;
+			for (uint32_t slice = 0; slice < upload.dst_texture->desc.array_size; ++slice)
+			{
+				uint32_t width = upload.dst_texture->desc.width;
+				uint32_t height = upload.dst_texture->desc.height;
+				uint32_t depth = upload.dst_texture->desc.depth;
+				for (uint32_t mip = 0; mip < upload.dst_texture->desc.mip_levels && initDataIdx < subresource_count; ++mip)
+				{
+					const SubresourceData& subresourceData = upload.subresources[initDataIdx++];
+					const uint32_t block_size = GetFormatBlockSize(upload.dst_texture->desc.format);
+					const uint32_t num_blocks_x = std::max(1u, width / block_size);
+					const uint32_t num_blocks_y = std::max(1u, height / block_size);
+					const uint64_t datasize = GetFormatStride(upload.dst_texture->desc.format) * num_blocks_x * num_blocks_y * depth;
+					std::memcpy(upload_data + src_offset, subresourceData.data_ptr, (size_t)datasize);
+					src_offset += datasize;
+					width = std::max(block_size, width / 2);
+					height = std::max(block_size, height / 2);
+					depth = std::max(1u, depth / 2);
+				}
+			}
+
+			NS::SharedPtr<MTL4::CommandAllocator> commandallocator = NS::TransferPtr(device->newCommandAllocator());
+			NS::SharedPtr<MTL4::CommandBuffer> commandbuffer = NS::TransferPtr(device->newCommandBuffer());
+			commandbuffer->beginCommandBuffer(commandallocator.get());
+			{
+				std::scoped_lock residency_lock(allocationhandler->destroylocker);
+				allocationhandler->residency_set->addAllocation(staging.get());
+				allocationhandler->residency_set->commit();
+			}
+			MTL4::ComputeCommandEncoder* encoder = commandbuffer->computeCommandEncoder();
+
+			initDataIdx = 0;
+			src_offset = 0;
+			for (uint32_t slice = 0; slice < upload.dst_texture->desc.array_size; ++slice)
+			{
+				uint32_t width = upload.dst_texture->desc.width;
+				uint32_t height = upload.dst_texture->desc.height;
+				uint32_t depth = upload.dst_texture->desc.depth;
+				for (uint32_t mip = 0; mip < upload.dst_texture->desc.mip_levels && initDataIdx < subresource_count; ++mip)
+				{
+					const SubresourceData& subresourceData = upload.subresources[initDataIdx++];
+					MTL::Origin origin = {};
+					MTL::Size size = {};
+					size.width = width;
+					size.height = height;
+					size.depth = depth;
+					encoder->copyFromBuffer(staging.get(), src_offset, subresourceData.row_pitch, subresourceData.slice_pitch, size, internal_state->texture.get(), slice, mip, origin);
+
+					const uint32_t block_size = GetFormatBlockSize(upload.dst_texture->desc.format);
+					const uint32_t num_blocks_x = std::max(1u, width / block_size);
+					const uint32_t num_blocks_y = std::max(1u, height / block_size);
+					const uint64_t datasize = GetFormatStride(upload.dst_texture->desc.format) * num_blocks_x * num_blocks_y * depth;
+					src_offset += datasize;
+					width = std::max(block_size, width / 2);
+					height = std::max(block_size, height / 2);
+					depth = std::max(1u, depth / 2);
+				}
+			}
+
+			encoder->endEncoding();
+			commandbuffer->endCommandBuffer();
+
+			ticket.done = allocate_submission_token(token_queue);
+			MTL4::CommandBuffer* cmds[] = { commandbuffer.get() };
+			uploadqueue->commit(cmds, SDL_arraysize(cmds));
+			uploadqueue->signalEvent(submission_token_events[ticket.done.queue].get(), ticket.done.value);
+
+			UploadJob job = {};
+			job.ticket = ticket;
+			job.staging_buffer = staging;
+			job.commandbuffer = commandbuffer;
+			job.commandallocator = commandallocator;
+			{
+				std::scoped_lock lock(upload_locker);
+				inflight_uploads.emplace_back(std::move(job));
+				if (implicit_dependency)
+				{
+					pending_implicit_uploads.validMask |= 1u << ticket.done.queue;
+					pending_implicit_uploads.perQueue[ticket.done.queue] = ticket.done;
+				}
+			}
+			return ticket;
+		}
+		default:
+			break;
+		}
+
+		return ticket;
+	}
+
+	SubmissionTokenSet GraphicsDevice_Metal::SubmitCommandListsInternal(bool safe_mode)
 	{
 		allocationhandler->destroylocker.lock();
 		allocationhandler->residency_set->commit();
 		allocationhandler->destroylocker.unlock();
-		
+		retire_completed_uploads();
+
+		const SubmissionTokenSet pending_upload_tokens = consume_pending_implicit_uploads();
+		for (uint32_t dst = 0; dst < QUEUE_COUNT; ++dst)
+		{
+			if (queues[dst].queue.get() == nullptr)
+				continue;
+			for (uint32_t src = 0; src < QUEUE_COUNT; ++src)
+			{
+				if ((pending_upload_tokens.validMask & (1u << src)) == 0)
+					continue;
+				const SubmissionToken& token = pending_upload_tokens.perQueue[src];
+				if (token.value == 0 || token.queue >= QUEUE_COUNT)
+					continue;
+				WaitForToken((QUEUE_TYPE)dst, token);
+			}
+		}
+
+		SubmissionTokenSet tokens = {};
+		bool queue_has_work[QUEUE_COUNT] = {};
+
 		uint32_t cmd_last = cmd_count;
 		cmd_count = 0;
-		
+
 		// Presents wait:
 		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 		{
@@ -4017,7 +4269,7 @@ using namespace metal_internal;
 				queue.queue->wait(x);
 			}
 		}
-		
+
 		// Submit work and resolve dependencies:
 		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 		{
@@ -4047,16 +4299,17 @@ using namespace metal_internal;
 				commandlist.compute_encoder = nullptr;
 			}
 			commandlist.commandbuffer->endCommandBuffer();
-			
+
 			CommandQueue& queue = queues[commandlist.queue];
+			queue_has_work[commandlist.queue] = true;
 			const bool dependency = (commandlist.signals != nullptr && arrlenu(commandlist.signals) > 0) || (commandlist.waits != nullptr && arrlenu(commandlist.waits) > 0);
 			if (dependency)
 			{
 				queue.submit();
 			}
-			
+
 			arrput(queue.submit_cmds, commandlist.commandbuffer.get());
-			
+
 			if (dependency)
 			{
 				for (size_t i = 0; i < arrlenu(commandlist.waits); ++i)
@@ -4066,9 +4319,9 @@ using namespace metal_internal;
 					// recycle semaphore only in signals
 				}
 				arrsetlen(commandlist.waits, 0);
-				
+
 				queue.submit();
-				
+
 				for (size_t i = 0; i < arrlenu(commandlist.signals); ++i)
 				{
 					const auto& semaphore = commandlist.signals[i];
@@ -4077,7 +4330,7 @@ using namespace metal_internal;
 				}
 				arrsetlen(commandlist.signals, 0);
 			}
-			
+
 			// Worker pipelines are merged in to global:
 			for (size_t i = 0; i < arrlenu(commandlist.pipelines_worker); ++i)
 			{
@@ -4105,20 +4358,28 @@ using namespace metal_internal;
 			}
 			arrsetlen(commandlist.pipelines_worker, 0);
 		}
-		
+
 		// Mark the completion of queues for this frame:
 		frame_fence_values[GetBufferIndex()]++;
+		const uint64_t frame_fence_value = frame_fence_values[GetBufferIndex()];
 		for (int q = 0; q < QUEUE_COUNT; ++q)
 		{
 			CommandQueue& queue = queues[q];
 			if (queue.queue.get() == nullptr)
 				continue;
-			
+
 			queue.submit();
-			
-			queue.queue->signalEvent(frame_fence[GetBufferIndex()][q].get(), frame_fence_values[GetBufferIndex()]);
+			queue.queue->signalEvent(frame_fence[GetBufferIndex()][q].get(), frame_fence_value);
+
+			if (!safe_mode && queue_has_work[q])
+			{
+				SubmissionToken token = allocate_submission_token((QUEUE_TYPE)q);
+				queue.queue->signalEvent(submission_token_events[q].get(), token.value);
+				tokens.validMask |= 1u << q;
+				tokens.perQueue[q] = token;
+			}
 		}
-		
+
 		// Presents submit:
 		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 		{
@@ -4133,27 +4394,30 @@ using namespace metal_internal;
 			}
 			arrsetlen(commandlist.presents, 0);
 		}
-		
-		// Sync up every queue to every other queue at the end of the frame:
-		//	Note: it disables overlapping queues into the next frame
-		for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
+
+		if (safe_mode)
 		{
-			if (queues[queue1].queue.get() == nullptr)
-				continue;
-			for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+			// Sync up every queue to every other queue at the end of the frame:
+			//	Note: it disables overlapping queues into the next frame
+			for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
 			{
-				if (queue1 == queue2)
+				if (queues[queue1].queue.get() == nullptr)
 					continue;
-				if (queues[queue2].queue.get() == nullptr)
-					continue;
-				MTL::SharedEvent* fence = frame_fence[GetBufferIndex()][queue2].get();
-				queues[queue1].queue->wait(fence, frame_fence_values[GetBufferIndex()]);
+				for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+				{
+					if (queue1 == queue2)
+						continue;
+					if (queues[queue2].queue.get() == nullptr)
+						continue;
+					MTL::SharedEvent* fence = frame_fence[GetBufferIndex()][queue2].get();
+					queues[queue1].queue->wait(fence, frame_fence_value);
+				}
 			}
 		}
-		
+
 		// From here, we begin a new frame, this affects GetBufferIndex()!
 		FRAMECOUNT++;
-		
+
 		// Initiate stalling CPU when GPU is not yet finished with next frame:
 		const uint32_t bufferindex = GetBufferIndex();
 		for (int queue = 0; queue < QUEUE_COUNT; ++queue)
@@ -4166,8 +4430,66 @@ using namespace metal_internal;
 				WaitForSharedEventWithAssert(fence, frame_fence_values[GetBufferIndex()], "SubmitCommandLists frame fence");
 			}
 		}
-		
+
 		allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
+		retire_completed_uploads();
+		return tokens;
+	}
+
+	void GraphicsDevice_Metal::SubmitCommandLists()
+	{
+		SubmitCommandListsInternal(true);
+	}
+
+	SubmissionTokenSet GraphicsDevice_Metal::SubmitCommandListsExAll()
+	{
+		return SubmitCommandListsInternal(false);
+	}
+
+	void GraphicsDevice_Metal::WaitForToken(QUEUE_TYPE queue, SubmissionToken token)
+	{
+		if (token.value == 0)
+			return;
+		if (queue >= QUEUE_COUNT || token.queue >= QUEUE_COUNT)
+			return;
+		if (queues[queue].queue.get() == nullptr || submission_token_events[token.queue].get() == nullptr)
+			return;
+		if (queue == token.queue || IsTokenComplete(token))
+			return;
+
+		queues[queue].queue->wait(submission_token_events[token.queue].get(), token.value);
+	}
+
+	bool GraphicsDevice_Metal::IsTokenComplete(SubmissionToken token) const
+	{
+		if (token.value == 0)
+			return true;
+		if (token.queue >= QUEUE_COUNT || submission_token_events[token.queue].get() == nullptr)
+			return false;
+		return submission_token_events[token.queue]->signaledValue() >= token.value;
+	}
+
+	UploadTicket GraphicsDevice_Metal::UploadAsync(const UploadDesc& upload)
+	{
+		return UploadAsyncInternal(upload, false);
+	}
+
+	bool GraphicsDevice_Metal::IsUploadComplete(UploadTicket ticket) const
+	{
+		const bool complete = IsTokenComplete(ticket.done);
+		if (complete)
+		{
+			retire_completed_uploads();
+		}
+		return complete;
+	}
+
+	void GraphicsDevice_Metal::WaitUpload(UploadTicket ticket)
+	{
+		if (ticket.done.value == 0 || ticket.done.queue >= QUEUE_COUNT || submission_token_events[ticket.done.queue].get() == nullptr)
+			return;
+		WaitForSharedEventWithAssert(submission_token_events[ticket.done.queue].get(), ticket.done.value, "WaitUpload");
+		retire_completed_uploads();
 	}
 
 	void GraphicsDevice_Metal::WaitForGPU() const
@@ -4181,6 +4503,15 @@ using namespace metal_internal;
 			queue.queue->signalEvent(event.get(), 1);
 			WaitForSharedEventWithAssert(event.get(), 1, "WaitForGPU queue drain");
 		}
+		if (submission_token_events[QUEUE_COPY].get() != nullptr)
+		{
+			const uint64_t latest_upload_token = submission_token_values[QUEUE_COPY];
+			if (latest_upload_token > 0)
+			{
+				WaitForSharedEventWithAssert(submission_token_events[QUEUE_COPY].get(), latest_upload_token, "WaitForGPU upload queue drain");
+			}
+		}
+		retire_completed_uploads();
 	}
 	void GraphicsDevice_Metal::ClearPipelineStateCache()
 	{

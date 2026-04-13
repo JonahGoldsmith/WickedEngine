@@ -1873,19 +1873,22 @@ std::mutex queue_locker;
 	{
 		CopyCMD cmd;
 
-		locker.lock();
-		// Try to search for a staging buffer that can fit the request:
-		for (size_t i = 0; i < arrlenu(freelist); ++i)
 		{
-			if (freelist[i]->uploadbuffer.desc.size >= staging_size)
+			std::scoped_lock lock(locker);
+			recycle_completed_unlocked();
+
+			// Try to search for a staging buffer that can fit the request:
+			for (size_t i = 0; i < arrlenu(freelist); ++i)
 			{
-				cmd = std::move(*freelist[i]);
-				std::swap(freelist[i], freelist[arrlenu(freelist) - 1]);
-				delete dx12_internal::pop_back_stb_array(freelist);
-				break;
+				if (freelist[i]->uploadbuffer.desc.size >= staging_size)
+				{
+					cmd = std::move(*freelist[i]);
+					std::swap(freelist[i], freelist[arrlenu(freelist) - 1]);
+					delete dx12_internal::pop_back_stb_array(freelist);
+					break;
+				}
 			}
 		}
-		locker.unlock();
 
 		// If no buffer was found that fits the data, create one:
 		if (!cmd.IsValid())
@@ -1895,9 +1898,6 @@ std::mutex queue_locker;
 			cmd.commandList->SetName(L"CopyAllocator::commandList");
 
 			dx12_check(cmd.commandList->Close());
-
-			dx12_check(device->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, PPV_ARGS(cmd.fence)));
-			dx12_check(cmd.fence->SetName(L"CopyAllocator::fence"));
 
 			GPUBufferDesc uploaddesc;
 			uploaddesc.size = wi::math::GetNextPowerOfTwo(staging_size);
@@ -1914,14 +1914,40 @@ std::mutex queue_locker;
 
 		return cmd;
 	}
-	void GraphicsDevice_DX12::CopyAllocator::submit(CopyCMD cmd)
+	void GraphicsDevice_DX12::CopyAllocator::recycle_completed_unlocked()
+	{
+		if (device->token_fence[QUEUE_COPY] == nullptr || inflight == nullptr)
+			return;
+
+		const uint64_t completed_value = device->token_fence[QUEUE_COPY]->GetCompletedValue();
+		for (size_t i = 0; i < arrlenu(inflight);)
+		{
+			CopyCMD* cmd = inflight[i];
+			if (cmd->submittedValue > completed_value)
+			{
+				++i;
+				continue;
+			}
+
+			cmd->submittedValue = 0;
+			arrput(freelist, cmd);
+			inflight[i] = inflight[arrlenu(inflight) - 1];
+			arrsetlen(inflight, arrlenu(inflight) - 1);
+		}
+	}
+	void GraphicsDevice_DX12::CopyAllocator::recycle_completed()
+	{
+		std::scoped_lock lock(locker);
+		recycle_completed_unlocked();
+	}
+	UploadTicket GraphicsDevice_DX12::CopyAllocator::submit(CopyCMD cmd)
 	{
 		dx12_check(cmd.commandList->Close());
 		ID3D12CommandList* commandlists[] = {
 			cmd.commandList.Get()
 		};
-
-		cmd.fenceValue++;
+		const uint64_t token_value = device->token_fence_values[QUEUE_COPY].fetch_add(1, std::memory_order_relaxed) + 1;
+		cmd.submittedValue = token_value;
 
 		{
 #ifdef PLATFORM_XBOX
@@ -1929,13 +1955,17 @@ std::mutex queue_locker;
 #endif // PLATFORM_XBOX
 
 			queue->ExecuteCommandLists(1, commandlists);
-			dx12_check(queue->Signal(cmd.fence.Get(), cmd.fenceValue));
+			dx12_check(queue->Signal(device->token_fence[QUEUE_COPY].Get(), token_value));
 		}
 
-		dx12_check(cmd.fence->SetEventOnCompletion(cmd.fenceValue, nullptr));
+		UploadTicket ticket;
+		ticket.done.queue = QUEUE_COPY;
+		ticket.done.value = token_value;
 
 		std::scoped_lock lock(locker);
-		arrput(freelist, new CopyCMD(std::move(cmd)));
+		recycle_completed_unlocked();
+		arrput(inflight, new CopyCMD(std::move(cmd)));
+		return ticket;
 	}
 
 	void GraphicsDevice_DX12::DescriptorBinder::init(GraphicsDevice_DX12* device)
@@ -2860,6 +2890,30 @@ std::mutex queue_locker;
 					break;
 				};
 			}
+		}
+		for (int queue = 0; queue < QUEUE_COUNT; ++queue)
+		{
+			hr = dx12_check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, PPV_ARGS(token_fence[queue])));
+			if (FAILED(hr))
+			{
+				DX12_LOG_ERROR("ID3D12Device::CreateFence[TOKEN] failed! ERROR: %s", dx12_internal::HrToString(hr));
+				wi::platform::Exit();
+			}
+			switch (queue)
+			{
+			case QUEUE_GRAPHICS:
+				dx12_check(token_fence[queue]->SetName(L"token_fence[QUEUE_GRAPHICS]"));
+				break;
+			case QUEUE_COMPUTE:
+				dx12_check(token_fence[queue]->SetName(L"token_fence[QUEUE_COMPUTE]"));
+				break;
+			case QUEUE_COPY:
+				dx12_check(token_fence[queue]->SetName(L"token_fence[QUEUE_COPY]"));
+				break;
+			case QUEUE_VIDEO_DECODE:
+				dx12_check(token_fence[queue]->SetName(L"token_fence[QUEUE_VIDEO_DECODE]"));
+				break;
+			};
 		}
 
 		copyAllocator.init(this);
@@ -3845,7 +3899,13 @@ std::mutex queue_locker;
 					0,
 					desc->size
 				);
-				copyAllocator.submit(cmd);
+				UploadTicket ticket = copyAllocator.submit(std::move(cmd));
+				if (ticket.done.value != 0)
+				{
+					std::scoped_lock lock(upload_token_locker);
+					pending_implicit_uploads.validMask |= 1u << ticket.done.queue;
+					pending_implicit_uploads.perQueue[ticket.done.queue] = ticket.done;
+				}
 			}
 		}
 
@@ -4273,7 +4333,13 @@ std::mutex queue_locker;
 
 				if (cmd.IsValid())
 				{
-					copyAllocator.submit(cmd);
+					UploadTicket ticket = copyAllocator.submit(std::move(cmd));
+					if (ticket.done.value != 0)
+					{
+						std::scoped_lock lock(upload_token_locker);
+						pending_implicit_uploads.validMask |= 1u << ticket.done.queue;
+						pending_implicit_uploads.perQueue[ticket.done.queue] = ticket.done;
+					}
 				}
 			}
 		}
@@ -5854,11 +5920,37 @@ std::mutex queue_locker;
 
 		return cmd;
 	}
-	void GraphicsDevice_DX12::SubmitCommandLists()
+	SubmissionTokenSet GraphicsDevice_DX12::SubmitCommandListsInternal(bool token_mode)
 	{
 #ifdef PLATFORM_XBOX
 		std::scoped_lock lock(queue_locker); // queue operations are not thread-safe on XBOX
 #endif // PLATFORM_XBOX
+		SubmissionTokenSet tokens = {};
+		bool queue_has_work[QUEUE_COUNT] = {};
+		SubmissionTokenSet pending_upload_tokens = {};
+		{
+			std::scoped_lock lock(upload_token_locker);
+			pending_upload_tokens = pending_implicit_uploads;
+			pending_implicit_uploads = {};
+		}
+		if (pending_upload_tokens.validMask != 0)
+		{
+			for (uint32_t dst = 0; dst < QUEUE_COUNT; ++dst)
+			{
+				CommandQueue& dst_queue = queues[dst];
+				if (dst_queue.queue == nullptr)
+					continue;
+				for (uint32_t src = 0; src < QUEUE_COUNT; ++src)
+				{
+					if ((pending_upload_tokens.validMask & (1u << src)) == 0)
+						continue;
+					const SubmissionToken& token = pending_upload_tokens.perQueue[src];
+					if (token.value == 0 || token.queue >= QUEUE_COUNT || token_fence[token.queue] == nullptr)
+						continue;
+					dx12_check(dst_queue.queue->Wait(token_fence[token.queue].Get(), token.value));
+				}
+			}
+		}
 
 		// Submit current frame:
 		{
@@ -5877,6 +5969,7 @@ std::mutex queue_locker;
 				}
 
 				CommandQueue& queue = queues[commandlist.queue];
+				queue_has_work[commandlist.queue] = true;
 				const bool dependency = (commandlist.signals != nullptr && arrlenu(commandlist.signals) > 0) || (commandlist.waits != nullptr && arrlenu(commandlist.waits) > 0);
 
 				if (dependency)
@@ -5935,6 +6028,7 @@ std::mutex queue_locker;
 
 			// Mark the completion of queues for this frame:
 			frame_fence_values[GetBufferIndex()]++;
+			const uint64_t frame_fence_value = frame_fence_values[GetBufferIndex()];
 			for (int q = 0; q < QUEUE_COUNT; ++q)
 			{
 				CommandQueue& queue = queues[q];
@@ -5943,7 +6037,16 @@ std::mutex queue_locker;
 
 				queue.submit();
 
-				dx12_check(queue.queue->Signal(frame_fence[GetBufferIndex()][q].Get(), frame_fence_values[GetBufferIndex()]));
+				dx12_check(queue.queue->Signal(frame_fence[GetBufferIndex()][q].Get(), frame_fence_value));
+
+				if (token_mode && queue_has_work[q] && token_fence[q] != nullptr)
+				{
+					const uint64_t token_value = token_fence_values[q].fetch_add(1, std::memory_order_relaxed) + 1;
+					dx12_check(queue.queue->Signal(token_fence[q].Get(), token_value));
+					tokens.validMask |= 1u << q;
+					tokens.perQueue[q].queue = (QUEUE_TYPE)q;
+					tokens.perQueue[q].value = token_value;
+				}
 			}
 
 			for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
@@ -5990,20 +6093,23 @@ std::mutex queue_locker;
 			}
 		}
 
-		// Sync up every queue to every other queue at the end of the frame:
-		//	Note: it disables overlapping queues into the next frame
-		for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
+		if (!token_mode)
 		{
-			if (queues[queue1].queue == nullptr)
-				continue;
-			for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+			// Sync up every queue to every other queue at the end of the frame:
+			//	Note: it disables overlapping queues into the next frame
+			for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
 			{
-				if (queue1 == queue2)
+				if (queues[queue1].queue == nullptr)
 					continue;
-				if (queues[queue2].queue == nullptr)
-					continue;
-				ID3D12Fence* fence = frame_fence[GetBufferIndex()][queue2].Get();
-				queues[queue1].queue->Wait(fence, frame_fence_values[GetBufferIndex()]);
+				for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+				{
+					if (queue1 == queue2)
+						continue;
+					if (queues[queue2].queue == nullptr)
+						continue;
+					ID3D12Fence* fence = frame_fence[GetBufferIndex()][queue2].Get();
+					queues[queue1].queue->Wait(fence, frame_fence_values[GetBufferIndex()]);
+				}
 			}
 		}
 
@@ -6029,6 +6135,166 @@ std::mutex queue_locker;
 		}
 
 		allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
+		return tokens;
+	}
+	void GraphicsDevice_DX12::SubmitCommandLists()
+	{
+		SubmitCommandListsInternal(false);
+	}
+	SubmissionTokenSet GraphicsDevice_DX12::SubmitCommandListsExAll()
+	{
+		return SubmitCommandListsInternal(true);
+	}
+	void GraphicsDevice_DX12::WaitForToken(QUEUE_TYPE queue, SubmissionToken token)
+	{
+		if (token.value == 0)
+			return;
+		if (queue >= QUEUE_COUNT || token.queue >= QUEUE_COUNT)
+			return;
+		if (queues[queue].queue == nullptr || token_fence[token.queue] == nullptr)
+			return;
+		if (IsTokenComplete(token))
+			return;
+
+#ifdef PLATFORM_XBOX
+		std::scoped_lock lock(queue_locker); // queue operations are not thread-safe on XBOX
+#endif // PLATFORM_XBOX
+
+		dx12_check(queues[queue].queue->Wait(token_fence[token.queue].Get(), token.value));
+	}
+	bool GraphicsDevice_DX12::IsTokenComplete(SubmissionToken token) const
+	{
+		if (token.value == 0)
+			return true;
+		if (token.queue >= QUEUE_COUNT || token_fence[token.queue] == nullptr)
+			return false;
+		return token_fence[token.queue]->GetCompletedValue() >= token.value;
+	}
+	UploadTicket GraphicsDevice_DX12::UploadAsync(const UploadDesc& upload)
+	{
+		UploadTicket ticket;
+		if (upload.src_data == nullptr)
+			return ticket;
+
+		if (upload.queue != QUEUE_COPY)
+		{
+			WI_DX12_LOG_WARN("DX12 UploadAsync currently routes uploads through QUEUE_COPY");
+		}
+
+		switch (upload.type)
+		{
+		case UploadDesc::Type::BUFFER:
+		{
+			if (upload.dst_buffer == nullptr || upload.src_size == 0)
+				return ticket;
+			auto* dst_internal = to_internal(upload.dst_buffer);
+			if (dst_internal == nullptr || dst_internal->resource == nullptr)
+				return ticket;
+
+			if (upload.dst_buffer->mapped_data != nullptr)
+			{
+				std::memcpy(static_cast<uint8_t*>(upload.dst_buffer->mapped_data) + upload.dst_offset, upload.src_data, static_cast<size_t>(upload.src_size));
+				return ticket;
+			}
+
+			CopyAllocator::CopyCMD cmd = copyAllocator.allocate(upload.src_size);
+			if (!cmd.IsValid())
+				return ticket;
+
+			std::memcpy(cmd.uploadbuffer.mapped_data, upload.src_data, static_cast<size_t>(upload.src_size));
+			cmd.commandList->CopyBufferRegion(
+				dst_internal->resource.Get(),
+				upload.dst_offset,
+				to_internal(&cmd.uploadbuffer)->resource.Get(),
+				0,
+				upload.src_size
+			);
+			return copyAllocator.submit(std::move(cmd));
+		}
+		case UploadDesc::Type::TEXTURE:
+		{
+			if (upload.dst_texture == nullptr || upload.subresources == nullptr)
+				return ticket;
+			auto* dst_internal = to_internal(upload.dst_texture);
+			if (dst_internal == nullptr || dst_internal->resource == nullptr)
+				return ticket;
+
+			const uint32_t subresource_count = std::min(
+				upload.subresource_count == 0 ? (uint32_t)arrlenu(dst_internal->footprints) : upload.subresource_count,
+				(uint32_t)arrlenu(dst_internal->footprints)
+			);
+			if (subresource_count == 0)
+				return ticket;
+
+			void* mapped_data = upload.dst_texture->mapped_data;
+			CopyAllocator::CopyCMD cmd;
+			if (mapped_data == nullptr)
+			{
+				cmd = copyAllocator.allocate(dst_internal->total_size);
+				if (!cmd.IsValid())
+					return ticket;
+				mapped_data = cmd.uploadbuffer.mapped_data;
+			}
+
+			for (uint32_t i = 0; i < subresource_count; ++i)
+			{
+				D3D12_SUBRESOURCE_DATA data = _ConvertSubresourceData(upload.subresources[i]);
+
+				if (dst_internal->rowSizesInBytes[i] > (SIZE_T)-1)
+					continue;
+				D3D12_MEMCPY_DEST dest_data = {};
+				dest_data.pData = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(mapped_data) + dst_internal->footprints[i].Offset);
+				dest_data.RowPitch = (SIZE_T)dst_internal->footprints[i].Footprint.RowPitch;
+				dest_data.SlicePitch = (SIZE_T)dst_internal->footprints[i].Footprint.RowPitch * (SIZE_T)dst_internal->numRows[i];
+				MemcpySubresource(&dest_data, &data, (SIZE_T)dst_internal->rowSizesInBytes[i], dst_internal->numRows[i], dst_internal->footprints[i].Footprint.Depth);
+
+				if (cmd.IsValid())
+				{
+					CD3DX12_TEXTURE_COPY_LOCATION dst(dst_internal->resource.Get(), i);
+					CD3DX12_TEXTURE_COPY_LOCATION src(to_internal(&cmd.uploadbuffer)->resource.Get(), dst_internal->footprints[i]);
+					cmd.commandList->CopyTextureRegion(
+						&dst,
+						0,
+						0,
+						0,
+						&src,
+						nullptr
+					);
+				}
+			}
+
+			if (cmd.IsValid())
+			{
+				return copyAllocator.submit(std::move(cmd));
+			}
+			return ticket;
+		}
+		default:
+			break;
+		}
+
+		return ticket;
+	}
+	bool GraphicsDevice_DX12::IsUploadComplete(UploadTicket ticket) const
+	{
+		const bool complete = IsTokenComplete(ticket.done);
+		if (complete)
+		{
+			copyAllocator.recycle_completed();
+		}
+		return complete;
+	}
+	void GraphicsDevice_DX12::WaitUpload(UploadTicket ticket)
+	{
+		if (ticket.done.value == 0)
+			return;
+		if (ticket.done.queue >= QUEUE_COUNT || token_fence[ticket.done.queue] == nullptr)
+			return;
+		if (!IsTokenComplete(ticket.done))
+		{
+			dx12_check(token_fence[ticket.done.queue]->SetEventOnCompletion(ticket.done.value, nullptr));
+		}
+		copyAllocator.recycle_completed();
 	}
 
 	void GraphicsDevice_DX12::OnDeviceRemoved()
@@ -6299,6 +6565,15 @@ std::mutex queue_locker;
 			}
 			fence->Signal(0);
 		}
+		if (token_fence[QUEUE_COPY] != nullptr)
+		{
+			const uint64_t latest_copy = token_fence_values[QUEUE_COPY].load(std::memory_order_relaxed);
+			if (latest_copy > 0 && token_fence[QUEUE_COPY]->GetCompletedValue() < latest_copy)
+			{
+				dx12_check(token_fence[QUEUE_COPY]->SetEventOnCompletion(latest_copy, nullptr));
+			}
+		}
+		copyAllocator.recycle_completed();
 	}
 
 	void GraphicsDevice_DX12::ClearPipelineStateCache()

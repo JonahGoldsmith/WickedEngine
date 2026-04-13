@@ -122,16 +122,33 @@ RWTexture2D<float> gHiZOut : register(u9);
 #ifndef descriptor_index
 #define descriptor_index(x) (max(0, (x)))
 #endif
-#if defined(__hlsl_dx_compiler) && !defined(__spirv__) && __SHADER_TARGET_MAJOR >= 6 && __SHADER_TARGET_MINOR >= 6
+#if (defined(__hlsl_dx_compiler) && !defined(__spirv__) && __SHADER_TARGET_MAJOR >= 6 && __SHADER_TARGET_MINOR >= 6) || defined(__spirv__)
+#define WICKED_SUBSET_TYPED_BINDLESS 1
+#else
+#define WICKED_SUBSET_TYPED_BINDLESS 0
+#endif
+#if WICKED_SUBSET_TYPED_BINDLESS && defined(__hlsl_dx_compiler) && !defined(__spirv__) && __SHADER_TARGET_MAJOR >= 6 && __SHADER_TARGET_MINOR >= 6
 template<typename T>
 struct BindlessResource
 {
     T operator[](uint index) { return (T)ResourceDescriptorHeap[index]; }
 };
-static const BindlessResource<ByteAddressBuffer> bindless_buffers;
+static const BindlessResource<StructuredBuffer<float3> > bindless_vertices;
+static const BindlessResource<StructuredBuffer<InstanceData> > bindless_instances;
+static const BindlessResource<StructuredBuffer<ClusterCommand> > bindless_commands;
+static const BindlessResource<StructuredBuffer<ClusterTemplate> > bindless_cluster_templates;
+static const BindlessResource<StructuredBuffer<uint> > bindless_uint_buffers;
+static const BindlessResource<ByteAddressBuffer> bindless_raw_buffers;
+static const BindlessResource<RWStructuredBuffer<uint> > bindless_rwuint_buffers;
 static const BindlessResource<RWByteAddressBuffer> bindless_rwbuffers;
-#elif defined(__spirv__)
-[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] ByteAddressBuffer bindless_buffers[];
+#elif WICKED_SUBSET_TYPED_BINDLESS && defined(__spirv__)
+[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] StructuredBuffer<float3> bindless_vertices[];
+[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] StructuredBuffer<InstanceData> bindless_instances[];
+[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] StructuredBuffer<ClusterCommand> bindless_commands[];
+[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] StructuredBuffer<ClusterTemplate> bindless_cluster_templates[];
+[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] StructuredBuffer<uint> bindless_uint_buffers[];
+[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] ByteAddressBuffer bindless_raw_buffers[];
+[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] RWStructuredBuffer<uint> bindless_rwuint_buffers[];
 [[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] RWByteAddressBuffer bindless_rwbuffers[];
 #else
 ByteAddressBuffer bindless_buffers[] : register(space3);
@@ -214,6 +231,27 @@ uint LoadUInt(ByteAddressBuffer buffer, uint byteOffset)
 }
 
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+StructuredBuffer<float3> VertexBufferSRV() { return bindless_vertices[descriptor_index(bindless.vertexBufferSRV)]; }
+StructuredBuffer<InstanceData> InstanceBufferSRV() { return bindless_instances[descriptor_index(bindless.instanceBufferSRV)]; }
+StructuredBuffer<ClusterCommand> CommandBufferSRV() { return bindless_commands[descriptor_index(bindless.commandBufferSRV)]; }
+StructuredBuffer<ClusterTemplate> ClusterTemplateBufferSRV() { return bindless_cluster_templates[descriptor_index(bindless.clusterTemplateBufferSRV)]; }
+StructuredBuffer<uint> TemplateVerticesBufferSRV() { return bindless_uint_buffers[descriptor_index(bindless.templateVerticesBufferSRV)]; }
+StructuredBuffer<uint> TemplateTrianglesBufferSRV() { return bindless_uint_buffers[descriptor_index(bindless.templateTrianglesBufferSRV)]; }
+StructuredBuffer<uint> InstanceVisibleBufferSRV() { return bindless_uint_buffers[descriptor_index(bindless.instanceVisibleSRV)]; }
+StructuredBuffer<uint> VisibleCommandIndicesBufferSRV() { return bindless_uint_buffers[descriptor_index(bindless.visibleCommandIndicesSRV)]; }
+StructuredBuffer<uint> TVBFilteredPrimitiveIDsBufferSRV() { return bindless_uint_buffers[descriptor_index(bindless.tvbFilteredPrimitiveIDsSRV)]; }
+ByteAddressBuffer SourceArgsBufferSRV() { return bindless_raw_buffers[descriptor_index(bindless.sourceArgsSRV)]; }
+ByteAddressBuffer VisibleCountBufferSRV() { return bindless_raw_buffers[descriptor_index(bindless.visibleCountSRV)]; }
+RWStructuredBuffer<uint> InstanceVisibleBufferUAV() { return bindless_rwuint_buffers[descriptor_index(bindless.instanceVisibleUAV)]; }
+RWStructuredBuffer<uint> VisibleCommandIndicesBufferUAV() { return bindless_rwuint_buffers[descriptor_index(bindless.visibleCommandIndicesUAV)]; }
+RWStructuredBuffer<uint> TVBFilteredPrimitiveIDsBufferUAV() { return bindless_rwuint_buffers[descriptor_index(bindless.tvbFilteredPrimitiveIDsUAV)]; }
+RWByteAddressBuffer VisibleCountBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.visibleCountUAV)]; }
+RWByteAddressBuffer VisibleArgsBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.visibleArgsUAV)]; }
+RWByteAddressBuffer TVBFilteredIndicesBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.tvbFilteredIndicesUAV)]; }
+RWByteAddressBuffer HashBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.hashUAV)]; }
+RWByteAddressBuffer MeshDispatchArgsBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.meshDispatchArgsUAV)]; }
+#else
 ByteAddressBuffer VertexBufferSRV() { return bindless_buffers[descriptor_index(bindless.vertexBufferSRV)]; }
 ByteAddressBuffer InstanceBufferSRV() { return bindless_buffers[descriptor_index(bindless.instanceBufferSRV)]; }
 ByteAddressBuffer CommandBufferSRV() { return bindless_buffers[descriptor_index(bindless.commandBufferSRV)]; }
@@ -234,6 +272,7 @@ RWByteAddressBuffer TVBFilteredPrimitiveIDsBufferUAV() { return bindless_rwbuffe
 RWByteAddressBuffer HashBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.hashUAV)]; }
 RWByteAddressBuffer MeshDispatchArgsBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.meshDispatchArgsUAV)]; }
 #endif
+#endif
 
 RWByteAddressBuffer TVBArgsBufferUAV()
 {
@@ -247,7 +286,11 @@ RWByteAddressBuffer TVBArgsBufferUAV()
 float3 LoadVertex(uint vertexIndex)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    return VertexBufferSRV()[vertexIndex];
+#else
     return LoadFloat3(VertexBufferSRV(), vertexIndex * kVertexStrideBytes);
+#endif
 #else
     return gVertices[vertexIndex];
 #endif
@@ -256,6 +299,9 @@ float3 LoadVertex(uint vertexIndex)
 InstanceData LoadInstance(uint instanceIndex)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    return InstanceBufferSRV()[instanceIndex];
+#else
     const uint base = instanceIndex * kInstanceStrideBytes;
     ByteAddressBuffer buffer = InstanceBufferSRV();
     InstanceData inst;
@@ -271,6 +317,7 @@ InstanceData LoadInstance(uint instanceIndex)
         buffer.Load(base + 104u),
         buffer.Load(base + 108u)));
     return inst;
+#endif
 #else
     return gInstances[instanceIndex];
 #endif
@@ -279,6 +326,9 @@ InstanceData LoadInstance(uint instanceIndex)
 ClusterCommand LoadClusterCommand(uint commandIndex)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    return CommandBufferSRV()[commandIndex];
+#else
     const uint base = commandIndex * kCommandStrideBytes;
     ByteAddressBuffer buffer = CommandBufferSRV();
     ClusterCommand command;
@@ -287,6 +337,7 @@ ClusterCommand LoadClusterCommand(uint commandIndex)
     command.primitiveBase = buffer.Load(base + 8u);
     command._padding0 = buffer.Load(base + 12u);
     return command;
+#endif
 #else
     return gCommands[commandIndex];
 #endif
@@ -295,6 +346,9 @@ ClusterCommand LoadClusterCommand(uint commandIndex)
 ClusterTemplate LoadClusterTemplate(uint clusterTemplateIndex)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    return ClusterTemplateBufferSRV()[clusterTemplateIndex];
+#else
     const uint base = clusterTemplateIndex * kClusterTemplateStrideBytes;
     ByteAddressBuffer buffer = ClusterTemplateBufferSRV();
     ClusterTemplate cluster;
@@ -308,6 +362,7 @@ ClusterTemplate LoadClusterTemplate(uint clusterTemplateIndex)
     cluster.localTriCount = buffer.Load(base + 28u);
     cluster.bounds = LoadFloat4(buffer, base + 32u);
     return cluster;
+#endif
 #else
     return gClusterTemplates[clusterTemplateIndex];
 #endif
@@ -316,7 +371,11 @@ ClusterTemplate LoadClusterTemplate(uint clusterTemplateIndex)
 uint LoadTemplateVertex(uint index)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    return TemplateVerticesBufferSRV()[index];
+#else
     return LoadUInt(TemplateVerticesBufferSRV(), index * kUIntStrideBytes);
+#endif
 #else
     return gTemplateVertices[index];
 #endif
@@ -325,7 +384,11 @@ uint LoadTemplateVertex(uint index)
 uint LoadTemplatePackedTriangle(uint index)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    return TemplateTrianglesBufferSRV()[index];
+#else
     return LoadUInt(TemplateTrianglesBufferSRV(), index * kUIntStrideBytes);
+#endif
 #else
     return gTemplatePackedTriangles[index];
 #endif
@@ -334,7 +397,11 @@ uint LoadTemplatePackedTriangle(uint index)
 uint LoadInstanceVisible(uint index)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    return InstanceVisibleBufferSRV()[index];
+#else
     return LoadUInt(InstanceVisibleBufferSRV(), index * kUIntStrideBytes);
+#endif
 #else
     return gInstanceVisible[index];
 #endif
@@ -343,7 +410,11 @@ uint LoadInstanceVisible(uint index)
 uint LoadVisibleCommandIndex(uint index)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    return VisibleCommandIndicesBufferSRV()[index];
+#else
     return LoadUInt(VisibleCommandIndicesBufferSRV(), index * kUIntStrideBytes);
+#endif
 #else
     return gVisibleCommandIndices[index];
 #endif
@@ -370,7 +441,11 @@ uint LoadVisibleCountValue()
 uint LoadTVBFilteredPrimitiveID(uint index)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    return TVBFilteredPrimitiveIDsBufferSRV()[index];
+#else
     return LoadUInt(TVBFilteredPrimitiveIDsBufferSRV(), index * kUIntStrideBytes);
+#endif
 #else
     return gTVBFilteredPrimitiveIDs[index];
 #endif
@@ -379,7 +454,11 @@ uint LoadTVBFilteredPrimitiveID(uint index)
 void StoreInstanceVisible(uint index, uint value)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    InstanceVisibleBufferUAV()[index] = value;
+#else
     InstanceVisibleBufferUAV().Store(index * kUIntStrideBytes, value);
+#endif
 #else
     gInstanceVisibleOut[index] = value;
 #endif
@@ -388,7 +467,11 @@ void StoreInstanceVisible(uint index, uint value)
 void StoreVisibleCommandIndex(uint index, uint value)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    VisibleCommandIndicesBufferUAV()[index] = value;
+#else
     VisibleCommandIndicesBufferUAV().Store(index * kUIntStrideBytes, value);
+#endif
 #else
     gVisibleCommandIndicesOut[index] = value;
 #endif
@@ -397,7 +480,11 @@ void StoreVisibleCommandIndex(uint index, uint value)
 void StoreTVBFilteredPrimitiveID(uint index, uint value)
 {
 #if WICKED_SUBSET_BINDLESS
+#if WICKED_SUBSET_TYPED_BINDLESS
+    TVBFilteredPrimitiveIDsBufferUAV()[index] = value;
+#else
     TVBFilteredPrimitiveIDsBufferUAV().Store(index * kUIntStrideBytes, value);
+#endif
 #else
     gTVBFilteredPrimitiveIDsOut[index] = value;
 #endif

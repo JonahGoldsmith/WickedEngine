@@ -70,6 +70,47 @@ namespace wi
 		QUEUE_COUNT,
 	};
 
+	struct SubmissionToken
+	{
+		QUEUE_TYPE queue = QUEUE_GRAPHICS;
+		uint64_t value = 0;
+	};
+
+	struct SubmissionTokenSet
+	{
+		uint32_t validMask = 0;
+		SubmissionToken perQueue[QUEUE_COUNT] = {};
+	};
+
+	struct UploadDesc
+	{
+		enum class Type
+		{
+			BUFFER,
+			TEXTURE,
+		};
+
+		Type type = Type::BUFFER;
+		QUEUE_TYPE queue = QUEUE_COPY;
+		const void* src_data = nullptr;
+		uint64_t src_size = 0;
+
+		// BUFFER upload:
+		const GPUBuffer* dst_buffer = nullptr;
+		uint64_t dst_offset = 0;
+
+		// TEXTURE upload:
+		const Texture* dst_texture = nullptr;
+		const SubresourceData* subresources = nullptr;
+		uint32_t subresource_count = 0;
+		ResourceState texture_final_layout = ResourceState::SHADER_RESOURCE;
+	};
+
+	struct UploadTicket
+	{
+		SubmissionToken done = {};
+	};
+
 	class GraphicsDevice
 	{
 	protected:
@@ -127,6 +168,74 @@ namespace wi
 		// Submit all command list that were used with BeginCommandList before this call.
 		//	This will make every command list to be in "available" state and restarts them
 		virtual void SubmitCommandLists() = 0;
+
+		// Submit command lists and return per-queue completion tokens for this submit.
+		//	Queues that had no submitted work will have their corresponding valid bit unset.
+		virtual SubmissionTokenSet SubmitCommandListsExAll()
+		{
+			SubmitCommandLists();
+			return {};
+		}
+		// Submit command lists and return a convenience completion token.
+		//	This prefers graphics queue token if available.
+		virtual SubmissionToken SubmitCommandListsEx()
+		{
+			SubmissionTokenSet tokens = SubmitCommandListsExAll();
+			if (tokens.validMask & (1u << QUEUE_GRAPHICS))
+			{
+				return tokens.perQueue[QUEUE_GRAPHICS];
+			}
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if (tokens.validMask & (1u << q))
+				{
+					return tokens.perQueue[q];
+				}
+			}
+			return {};
+		}
+		// Insert a queue-level GPU wait.
+		virtual void WaitForToken(QUEUE_TYPE queue, SubmissionToken token)
+		{
+			(void)queue;
+			if (token.value == 0 || IsTokenComplete(token))
+				return;
+			WaitForGPU();
+		}
+		// Convenience helper for waiting on multiple tokens.
+		virtual void WaitForTokens(QUEUE_TYPE queue, const SubmissionTokenSet& tokens, uint32_t srcMask = ~0u)
+		{
+			const uint32_t mask = tokens.validMask & srcMask;
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if (mask & (1u << q))
+				{
+					WaitForToken(queue, tokens.perQueue[q]);
+				}
+			}
+		}
+		// CPU-side completion poll for a token.
+		virtual bool IsTokenComplete(SubmissionToken token) const
+		{
+			return token.value == 0;
+		}
+
+		// Submit upload work without blocking the CPU.
+		virtual UploadTicket UploadAsync(const UploadDesc& upload)
+		{
+			(void)upload;
+			return {};
+		}
+		virtual bool IsUploadComplete(UploadTicket ticket) const
+		{
+			return IsTokenComplete(ticket.done);
+		}
+		virtual void WaitUpload(UploadTicket ticket)
+		{
+			if (ticket.done.value == 0)
+				return;
+			WaitForToken(ticket.done.queue, ticket.done);
+		}
 
 		// The CPU will wait until all submitted GPU work is finished execution
 		virtual void WaitForGPU() const = 0;

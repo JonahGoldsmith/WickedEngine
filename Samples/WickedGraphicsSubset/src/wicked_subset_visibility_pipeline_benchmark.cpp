@@ -107,6 +107,8 @@ using wi::PipelineStateDesc;
 using wi::PrimitiveTopology;
 using wi::QUEUE_COMPUTE;
 using wi::QUEUE_GRAPHICS;
+using wi::SubmissionToken;
+using wi::SubmissionTokenSet;
 using wi::RasterizerState;
 using wi::RenderPassImage;
 using wi::ResourceMiscFlag;
@@ -982,10 +984,11 @@ public:
         LogActiveTier();
 
         SDL_Log(
-            "[WickedVisibilityPipelineBenchmark] initialized | backend=%s | mesh=%s | async_compute=%s | binding=%s | instances=%u | commands=%u | auto-run=%s | camera=fly",
+            "[WickedVisibilityPipelineBenchmark] initialized | backend=%s | mesh=%s | async_compute=%s | token_mode=%s | binding=%s | instances=%u | commands=%u | auto-run=%s | camera=fly",
             BackendName(),
             supportsMeshShaders_ ? "yes" : "no",
             asyncComputeEnabled_ ? "yes" : "no",
+            tokenSubmissionEnabled_ ? "yes" : "no",
             BindingModeName(activeBindingMode_),
             totalInstanceCount_,
             totalCommandCount_,
@@ -2217,6 +2220,7 @@ private:
         cullHistoryValid_ = false;
         cullReadSlot_ = 0u;
         cullWriteSlot_ = 1u;
+        cullCompletionTokens_ = {};
     }
 
     GPUBuffer* VisibleArgsBuffer(uint32_t slot)
@@ -2474,6 +2478,15 @@ private:
                 IsAsyncCullActiveForCurrentMode() ? "enabled" : "disabled");
             return;
         }
+        else if (key == SDLK_T)
+        {
+            tokenSubmissionEnabled_ = !tokenSubmissionEnabled_;
+            ResetCullFrameOverlap();
+            SDL_Log(
+                "[WickedVisibilityPipelineBenchmark] tokenized submission mode -> %s",
+                tokenSubmissionEnabled_ ? "enabled" : "disabled");
+            return;
+        }
         else if (key == SDLK_O)
         {
             hiZOcclusionEnabled_ = !hiZOcclusionEnabled_;
@@ -2492,6 +2505,18 @@ private:
             SDL_Log("[WickedVisibilityPipelineBenchmark] cull padding -> %.2f px", cullPaddingPixels_);
             return;
         }
+        else if (key == SDLK_SEMICOLON)
+        {
+            hiZOcclusionBias_ = std::max(0.0f, hiZOcclusionBias_ - 0.0005f);
+            SDL_Log("[WickedVisibilityPipelineBenchmark] Hi-Z occlusion bias -> %.6f", hiZOcclusionBias_);
+            return;
+        }
+        else if (key == SDLK_APOSTROPHE)
+        {
+            hiZOcclusionBias_ = std::min(0.05f, hiZOcclusionBias_ + 0.0005f);
+            SDL_Log("[WickedVisibilityPipelineBenchmark] Hi-Z occlusion bias -> %.6f", hiZOcclusionBias_);
+            return;
+        }
         else if (key == SDLK_K)
         {
             if (!bindlessShadersAvailable_)
@@ -2506,7 +2531,7 @@ private:
         else if (key == SDLK_P)
         {
             SDL_Log(
-                "[WickedVisibilityPipelineBenchmark] snapshot | suite=%s pipeline=%s scenario=%s tier=%s binding=%s cmd=%u inst=%u async=%s hiz=%s cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms visible=%u hash=%u",
+                "[WickedVisibilityPipelineBenchmark] snapshot | suite=%s pipeline=%s scenario=%s tier=%s binding=%s cmd=%u inst=%u async=%s tokens=%s hiz=%s cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms visible=%u hash=%u",
                 SuiteName(activeSuite_),
                 PipelineName(activePipeline_),
                 ScenarioName(activeScenario_),
@@ -2515,6 +2540,7 @@ private:
                 activeCommandCount_,
                 activeInstanceCount_,
                 IsAsyncCullActiveForCurrentMode() ? "on" : "off",
+                tokenSubmissionEnabled_ ? "on" : "off",
                 hiZOcclusionEnabled_ ? "on" : "off",
                 latestMetrics_.cpuMs,
                 latestMetrics_.gpuCullMs,
@@ -2614,7 +2640,8 @@ private:
         SDL_Log("  Camera: hold RMB to look, WASD move, Q/E vertical, Shift boost");
         SDL_Log("  [1/2/3] pipeline Wicked/TVB/Esoterica | [M] suite Portable/Mesh");
         SDL_Log("  [Z/X] scenario AllVisible/HighCulling | [UP/DOWN] or [[/]] or [PgUp/PgDn] triangle tier");
-        SDL_Log("  [J] toggle async compute cull queue | [O] toggle Hi-Z occlusion | [V] toggle validation/hash pass");
+        SDL_Log("  [J] toggle async compute cull queue | [T] toggle tokenized submission mode");
+        SDL_Log("  [O] toggle Hi-Z occlusion | [;/' ] decrease/increase Hi-Z occlusion bias | [V] toggle validation/hash pass");
         SDL_Log("  [,/.] decrease/increase cull padding pixels");
         SDL_Log("  [K] toggle bindful/bindless resource mode");
         SDL_Log("  [P] print current perf snapshot | [H] print controls and path summary");
@@ -2628,6 +2655,7 @@ private:
         SDL_Log("  Esoterica: instance+cluster (sphere+Hi-Z) cull -> TVB triangle filtering on visible clusters");
         SDL_Log("  Shared backbone: GPU instance cull, cluster cull, TVB filtering, and Hi-Z depth pyramid build");
         SDL_Log("  Queueing: async mode uses one-frame-lag ping-pong so frame N draw can overlap frame N+1 cull");
+        SDL_Log("  Queue sync: [T] token mode removes forced end-of-frame cross-queue waits and uses explicit slot-token waits");
         SDL_Log("  Resource binding: [K] toggles bindful slots vs bindless descriptor-index CB");
     }
 
@@ -2746,6 +2774,14 @@ private:
                 cullSlot = cullWriteSlot_;
             }
         }
+        if (useAsyncComputeForCull && tokenSubmissionEnabled_ && cullHistoryValid_)
+        {
+            const SubmissionToken drawDependency = cullCompletionTokens_[drawSlot];
+            if (drawDependency.value != 0)
+            {
+                device_->WaitForToken(QUEUE_GRAPHICS, drawDependency);
+            }
+        }
 
         GPUBuffer* drawVisibleCountBuffer = VisibleCountBuffer(drawSlot);
         ResourceState* drawVisibleCountState = VisibleCountBufferState(drawSlot);
@@ -2835,10 +2871,31 @@ private:
 
         device_->QueryResolve(&timestampQueryHeap_, 0, kTimestampCount, &timestampReadback_[frameIndex], 0, cmdGraphics);
 
-        device_->SubmitCommandLists();
+        SubmissionTokenSet submitTokens = {};
+        if (tokenSubmissionEnabled_)
+        {
+            submitTokens = device_->SubmitCommandListsExAll();
+        }
+        else
+        {
+            device_->SubmitCommandLists();
+        }
 
         if (useAsyncComputeForCull)
         {
+            if (tokenSubmissionEnabled_)
+            {
+                SubmissionToken cullToken = {};
+                if (submitTokens.validMask & (1u << QUEUE_COMPUTE))
+                {
+                    cullToken = submitTokens.perQueue[QUEUE_COMPUTE];
+                }
+                else if (submitTokens.validMask & (1u << QUEUE_GRAPHICS))
+                {
+                    cullToken = submitTokens.perQueue[QUEUE_GRAPHICS];
+                }
+                cullCompletionTokens_[cullSlot] = cullToken;
+            }
             cullHistoryValid_ = true;
             cullReadSlot_ = cullSlot;
             cullWriteSlot_ = cullSlot ^ 1u;
@@ -3382,7 +3439,7 @@ private:
         std::snprintf(
             title,
             sizeof(title),
-            "Visibility Benchmark [%s] | %s | %s | %s | %s | tier %s (%.1fM tris) | cmd %u vis %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | async=%s hiz=%s auto=%s",
+            "Visibility Benchmark [%s] | %s | %s | %s | %s | tier %s (%.1fM tris) | cmd %u vis %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | async=%s tokens=%s hiz=%s auto=%s",
             BackendName(),
             SuiteName(activeSuite_),
             PipelineName(activePipeline_),
@@ -3399,6 +3456,7 @@ private:
             metrics.gpuDrawMs,
             metrics.gpuFrameMs,
             IsAsyncCullActiveForCurrentMode() ? "on" : "off",
+            tokenSubmissionEnabled_ ? "on" : "off",
             hiZOcclusionEnabled_ ? "on" : "off",
             autoRun_ ? "on" : "off");
         SDL_SetWindowTitle(window_, title);
@@ -3539,9 +3597,11 @@ private:
     float cullPaddingPixels_ = 6.0f;
     float hiZOcclusionBias_ = 0.0025f;
     bool asyncComputeEnabled_ = true;
+    bool tokenSubmissionEnabled_ = false;
     bool cullHistoryValid_ = false;
     uint32_t cullReadSlot_ = 0u;
     uint32_t cullWriteSlot_ = 1u;
+    std::array<SubmissionToken, kCullOutputSlotCount> cullCompletionTokens_ = {};
 
     float sceneTime_ = 0.0f;
     float sceneExtent_ = 25.0f;

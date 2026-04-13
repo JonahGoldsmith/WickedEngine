@@ -313,6 +313,8 @@ namespace wi
 		VkPhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable_features = {};
 		VkPhysicalDeviceImageViewMinLodFeaturesEXT image_view_min_lod_features = {};
 		VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {};
+		bool timeline_semaphore_supported = false;
+		mutable std::atomic_bool timeline_semaphore_warning_emitted = false;
 
 		struct VideoCapability
 		{
@@ -369,6 +371,9 @@ namespace wi
 		{
 			VkQueue queue = VK_NULL_HANDLE;
 			VkSemaphore frame_semaphores[BUFFERCOUNT][QUEUE_COUNT] = {};
+			VkSemaphore timeline_semaphore = VK_NULL_HANDLE;
+			uint64_t timeline_value = 0;
+			bool submitted_in_current_submit = false;
 			std::deque<SwapChain> swapchain_updates;
 			VkSemaphoreSubmitInfo* submit_waitSemaphoreInfos = nullptr;
 			VkSemaphoreSubmitInfo* submit_signalSemaphoreInfos = nullptr;
@@ -382,9 +387,9 @@ namespace wi
 			wi::allocator::shared_ptr<std::mutex> locker;
 
 			void clear();
-			void signal(VkSemaphore semaphore);
-			void wait(VkSemaphore semaphore);
-			void submit(GraphicsDevice_Vulkan* device, VkFence fence);
+			void signal(VkSemaphore semaphore, uint64_t value = 0, VkPipelineStageFlags2 stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+			void wait(VkSemaphore semaphore, uint64_t value = 0, VkPipelineStageFlags2 stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+			bool submit(GraphicsDevice_Vulkan* device, VkFence fence, bool include_frame_sync = true, uint64_t timeline_signal_value = 0);
 
 		} queues[QUEUE_COUNT];
 
@@ -404,12 +409,14 @@ namespace wi
 				GPUBuffer uploadbuffer;
 				constexpr bool IsValid() const { return transferCommandBuffer != VK_NULL_HANDLE; }
 			};
+			std::deque<CopyCMD> inflight;
 			std::deque<CopyCMD> freelist;
 
 			void init(GraphicsDevice_Vulkan* device);
 			void destroy();
+			void recycle_completed();
 			CopyCMD allocate(uint64_t staging_size);
-			void submit(CopyCMD cmd);
+			SubmissionToken submit(CopyCMD cmd, QUEUE_TYPE queue, bool wait_for_completion);
 		};
 		mutable CopyAllocator copyAllocator;
 
@@ -426,6 +433,9 @@ namespace wi
 		inline TransitionHandler& GetTransitionHandler() { return transition_handlers[GetBufferIndex()]; }
 
 		VkFence frame_fence[BUFFERCOUNT][QUEUE_COUNT] = {};
+		bool frame_queue_active[BUFFERCOUNT][QUEUE_COUNT] = {};
+		mutable std::mutex upload_token_locker;
+		mutable SubmissionTokenSet pending_implicit_uploads = {};
 
 		struct DescriptorBinder
 		{
@@ -677,6 +687,9 @@ namespace wi
 
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
+		SubmissionTokenSet SubmitCommandListsInternal(bool token_mode);
+		bool SupportsSubmissionTokens() const;
+		void WarnMissingTimelineSemaphore(const char* caller) const;
 
 		void set_fence_name(VkFence fence, const char* name);
 		void set_semaphore_name(VkSemaphore semaphore, const char* name);
@@ -713,6 +726,12 @@ namespace wi
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
 		void SubmitCommandLists() override;
+		SubmissionTokenSet SubmitCommandListsExAll() override;
+		void WaitForToken(QUEUE_TYPE queue, SubmissionToken token) override;
+		bool IsTokenComplete(SubmissionToken token) const override;
+		UploadTicket UploadAsync(const UploadDesc& upload) override;
+		bool IsUploadComplete(UploadTicket ticket) const override;
+		void WaitUpload(UploadTicket ticket) override;
 
 		void WaitForGPU() const override;
 		void ClearPipelineStateCache() override;

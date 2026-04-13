@@ -192,16 +192,18 @@ namespace wi
 			{
 				Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
 				Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
-				Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-				uint64_t fenceValue = 0;
 				GPUBuffer uploadbuffer;
+				uint64_t submittedValue = 0;
 				inline bool IsValid() const { return commandList != nullptr; }
 			};
 			CopyCMD** freelist = nullptr;
+			CopyCMD** inflight = nullptr;
 
 			void init(GraphicsDevice_DX12* device);
+			void recycle_completed_unlocked();
 			CopyCMD allocate(uint64_t staging_size);
-			void submit(CopyCMD cmd);
+			void recycle_completed();
+			UploadTicket submit(CopyCMD cmd);
 
 			~CopyAllocator()
 			{
@@ -213,12 +215,24 @@ namespace wi
 					}
 				}
 				dx12_internal::destroy_stb_array(freelist);
+				if (inflight != nullptr)
+				{
+					for (size_t i = 0; i < arrlenu(inflight); ++i)
+					{
+						delete inflight[i];
+					}
+				}
+				dx12_internal::destroy_stb_array(inflight);
 			}
 		};
 		mutable CopyAllocator copyAllocator;
 
 		uint64_t frame_fence_values[BUFFERCOUNT] = {};
 		Microsoft::WRL::ComPtr<ID3D12Fence> frame_fence[BUFFERCOUNT][QUEUE_COUNT];
+		Microsoft::WRL::ComPtr<ID3D12Fence> token_fence[QUEUE_COUNT];
+		std::atomic<uint64_t> token_fence_values[QUEUE_COUNT] = {};
+		mutable std::mutex upload_token_locker;
+		mutable SubmissionTokenSet pending_implicit_uploads = {};
 
 		struct DescriptorBinder
 		{
@@ -418,6 +432,7 @@ namespace wi
 
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
+		SubmissionTokenSet SubmitCommandListsInternal(bool token_mode);
 
 	public:
 		GraphicsDevice_DX12(ValidationMode validationMode = ValidationMode::Disabled, GPUPreference preference = GPUPreference::Discrete);
@@ -450,6 +465,12 @@ namespace wi
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
 		void SubmitCommandLists() override;
+		SubmissionTokenSet SubmitCommandListsExAll() override;
+		void WaitForToken(QUEUE_TYPE queue, SubmissionToken token) override;
+		bool IsTokenComplete(SubmissionToken token) const override;
+		UploadTicket UploadAsync(const UploadDesc& upload) override;
+		bool IsUploadComplete(UploadTicket ticket) const override;
+		void WaitUpload(UploadTicket ticket) override;
 		void OnDeviceRemoved();
 
 		void WaitForGPU() const override;
