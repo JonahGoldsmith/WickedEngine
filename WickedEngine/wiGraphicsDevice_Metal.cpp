@@ -3979,6 +3979,7 @@ using namespace metal_internal;
 	void GraphicsDevice_Metal::retire_completed_uploads() const
 	{
 		std::scoped_lock upload_lock(upload_locker);
+		bool residency_dirty = false;
 		for (size_t i = 0; i < inflight_uploads.size();)
 		{
 			if (!IsTokenComplete(inflight_uploads[i].ticket.done))
@@ -3991,8 +3992,14 @@ using namespace metal_internal;
 			{
 				std::scoped_lock residency_lock(allocationhandler->destroylocker);
 				allocationhandler->residency_set->removeAllocation(inflight_uploads[i].staging_buffer.get());
+				residency_dirty = true;
 			}
 			inflight_uploads.erase(inflight_uploads.begin() + i);
+		}
+		if (residency_dirty)
+		{
+			std::scoped_lock residency_lock(allocationhandler->destroylocker);
+			allocationhandler->residency_set->commit();
 		}
 	}
 
@@ -4012,9 +4019,8 @@ using namespace metal_internal;
 		if (upload.src_data == nullptr || upload.src_size == 0)
 			return ticket;
 
-		QUEUE_TYPE token_queue = upload.queue;
-		if (token_queue >= QUEUE_COUNT)
-			token_queue = QUEUE_COPY;
+		// Metal uploads use the dedicated upload queue, which maps to copy queue token stream.
+		const QUEUE_TYPE token_queue = QUEUE_COPY;
 
 		switch (upload.type)
 		{
@@ -4505,7 +4511,11 @@ using namespace metal_internal;
 		}
 		if (submission_token_events[QUEUE_COPY].get() != nullptr)
 		{
-			const uint64_t latest_upload_token = submission_token_values[QUEUE_COPY];
+			uint64_t latest_upload_token = 0;
+			{
+				std::scoped_lock lock(submission_token_locker);
+				latest_upload_token = submission_token_values[QUEUE_COPY];
+			}
 			if (latest_upload_token > 0)
 			{
 				WaitForSharedEventWithAssert(submission_token_events[QUEUE_COPY].get(), latest_upload_token, "WaitForGPU upload queue drain");

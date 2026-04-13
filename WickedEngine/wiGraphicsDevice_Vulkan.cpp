@@ -1713,8 +1713,18 @@ using namespace vulkan_internal;
 		waitSemaphore.stageMask = stageMask;
 		arrput(submit_waitSemaphoreInfos, waitSemaphore);
 	}
-	bool GraphicsDevice_Vulkan::CommandQueue::submit(GraphicsDevice_Vulkan* device, VkFence fence, bool include_frame_sync, uint64_t timeline_signal_value)
+	bool GraphicsDevice_Vulkan::CommandQueue::submit(
+		GraphicsDevice_Vulkan* device,
+		VkFence fence,
+		bool include_frame_sync,
+		uint64_t timeline_signal_value,
+		uint64_t* out_timeline_signal_value
+	)
 	{
+		if (out_timeline_signal_value != nullptr)
+		{
+			*out_timeline_signal_value = 0;
+		}
 		if (queue == VK_NULL_HANDLE)
 			return false;
 		std::scoped_lock lock(*locker);
@@ -1722,24 +1732,37 @@ using namespace vulkan_internal;
 
 		// Main submit with command lists and semaphores:
 		{
-			if (fence != VK_NULL_HANDLE && include_frame_sync)
-			{
-				// end of frame mark:
-				for (int q = 0; q < QUEUE_COUNT; ++q)
+				if (fence != VK_NULL_HANDLE && include_frame_sync)
 				{
+					// end of frame mark:
+					for (int q = 0; q < QUEUE_COUNT; ++q)
+					{
 					if (frame_semaphores[device->GetBufferIndex()][q] == VK_NULL_HANDLE)
 						continue;
-					signal(frame_semaphores[device->GetBufferIndex()][q]);
+						signal(frame_semaphores[device->GetBufferIndex()][q]);
+					}
 				}
-			}
-			if (timeline_signal_value != 0 && timeline_semaphore != VK_NULL_HANDLE)
-			{
-				signal(timeline_semaphore, timeline_signal_value);
-			}
+				const bool has_submit_payload =
+					fence != VK_NULL_HANDLE ||
+					arrlenu(submit_cmds) > 0 ||
+					arrlenu(submit_waitSemaphoreInfos) > 0 ||
+					arrlenu(submit_signalSemaphoreInfos) > 0;
+				if (timeline_signal_value == 0 && out_timeline_signal_value != nullptr && timeline_semaphore != VK_NULL_HANDLE && has_submit_payload)
+				{
+					timeline_signal_value = timeline_value.fetch_add(1, std::memory_order_relaxed) + 1;
+				}
+				if (timeline_signal_value != 0 && timeline_semaphore != VK_NULL_HANDLE)
+				{
+					signal(timeline_semaphore, timeline_signal_value);
+				}
+				if (out_timeline_signal_value != nullptr)
+				{
+					*out_timeline_signal_value = timeline_signal_value;
+				}
 
-			did_submit =
-				fence != VK_NULL_HANDLE ||
-				arrlenu(submit_cmds) > 0 ||
+				did_submit =
+					fence != VK_NULL_HANDLE ||
+					arrlenu(submit_cmds) > 0 ||
 				arrlenu(submit_waitSemaphoreInfos) > 0 ||
 				arrlenu(submit_signalSemaphoreInfos) > 0;
 
@@ -1927,22 +1950,22 @@ using namespace vulkan_internal;
 			submitInfo.commandBufferInfoCount = 1;
 			submitInfo.pCommandBufferInfos = &cbSubmitInfo;
 
-			VkSemaphoreSubmitInfo signalSemaphoreInfo = {};
-			if (device->SupportsSubmissionTokens() && dst_queue.timeline_semaphore != VK_NULL_HANDLE)
-			{
-				signalSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-				signalSemaphoreInfo.semaphore = dst_queue.timeline_semaphore;
-				signalSemaphoreInfo.value = ++dst_queue.timeline_value;
-				signalSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-				submitInfo.signalSemaphoreInfoCount = 1;
-				submitInfo.pSignalSemaphoreInfos = &signalSemaphoreInfo;
-				token.queue = dst_queue_type;
-				token.value = signalSemaphoreInfo.value;
-			}
+				VkSemaphoreSubmitInfo signalSemaphoreInfo = {};
+				std::scoped_lock lock(*dst_queue.locker);
+				if (device->SupportsSubmissionTokens() && dst_queue.timeline_semaphore != VK_NULL_HANDLE)
+				{
+					signalSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+					signalSemaphoreInfo.semaphore = dst_queue.timeline_semaphore;
+					signalSemaphoreInfo.value = dst_queue.timeline_value.fetch_add(1, std::memory_order_relaxed) + 1;
+					signalSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+					submitInfo.signalSemaphoreInfoCount = 1;
+					submitInfo.pSignalSemaphoreInfos = &signalSemaphoreInfo;
+					token.queue = dst_queue_type;
+					token.value = signalSemaphoreInfo.value;
+				}
 
-			std::scoped_lock lock(*dst_queue.locker);
-			vulkan_check(vkQueueSubmit2(dst_queue.queue, 1, &submitInfo, cmd.fence));
-		}
+				vulkan_check(vkQueueSubmit2(dst_queue.queue, 1, &submitInfo, cmd.fence));
+			}
 
 		if (wait_for_completion)
 		{
@@ -7673,17 +7696,18 @@ using namespace vulkan_internal;
 				if (queues[q].queue == VK_NULL_HANDLE)
 					continue;
 
-				uint64_t timeline_signal_value = 0;
-				if (token_mode && queue_has_work[q] && queues[q].timeline_semaphore != VK_NULL_HANDLE)
-				{
-					timeline_signal_value = ++queues[q].timeline_value;
-				}
+					uint64_t timeline_signal_value = 0;
+					uint64_t* out_timeline_signal_value = nullptr;
+					if (token_mode && queue_has_work[q] && queues[q].timeline_semaphore != VK_NULL_HANDLE)
+					{
+						out_timeline_signal_value = &timeline_signal_value;
+					}
 
-				const bool submitted = queues[q].submit(this, frame_fence[submit_index][q], !token_mode, timeline_signal_value);
-				frame_queue_active[submit_index][q] = submitted;
-				if (token_mode && timeline_signal_value != 0 && submitted)
-				{
-					tokens.validMask |= 1u << q;
+					const bool submitted = queues[q].submit(this, frame_fence[submit_index][q], !token_mode, 0, out_timeline_signal_value);
+					frame_queue_active[submit_index][q] = submitted;
+					if (token_mode && timeline_signal_value != 0 && submitted)
+					{
+						tokens.validMask |= 1u << q;
 					tokens.perQueue[q].queue = (QUEUE_TYPE)q;
 					tokens.perQueue[q].value = timeline_signal_value;
 				}

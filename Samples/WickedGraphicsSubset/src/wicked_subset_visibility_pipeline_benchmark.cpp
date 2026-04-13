@@ -2706,6 +2706,58 @@ private:
         cb.tvbFilteredPrimitiveIDsUAV = device_->GetDescriptorIndex(tvbFilteredPrimitiveIDBuffer, SubresourceType::UAV);
         cb.hashUAV = device_->GetDescriptorIndex(&hashBuffer_, SubresourceType::UAV);
         cb.meshDispatchArgsUAV = device_->GetDescriptorIndex(meshDispatchArgsBuffer, SubresourceType::UAV);
+
+#if WICKED_SUBSET_USE_VULKAN
+        // Vulkan bindless SRV/UAV storage-buffer descriptors share the same descriptor type.
+        // If SRV allocation is exhausted for a read-write buffer while UAV still exists,
+        // reuse the UAV descriptor index to keep bindless paths functional.
+        auto use_uav_when_srv_missing = [](int32_t& srv, int32_t uav) {
+            if (srv < 0 && uav >= 0)
+            {
+                srv = uav;
+            }
+        };
+        use_uav_when_srv_missing(cb.instanceVisibleSRV, cb.instanceVisibleUAV);
+        use_uav_when_srv_missing(cb.visibleCommandIndicesSRV, cb.visibleCommandIndicesUAV);
+        use_uav_when_srv_missing(cb.visibleCountSRV, cb.visibleCountUAV);
+        use_uav_when_srv_missing(cb.tvbFilteredPrimitiveIDsSRV, cb.tvbFilteredPrimitiveIDsUAV);
+#endif
+
+        static bool loggedMissingDescriptor = false;
+        if (!loggedMissingDescriptor)
+        {
+            const bool missingDescriptor =
+                cb.vertexBufferSRV < 0 ||
+                cb.instanceBufferSRV < 0 ||
+                cb.commandBufferSRV < 0 ||
+                cb.clusterTemplateBufferSRV < 0 ||
+                cb.templateVerticesBufferSRV < 0 ||
+                cb.templateTrianglesBufferSRV < 0 ||
+                cb.instanceVisibleSRV < 0 ||
+                cb.visibleCommandIndicesSRV < 0 ||
+                cb.sourceArgsSRV < 0 ||
+                cb.tvbFilteredPrimitiveIDsSRV < 0 ||
+                cb.visibleCountSRV < 0 ||
+                cb.instanceVisibleUAV < 0 ||
+                cb.visibleCommandIndicesUAV < 0 ||
+                cb.visibleCountUAV < 0 ||
+                cb.visibleArgsUAV < 0 ||
+                cb.tvbFilteredIndicesUAV < 0 ||
+                cb.tvbArgsUAV < 0 ||
+                cb.tvbFilteredPrimitiveIDsUAV < 0 ||
+                cb.hashUAV < 0 ||
+                cb.meshDispatchArgsUAV < 0;
+            if (missingDescriptor)
+            {
+                loggedMissingDescriptor = true;
+                SDL_LogWarn(
+                    SDL_LOG_CATEGORY_APPLICATION,
+                    "[WickedVisibilityPipelineBenchmark] bindless descriptor index missing "
+                    "(some index < 0). Vulkan descriptor heap capacity may be exhausted."
+                );
+            }
+        }
+
         return cb;
     }
 

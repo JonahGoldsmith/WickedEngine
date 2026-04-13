@@ -367,31 +367,37 @@ namespace wi
 
 		uint32_t dynamic_cbv_count = ROOT_CBV_COUNT;
 
-		struct CommandQueue
-		{
-			VkQueue queue = VK_NULL_HANDLE;
-			VkSemaphore frame_semaphores[BUFFERCOUNT][QUEUE_COUNT] = {};
-			VkSemaphore timeline_semaphore = VK_NULL_HANDLE;
-			uint64_t timeline_value = 0;
-			bool submitted_in_current_submit = false;
-			std::deque<SwapChain> swapchain_updates;
-			VkSemaphoreSubmitInfo* submit_waitSemaphoreInfos = nullptr;
-			VkSemaphoreSubmitInfo* submit_signalSemaphoreInfos = nullptr;
-			VkCommandBufferSubmitInfo* submit_cmds = nullptr;
+			struct CommandQueue
+			{
+				VkQueue queue = VK_NULL_HANDLE;
+				VkSemaphore frame_semaphores[BUFFERCOUNT][QUEUE_COUNT] = {};
+				VkSemaphore timeline_semaphore = VK_NULL_HANDLE;
+				std::atomic<uint64_t> timeline_value = 0;
+				bool submitted_in_current_submit = false;
+				std::deque<SwapChain> swapchain_updates;
+				VkSemaphoreSubmitInfo* submit_waitSemaphoreInfos = nullptr;
+				VkSemaphoreSubmitInfo* submit_signalSemaphoreInfos = nullptr;
+				VkCommandBufferSubmitInfo* submit_cmds = nullptr;
 
 			VkSemaphore* swapchainWaitSemaphores = nullptr;
 			VkSwapchainKHR* swapchains = nullptr;
 			uint32_t* swapchainImageIndices = nullptr;
 
-			bool sparse_binding_supported = false;
-			wi::allocator::shared_ptr<std::mutex> locker;
+				bool sparse_binding_supported = false;
+				wi::allocator::shared_ptr<std::mutex> locker;
 
-			void clear();
-			void signal(VkSemaphore semaphore, uint64_t value = 0, VkPipelineStageFlags2 stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-			void wait(VkSemaphore semaphore, uint64_t value = 0, VkPipelineStageFlags2 stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-			bool submit(GraphicsDevice_Vulkan* device, VkFence fence, bool include_frame_sync = true, uint64_t timeline_signal_value = 0);
+				void clear();
+				void signal(VkSemaphore semaphore, uint64_t value = 0, VkPipelineStageFlags2 stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+				void wait(VkSemaphore semaphore, uint64_t value = 0, VkPipelineStageFlags2 stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+				bool submit(
+					GraphicsDevice_Vulkan* device,
+					VkFence fence,
+					bool include_frame_sync = true,
+					uint64_t timeline_signal_value = 0,
+					uint64_t* out_timeline_signal_value = nullptr
+				);
 
-		} queues[QUEUE_COUNT];
+			} queues[QUEUE_COUNT];
 
 		CommandQueue queue_init;
 		CommandQueue queue_sparse;
