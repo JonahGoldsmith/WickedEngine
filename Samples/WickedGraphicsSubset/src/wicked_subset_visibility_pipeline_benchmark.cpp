@@ -1097,6 +1097,7 @@ public:
         csHash_ = {};
         csHashBindless_ = {};
         csMeshArgs_ = {};
+        csMeshArgsBindless_ = {};
 
         vsIndexed_ = {};
         vsIndexedBindless_ = {};
@@ -1430,6 +1431,7 @@ private:
         bindlessReady &= CompileShader(ShaderStage::CS, "cs_cluster_filter", &csClusterFilterBindless_, true);
         bindlessReady &= CompileShader(ShaderStage::CS, "cs_tvb_filter", &csTVBFilterBindless_, true);
         bindlessReady &= CompileShader(ShaderStage::CS, "cs_hash_primitive_id", &csHashBindless_, true);
+        bindlessReady &= CompileShader(ShaderStage::CS, "cs_write_mesh_dispatch_args", &csMeshArgsBindless_, true);
         if (supportsMeshShaders_)
         {
             bindlessReady &= CompileShader(ShaderStage::MS, "ms_clusters", &msClusterBindless_, true);
@@ -2258,6 +2260,10 @@ private:
     {
         return &visibleCountBufferStates_[slot % kCullOutputSlotCount];
     }
+    ResourceState* MeshDispatchArgsBufferState(uint32_t slot)
+    {
+        return &meshDispatchArgsBufferStates_[slot % kCullOutputSlotCount];
+    }
     ResourceState* VisibleCommandIndicesBufferState(uint32_t slot)
     {
         return &visibleCommandIndicesBufferStates_[slot % kCullOutputSlotCount];
@@ -2284,6 +2290,7 @@ private:
         for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
             visibleCountBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            meshDispatchArgsBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
             visibleCommandIndicesBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
             visibleArgsBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
             tvbFilteredIndexBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
@@ -2865,9 +2872,11 @@ private:
         const Shader* csInstanceFilter = UseBindlessMode() ? &csInstanceFilterBindless_ : &csInstanceFilter_;
         const Shader* csClusterFilter = UseBindlessMode() ? &csClusterFilterBindless_ : &csClusterFilter_;
         const Shader* csTVBFilter = UseBindlessMode() ? &csTVBFilterBindless_ : &csTVBFilter_;
+        const Shader* csMeshArgs = UseBindlessMode() ? &csMeshArgsBindless_ : &csMeshArgs_;
 
         GPUBuffer* visibleCommandIndicesBuffer = VisibleCommandIndicesBuffer(cullSlot);
         GPUBuffer* visibleCountBuffer = VisibleCountBuffer(cullSlot);
+        GPUBuffer* meshDispatchArgsBuffer = MeshDispatchArgsBuffer(cullSlot);
         GPUBuffer* visibleArgsBuffer = VisibleArgsBuffer(cullSlot);
         GPUBuffer* tvbFilteredIndexBuffer = TVBFilteredIndexBuffer(cullSlot);
         GPUBuffer* tvbArgsBuffer = TVBArgsBuffer(cullSlot);
@@ -2886,6 +2895,7 @@ private:
             TransitionBufferState(tvbFilteredIndexBuffer, TVBFilteredIndexBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
             TransitionBufferState(tvbArgsBuffer, TVBArgsBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
             TransitionBufferState(tvbFilteredPrimitiveIDBuffer, TVBFilteredPrimitiveIDBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
+            TransitionBufferState(meshDispatchArgsBuffer, MeshDispatchArgsBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
         }
 
         device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
@@ -2922,15 +2932,21 @@ private:
 
         if (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable)
         {
+            SceneCB tvbCB = sceneCB;
+            tvbCB.meshCommandOffset = 0u;
+            device_->BindDynamicConstantBuffer(tvbCB, 0, cmd);
+
+            device_->BindComputeShader(csMeshArgs, cmd);
+            device_->Dispatch(1, 1, 1, cmd);
+            device_->Barrier(cmd);
+
+            TransitionBufferState(meshDispatchArgsBuffer, MeshDispatchArgsBufferState(cullSlot), ResourceState::INDIRECT_ARGUMENT, cmd);
+
             device_->BindComputeShader(csTVBFilter, cmd);
-            for (uint32_t dispatchBase = 0; dispatchBase < activeCommandCount_; dispatchBase += kMaxMeshDispatchGroups)
-            {
-                const uint32_t dispatchCount = std::min(kMaxMeshDispatchGroups, activeCommandCount_ - dispatchBase);
-                SceneCB tvbCB = sceneCB;
-                tvbCB.meshCommandOffset = dispatchBase;
-                device_->BindDynamicConstantBuffer(tvbCB, 0, cmd);
-                device_->Dispatch(std::max(1u, dispatchCount), 1, 1, cmd);
-            }
+            device_->BindDynamicConstantBuffer(tvbCB, 0, cmd);
+            device_->DispatchIndirect(meshDispatchArgsBuffer, 0, cmd);
+
+            TransitionBufferState(meshDispatchArgsBuffer, MeshDispatchArgsBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
             device_->Barrier(cmd);
         }
     }
@@ -2942,6 +2958,7 @@ private:
         TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
         TransitionBufferState(VisibleCommandIndicesBuffer(slot), VisibleCommandIndicesBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(VisibleCountBuffer(slot), VisibleCountBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(MeshDispatchArgsBuffer(slot), MeshDispatchArgsBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(VisibleArgsBuffer(slot), VisibleArgsBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(TVBFilteredIndexBuffer(slot), TVBFilteredIndexBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(TVBArgsBuffer(slot), TVBArgsBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
@@ -3420,6 +3437,7 @@ private:
     Shader csHash_ = {};
     Shader csHashBindless_ = {};
     Shader csMeshArgs_ = {};
+    Shader csMeshArgsBindless_ = {};
 
     PipelineState pipelineIndexed_ = {};
     PipelineState pipelineIndexedBindless_ = {};
@@ -3467,6 +3485,7 @@ private:
     ResourceState clusterIndexBufferState_ = ResourceState::INDEX_BUFFER;
     ResourceState baseCountBufferState_ = ResourceState::INDIRECT_ARGUMENT;
     std::array<ResourceState, kCullOutputSlotCount> visibleCountBufferStates_ = {};
+    std::array<ResourceState, kCullOutputSlotCount> meshDispatchArgsBufferStates_ = {};
     ResourceState hashBufferState_ = ResourceState::UNORDERED_ACCESS;
     ResourceState instanceVisibleBufferState_ = ResourceState::UNORDERED_ACCESS;
     std::array<ResourceState, kCullOutputSlotCount> visibleCommandIndicesBufferStates_ = {};

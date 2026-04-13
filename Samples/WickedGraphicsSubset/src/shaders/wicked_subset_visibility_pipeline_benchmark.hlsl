@@ -3,6 +3,7 @@
 static const uint kPipelineWicked = 0u;
 static const uint kPipelineTVB = 1u;
 static const uint kPipelineEsoterica = 2u;
+static const uint kMaxDispatchGroups = 65535u;
 
 static const uint kMaxClusterVertices = 64u;
 static const uint kMaxClusterTriangles = 124u;
@@ -37,6 +38,11 @@ groupshared uint gTVBVisibleTriCount;
 groupshared uint gTVBDispatchValid;
 groupshared uint gTVBDrawCommandIndex;
 groupshared uint gTVBCoarseVisible;
+groupshared uint gTVBTriVisible[kMaxClusterTriangles];
+groupshared uint gTVBTriPrefix[kMaxClusterTriangles];
+groupshared uint gTVBTriLocalV0[kMaxClusterTriangles];
+groupshared uint gTVBTriLocalV1[kMaxClusterTriangles];
+groupshared uint gTVBTriLocalV2[kMaxClusterTriangles];
 groupshared uint gMeshCommandIndex;
 groupshared uint gMeshLocalVertexCount;
 groupshared uint gMeshLocalTriCount;
@@ -713,7 +719,8 @@ void cs_compact_visible_args(uint3 DTid : SV_DispatchThreadID)
 [numthreads(128, 1, 1)]
 void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
 {
-    const uint dispatchIndex = meshCommandOffset + Gid.x;
+    const uint dispatchLinearIndex = Gid.x + Gid.y * kMaxDispatchGroups;
+    const uint dispatchIndex = meshCommandOffset + dispatchLinearIndex;
     if (GTid.x == 0u)
     {
         gTVBVisibleTriCount = 0u;
@@ -830,25 +837,48 @@ void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
         const uint localVertex0 = gTVBLocalVertices[localTri.x];
         const uint localVertex1 = gTVBLocalVertices[localTri.y];
         const uint localVertex2 = gTVBLocalVertices[localTri.z];
+        gTVBTriLocalV0[GTid.x] = localVertex0;
+        gTVBTriLocalV1[GTid.x] = localVertex1;
+        gTVBTriLocalV2[GTid.x] = localVertex2;
 
         const float4 clip0 = gTVBClipPositions[localTri.x];
         const float4 clip1 = gTVBClipPositions[localTri.y];
         const float4 clip2 = gTVBClipPositions[localTri.z];
 
         const bool culled = CullTriangle(clip0, clip1, clip2);
-        if (!culled)
+        gTVBTriVisible[GTid.x] = culled ? 0u : 1u;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (GTid.x == 0u)
+    {
+        uint prefix = 0u;
+        [loop]
+        for (uint tri = 0u; tri < gTVBCluster.localTriCount; ++tri)
         {
-            uint dstTri = 0u;
-            InterlockedAdd(gTVBVisibleTriCount, 1u, dstTri);
-
-            const uint filteredIndexOffset = gTVBDrawCommandIndex * kMaxClusterIndices + dstTri * 3u;
-            StoreTVBFilteredIndexDWord((filteredIndexOffset + 0u) * 4u, localVertex0);
-            StoreTVBFilteredIndexDWord((filteredIndexOffset + 1u) * 4u, localVertex1);
-            StoreTVBFilteredIndexDWord((filteredIndexOffset + 2u) * 4u, localVertex2);
-
-            const uint primitiveOffset = gTVBDrawCommandIndex * kMaxClusterTriangles + dstTri;
-            StoreTVBFilteredPrimitiveID(primitiveOffset, gTVBCommand.primitiveBase + GTid.x);
+            gTVBTriPrefix[tri] = prefix;
+            prefix += gTVBTriVisible[tri];
         }
+        gTVBVisibleTriCount = prefix;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (GTid.x < gTVBCluster.localTriCount && gTVBTriVisible[GTid.x] != 0u)
+    {
+        const uint dstTri = gTVBTriPrefix[GTid.x];
+        const uint localVertex0 = gTVBTriLocalV0[GTid.x];
+        const uint localVertex1 = gTVBTriLocalV1[GTid.x];
+        const uint localVertex2 = gTVBTriLocalV2[GTid.x];
+
+        const uint filteredIndexOffset = gTVBDrawCommandIndex * kMaxClusterIndices + dstTri * 3u;
+        StoreTVBFilteredIndexDWord((filteredIndexOffset + 0u) * 4u, localVertex0);
+        StoreTVBFilteredIndexDWord((filteredIndexOffset + 1u) * 4u, localVertex1);
+        StoreTVBFilteredIndexDWord((filteredIndexOffset + 2u) * 4u, localVertex2);
+
+        const uint primitiveOffset = gTVBDrawCommandIndex * kMaxClusterTriangles + dstTri;
+        StoreTVBFilteredPrimitiveID(primitiveOffset, gTVBCommand.primitiveBase + GTid.x);
     }
 
     GroupMemoryBarrierWithGroupSync();
@@ -871,8 +901,11 @@ void cs_write_mesh_dispatch_args(uint3 DTid : SV_DispatchThreadID)
 {
     (void)DTid;
     const uint visibleCount = LoadVisibleCountValue();
-    StoreMeshDispatchArgDWord(0u, visibleCount);
-    StoreMeshDispatchArgDWord(4u, 1u);
+    const uint remaining = visibleCount > meshCommandOffset ? (visibleCount - meshCommandOffset) : 0u;
+    const uint dispatchCountX = min(remaining, kMaxDispatchGroups);
+    const uint dispatchCountY = max(1u, (remaining + kMaxDispatchGroups - 1u) / kMaxDispatchGroups);
+    StoreMeshDispatchArgDWord(0u, dispatchCountX);
+    StoreMeshDispatchArgDWord(4u, dispatchCountY);
     StoreMeshDispatchArgDWord(8u, 1u);
 }
 
