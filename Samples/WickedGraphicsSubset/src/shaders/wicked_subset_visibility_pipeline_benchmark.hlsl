@@ -122,12 +122,12 @@ RWTexture2D<float> gHiZOut : register(u9);
 #ifndef descriptor_index
 #define descriptor_index(x) (max(0, (x)))
 #endif
-#if (defined(__hlsl_dx_compiler) && !defined(__spirv__) && __SHADER_TARGET_MAJOR >= 6 && __SHADER_TARGET_MINOR >= 6) || defined(__spirv__)
+#if defined(__hlsl_dx_compiler) && !defined(__spirv__) && __SHADER_TARGET_MAJOR >= 6 && __SHADER_TARGET_MINOR >= 6
 #define WICKED_SUBSET_TYPED_BINDLESS 1
 #else
 #define WICKED_SUBSET_TYPED_BINDLESS 0
 #endif
-#if WICKED_SUBSET_TYPED_BINDLESS && defined(__hlsl_dx_compiler) && !defined(__spirv__) && __SHADER_TARGET_MAJOR >= 6 && __SHADER_TARGET_MINOR >= 6
+#if WICKED_SUBSET_TYPED_BINDLESS
 template<typename T>
 struct BindlessResource
 {
@@ -141,14 +141,10 @@ static const BindlessResource<StructuredBuffer<uint> > bindless_uint_buffers;
 static const BindlessResource<ByteAddressBuffer> bindless_raw_buffers;
 static const BindlessResource<RWStructuredBuffer<uint> > bindless_rwuint_buffers;
 static const BindlessResource<RWByteAddressBuffer> bindless_rwbuffers;
-#elif WICKED_SUBSET_TYPED_BINDLESS && defined(__spirv__)
-[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] StructuredBuffer<float3> bindless_vertices[];
-[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] StructuredBuffer<InstanceData> bindless_instances[];
-[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] StructuredBuffer<ClusterCommand> bindless_commands[];
-[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] StructuredBuffer<ClusterTemplate> bindless_cluster_templates[];
-[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] StructuredBuffer<uint> bindless_uint_buffers[];
-[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] ByteAddressBuffer bindless_raw_buffers[];
-[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] RWStructuredBuffer<uint> bindless_rwuint_buffers[];
+// Vulkan/SPIR-V benchmark path uses untyped ByteAddressBuffer bindless access.
+// This is more robust across laptop drivers than typed storage-buffer descriptor arrays.
+#elif defined(__spirv__)
+[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] ByteAddressBuffer bindless_buffers[];
 [[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] RWByteAddressBuffer bindless_rwbuffers[];
 #else
 ByteAddressBuffer bindless_buffers[] : register(space3);
