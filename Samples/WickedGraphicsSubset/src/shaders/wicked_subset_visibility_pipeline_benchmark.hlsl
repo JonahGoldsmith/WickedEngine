@@ -8,7 +8,9 @@ static const uint kMaxClusterVertices = 64u;
 static const uint kMaxClusterTriangles = 124u;
 static const uint kMaxClusterIndices = kMaxClusterTriangles * 3u;
 
-#if defined(__hlsl_dx_compiler) && !defined(__spirv__)
+// DX12 DrawIndexedIndirectCount path expects a prefixed DrawID root constant.
+// Metal also uses DXC (`__hlsl_dx_compiler`) but must keep the portable 20-byte layout.
+#if defined(__hlsl_dx_compiler) && !defined(__spirv__) && !defined(__metal__)
 static const uint kArgDrawIDOffset = 0u;
 static const uint kArgIndexCountOffset = 4u;
 static const uint kArgInstanceCountOffset = 8u;
@@ -184,7 +186,7 @@ bool CullTriangle(float4 clip0, float4 clip1, float4 clip2)
 void StoreIndexedIndirectArg(RWByteAddressBuffer outBuffer, uint commandIndex, uint drawID, uint indexCount, uint startIndex, uint baseVertex, uint startInstance)
 {
     const uint byteOffset = commandIndex * kIndirectArgStride;
-#if defined(__hlsl_dx_compiler) && !defined(__spirv__)
+#if defined(__hlsl_dx_compiler) && !defined(__spirv__) && !defined(__metal__)
     outBuffer.Store(byteOffset + kArgDrawIDOffset, drawID);
 #endif
     outBuffer.Store(byteOffset + kArgIndexCountOffset, indexCount);
