@@ -65,6 +65,8 @@ ByteAddressBuffer gSourceArgs : register(t8);
 StructuredBuffer<uint> gTVBFilteredPrimitiveIDs : register(t9);
 ByteAddressBuffer gVisibleCount : register(t10);
 Texture2D<uint> gPrimitiveIDTexture : register(t11);
+Texture2D<float> gDepthTexture : register(t12);
+Texture2D<float> gHiZTexture : register(t13);
 
 RWStructuredBuffer<uint> gInstanceVisibleOut : register(u0);
 RWStructuredBuffer<uint> gVisibleCommandIndicesOut : register(u1);
@@ -75,6 +77,7 @@ RWByteAddressBuffer gTVBArgsOut : register(u5);
 RWStructuredBuffer<uint> gTVBFilteredPrimitiveIDsOut : register(u6);
 RWByteAddressBuffer gHashOut : register(u7);
 RWByteAddressBuffer gMeshDispatchArgsOut : register(u8);
+RWTexture2D<float> gHiZOut : register(u9);
 
 cbuffer SceneCB : register(b0)
 {
@@ -86,6 +89,10 @@ cbuffer SceneCB : register(b0)
     uint pipelineStyle;
     uint meshUseVisibleList;
     uint meshCommandOffset;
+    uint hiZMipCount;
+    uint hiZSourceMip;
+    uint hiZEnabled;
+    uint hiZValid;
     uint3 _scenePadding;
 }
 
@@ -172,6 +179,58 @@ void StoreIndexedIndirectArg(RWByteAddressBuffer outBuffer, uint commandIndex, u
     outBuffer.Store(byteOffset + kArgStartInstanceOffset, startInstance);
 }
 
+float ComputeApproximateSphereNearDepth(float ndcDepth, float worldRadius, float clipW)
+{
+    const float depthBias = worldRadius / max(abs(clipW), 1e-4f);
+    return saturate(ndcDepth - depthBias);
+}
+
+bool IsSphereOccludedByHiZ(float2 uvMin, float2 uvMax, float nearDepth)
+{
+    if (hiZEnabled == 0u || hiZValid == 0u || hiZMipCount == 0u)
+        return false;
+
+    const float2 spanPixels = max(uvMax - uvMin, float2(0.0f, 0.0f)) * viewportSize.xy;
+    const float maxSpanPixels = max(spanPixels.x, spanPixels.y);
+
+    // Tiny bounds tend to be unstable for depth-pyramid rejection; keep them.
+    if (maxSpanPixels < 2.0f)
+        return false;
+
+    const uint maxMip = hiZMipCount - 1u;
+    uint mip = (uint)floor(log2(max(maxSpanPixels, 1.0f)));
+    mip = min(mip, maxMip);
+
+    uint mipWidth = 1u;
+    uint mipHeight = 1u;
+    uint mipLevels = 1u;
+    gHiZTexture.GetDimensions(mip, mipWidth, mipHeight, mipLevels);
+
+    const uint maxX = mipWidth > 0u ? (mipWidth - 1u) : 0u;
+    const uint maxY = mipHeight > 0u ? (mipHeight - 1u) : 0u;
+
+    const float2 uvCenter = 0.5f * (uvMin + uvMax);
+    const float2 uvSamples[5] = {
+        uvMin,
+        float2(uvMax.x, uvMin.y),
+        float2(uvMin.x, uvMax.y),
+        uvMax,
+        uvCenter
+    };
+
+    float minDepth = 1.0f;
+    [unroll]
+    for (uint i = 0u; i < 5u; ++i)
+    {
+        const float2 uv = saturate(uvSamples[i]);
+        const uint px = min((uint)(uv.x * (float)mipWidth), maxX);
+        const uint py = min((uint)(uv.y * (float)mipHeight), maxY);
+        minDepth = min(minDepth, gHiZTexture.Load(int3(px, py, mip)));
+    }
+
+    return nearDepth > (minDepth + 0.0025f);
+}
+
 [numthreads(64, 1, 1)]
 void cs_instance_filter(uint3 DTid : SV_DispatchThreadID)
 {
@@ -204,6 +263,29 @@ void cs_cluster_filter(uint3 DTid : SV_DispatchThreadID)
 
     if (!SphereVisible(worldCenter, worldRadius))
         return;
+
+    const float4 clipCenter = mul(float4(worldCenter, 1.0), viewProj);
+    if (clipCenter.w <= 1e-6f)
+        return;
+
+    const float invW = 1.0f / clipCenter.w;
+    const float2 ndcCenter = clipCenter.xy * invW;
+    const float ndcDepth = saturate(clipCenter.z * invW);
+    const float2 ndcRadius = float2(
+        worldRadius * abs(projectionScale.x) * abs(invW),
+        worldRadius * abs(projectionScale.y) * abs(invW));
+
+    float2 uvMin = (ndcCenter - ndcRadius) * 0.5f + 0.5f;
+    float2 uvMax = (ndcCenter + ndcRadius) * 0.5f + 0.5f;
+    uvMin = saturate(uvMin);
+    uvMax = saturate(uvMax);
+
+    if (uvMin.x < uvMax.x && uvMin.y < uvMax.y)
+    {
+        const float nearDepth = ComputeApproximateSphereNearDepth(ndcDepth, worldRadius, clipCenter.w);
+        if (IsSphereOccludedByHiZ(uvMin, uvMax, nearDepth))
+            return;
+    }
 
     uint dstIndex = 0u;
     gVisibleCountOut.InterlockedAdd(0u, 1u, dstIndex);
@@ -320,6 +402,45 @@ void cs_write_mesh_dispatch_args(uint3 DTid : SV_DispatchThreadID)
     gMeshDispatchArgsOut.Store(0u, visibleCount);
     gMeshDispatchArgsOut.Store(4u, 1u);
     gMeshDispatchArgsOut.Store(8u, 1u);
+}
+
+[numthreads(8, 8, 1)]
+void cs_hiz_init(uint3 DTid : SV_DispatchThreadID)
+{
+    const uint2 pixel = DTid.xy;
+    if (pixel.x >= (uint)viewportSize.x || pixel.y >= (uint)viewportSize.y)
+        return;
+
+    const float depth = gDepthTexture.Load(int3(pixel, 0));
+    gHiZOut[pixel] = depth;
+}
+
+[numthreads(8, 8, 1)]
+void cs_hiz_downsample(uint3 DTid : SV_DispatchThreadID)
+{
+    uint srcWidth = 1u;
+    uint srcHeight = 1u;
+    uint srcLevels = 1u;
+    gHiZTexture.GetDimensions(hiZSourceMip, srcWidth, srcHeight, srcLevels);
+
+    const uint dstWidth = max(1u, srcWidth >> 1u);
+    const uint dstHeight = max(1u, srcHeight >> 1u);
+    const uint2 dstPixel = DTid.xy;
+    if (dstPixel.x >= dstWidth || dstPixel.y >= dstHeight)
+        return;
+
+    const uint maxX = srcWidth > 0u ? (srcWidth - 1u) : 0u;
+    const uint maxY = srcHeight > 0u ? (srcHeight - 1u) : 0u;
+    const uint2 src00 = uint2(min(dstPixel.x * 2u, maxX), min(dstPixel.y * 2u, maxY));
+    const uint2 src10 = uint2(min(src00.x + 1u, maxX), src00.y);
+    const uint2 src01 = uint2(src00.x, min(src00.y + 1u, maxY));
+    const uint2 src11 = uint2(src10.x, src01.y);
+
+    const float d00 = gHiZTexture.Load(int3(src00, hiZSourceMip));
+    const float d10 = gHiZTexture.Load(int3(src10, hiZSourceMip));
+    const float d01 = gHiZTexture.Load(int3(src01, hiZSourceMip));
+    const float d11 = gHiZTexture.Load(int3(src11, hiZSourceMip));
+    gHiZOut[dstPixel] = min(min(d00, d10), min(d01, d11));
 }
 
 [numthreads(8, 8, 1)]

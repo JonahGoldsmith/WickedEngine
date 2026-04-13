@@ -105,6 +105,7 @@ using wi::InputLayout;
 using wi::PipelineState;
 using wi::PipelineStateDesc;
 using wi::PrimitiveTopology;
+using wi::QUEUE_COMPUTE;
 using wi::QUEUE_GRAPHICS;
 using wi::RasterizerState;
 using wi::RenderPassImage;
@@ -137,6 +138,18 @@ static constexpr uint32_t kTimestampFrameEnd = 7u;
 static constexpr uint32_t kArgByteStride = 20u;
 static constexpr float kPi = 3.14159265358979323846f;
 static constexpr uint32_t kMaxMeshDispatchGroups = 65535u;
+
+uint32_t ComputeMipCount(uint32_t width, uint32_t height)
+{
+    uint32_t mips = 1u;
+    uint32_t dim = std::max(width, height);
+    while (dim > 1u)
+    {
+        dim >>= 1u;
+        ++mips;
+    }
+    return mips;
+}
 
 #if defined(WICKED_MMGR_ENABLED)
 void* SDLCALL SDLMmgrMalloc(size_t size)
@@ -432,6 +445,10 @@ struct SceneCB
     uint32_t pipelineStyle = 0;
     uint32_t meshUseVisibleList = 0;
     uint32_t meshCommandOffset = 0;
+    uint32_t hiZMipCount = 0;
+    uint32_t hiZSourceMip = 0;
+    uint32_t hiZEnabled = 0;
+    uint32_t hiZValid = 0;
     uint32_t padding[3] = {};
 };
 
@@ -906,12 +923,14 @@ public:
         ApplyCombo(initialCombo);
         ResetCameraToScene();
         LogStartupControls();
+        LogRenderPathSummary();
         LogActiveTier();
 
         SDL_Log(
-            "[WickedVisibilityPipelineBenchmark] initialized | backend=%s | mesh=%s | instances=%u | commands=%u | auto-run=%s | camera=fly",
+            "[WickedVisibilityPipelineBenchmark] initialized | backend=%s | mesh=%s | async_compute=%s | instances=%u | commands=%u | auto-run=%s | camera=fly",
             BackendName(),
             supportsMeshShaders_ ? "yes" : "no",
+            supportsAsyncCompute_ ? "yes" : "no",
             totalInstanceCount_,
             totalCommandCount_,
             autoRun_ ? "on" : "off");
@@ -1012,6 +1031,8 @@ public:
         csClusterFilter_ = {};
         csCompactArgs_ = {};
         csTVBFilter_ = {};
+        csHiZInit_ = {};
+        csHiZDownsample_ = {};
         csHash_ = {};
         csMeshArgs_ = {};
 
@@ -1094,12 +1115,7 @@ private:
 
         device_->WaitForGPU();
         DestroyRenderTargets();
-        swapchain_ = {};
-        if (!CreateSwapchain())
-        {
-            return false;
-        }
-        return CreateRenderTargets();
+        return CreateSwapchain();
     }
 
     bool CreateSwapchain()
@@ -1155,17 +1171,34 @@ private:
         depthDesc.width = swapchain_.desc.width;
         depthDesc.height = swapchain_.desc.height;
         depthDesc.format = Format::D32_FLOAT;
-        depthDesc.bind_flags = BindFlag::DEPTH_STENCIL;
+        depthDesc.bind_flags = BindFlag::DEPTH_STENCIL | BindFlag::BIND_SHADER_RESOURCE;
         depthDesc.clear.depth_stencil.depth = 1.0f;
-        depthDesc.layout = ResourceState::DEPTHSTENCIL;
+        depthDesc.layout = ResourceState::SHADER_RESOURCE;
         if (!device_->CreateTexture(&depthDesc, nullptr, &depthTexture_))
         {
             std::fprintf(stderr, "CreateTexture(depthTexture) failed\n");
             return false;
         }
 
+        TextureDesc hiZDesc = {};
+        hiZDesc.width = swapchain_.desc.width;
+        hiZDesc.height = swapchain_.desc.height;
+        hiZDesc.format = Format::R32_FLOAT;
+        hiZDesc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
+        hiZDesc.layout = ResourceState::SHADER_RESOURCE;
+        hiZDesc.mip_levels = ComputeMipCount(hiZDesc.width, hiZDesc.height);
+        if (!device_->CreateTexture(&hiZDesc, nullptr, &hiZTexture_))
+        {
+            std::fprintf(stderr, "CreateTexture(hiZTexture) failed\n");
+            return false;
+        }
+        device_->CreateMipgenSubresources(hiZTexture_);
+        hiZMipCount_ = hiZDesc.mip_levels;
+        hiZOcclusionValid_ = false;
+
         device_->SetName(&primitiveIDTexture_, "subset_visibility_benchmark_primitive_id");
         device_->SetName(&depthTexture_, "subset_visibility_benchmark_depth");
+        device_->SetName(&hiZTexture_, "subset_visibility_benchmark_hiz");
 
         return true;
     }
@@ -1174,6 +1207,9 @@ private:
     {
         primitiveIDTexture_ = {};
         depthTexture_ = {};
+        hiZTexture_ = {};
+        hiZMipCount_ = 1u;
+        hiZOcclusionValid_ = false;
     }
 
     bool CompileShader(ShaderStage stage, const char* entrypoint, Shader* shader)
@@ -1252,6 +1288,10 @@ private:
         if (!CompileShader(ShaderStage::CS, "cs_compact_visible_args", &csCompactArgs_))
             return false;
         if (!CompileShader(ShaderStage::CS, "cs_tvb_filter", &csTVBFilter_))
+            return false;
+        if (!CompileShader(ShaderStage::CS, "cs_hiz_init", &csHiZInit_))
+            return false;
+        if (!CompileShader(ShaderStage::CS, "cs_hiz_downsample", &csHiZDownsample_))
             return false;
         if (!CompileShader(ShaderStage::CS, "cs_hash_primitive_id", &csHash_))
             return false;
@@ -1684,7 +1724,8 @@ private:
 
         GPUBufferDesc drawCommandVBDesc = {};
         drawCommandVBDesc.usage = Usage::DEFAULT;
-        drawCommandVBDesc.bind_flags = BindFlag::BIND_VERTEX_BUFFER | BindFlag::BIND_SHADER_RESOURCE;
+        // This buffer is consumed as a vertex stream only; don't request SRV view creation.
+        drawCommandVBDesc.bind_flags = BindFlag::BIND_VERTEX_BUFFER;
         drawCommandVBDesc.misc_flags = ResourceMiscFlag::RESOURCE_MISC_NONE;
         drawCommandVBDesc.stride = sizeof(uint32_t);
         drawCommandVBDesc.size = static_cast<uint64_t>(drawCommandIndices_.size()) * sizeof(uint32_t);
@@ -2083,16 +2124,37 @@ private:
             SDL_Log("[WickedVisibilityPipelineBenchmark] validation/hash pass -> %s", validationEnabled_ ? "enabled" : "disabled");
             return;
         }
+        else if (key == SDLK_J)
+        {
+            if (supportsAsyncCompute_)
+            {
+                asyncComputeEnabled_ = !asyncComputeEnabled_;
+                SDL_Log("[WickedVisibilityPipelineBenchmark] async compute cull queue -> %s", asyncComputeEnabled_ ? "enabled" : "disabled");
+            }
+            else
+            {
+                SDL_Log("[WickedVisibilityPipelineBenchmark] async compute queue is not supported on this backend");
+            }
+            return;
+        }
+        else if (key == SDLK_O)
+        {
+            hiZOcclusionEnabled_ = !hiZOcclusionEnabled_;
+            SDL_Log("[WickedVisibilityPipelineBenchmark] Hi-Z occlusion -> %s", hiZOcclusionEnabled_ ? "enabled" : "disabled");
+            return;
+        }
         else if (key == SDLK_P)
         {
             SDL_Log(
-                "[WickedVisibilityPipelineBenchmark] snapshot | suite=%s pipeline=%s scenario=%s tier=%s cmd=%u inst=%u cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms visible=%u hash=%u",
+                "[WickedVisibilityPipelineBenchmark] snapshot | suite=%s pipeline=%s scenario=%s tier=%s cmd=%u inst=%u async=%s hiz=%s cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms visible=%u hash=%u",
                 SuiteName(activeSuite_),
                 PipelineName(activePipeline_),
                 ScenarioName(activeScenario_),
                 kTierPresets[activeTier_].name,
                 activeCommandCount_,
                 activeInstanceCount_,
+                asyncComputeEnabled_ ? "on" : "off",
+                hiZOcclusionEnabled_ ? "on" : "off",
                 latestMetrics_.cpuMs,
                 latestMetrics_.gpuCullMs,
                 latestMetrics_.gpuDrawMs,
@@ -2104,6 +2166,7 @@ private:
         else if (key == SDLK_H)
         {
             LogStartupControls();
+            LogRenderPathSummary();
             LogActiveTier();
             return;
         }
@@ -2189,7 +2252,18 @@ private:
         SDL_Log("  Camera: hold RMB to look, WASD move, Q/E vertical, Shift boost");
         SDL_Log("  [1/2/3] pipeline Wicked/TVB/Esoterica | [M] suite Portable/Mesh");
         SDL_Log("  [Z/X] scenario AllVisible/HighCulling | [UP/DOWN] or [[/]] or [PgUp/PgDn] triangle tier");
-        SDL_Log("  [V] toggle validation/hash pass | [P] print current perf snapshot | [H] print controls");
+        SDL_Log("  [J] toggle async compute cull queue | [O] toggle Hi-Z occlusion | [V] toggle validation/hash pass");
+        SDL_Log("  [P] print current perf snapshot | [H] print controls and path summary");
+    }
+
+    void LogRenderPathSummary() const
+    {
+        SDL_Log("[WickedVisibilityPipelineBenchmark] Render path summary:");
+        SDL_Log("  Wicked: instance+cluster (sphere+Hi-Z) cull -> compact visible indirect args -> indexed cluster draw");
+        SDL_Log("  TVB: triangle visibility filtering for all active commands -> indexed draw from TVB filtered index stream");
+        SDL_Log("  Esoterica: instance+cluster (sphere+Hi-Z) cull -> compact visible list -> TVB triangle filtering on visible clusters");
+        SDL_Log("  Shared backbone: GPU instance cull, cluster cull, visible list compaction, and Hi-Z depth pyramid build");
+        SDL_Log("  Queueing: cull can run on async compute queue and graphics waits before draw");
     }
 
     void LogActiveTier() const
@@ -2236,46 +2310,79 @@ private:
         sceneCB.activeCommandCount = activeCommandCount_;
         sceneCB.activeInstanceCount = activeInstanceCount_;
         sceneCB.pipelineStyle = static_cast<uint32_t>(activePipeline_);
-        sceneCB.meshUseVisibleList = (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Mesh) ? 1u : 0u;
+        sceneCB.meshUseVisibleList = (activePipeline_ != PipelineStyle::TVB && activeSuite_ == SuiteMode::Mesh) ? 1u : 0u;
         sceneCB.meshCommandOffset = 0u;
+        sceneCB.hiZMipCount = hiZMipCount_;
+        sceneCB.hiZSourceMip = 0u;
+        sceneCB.hiZEnabled = (hiZOcclusionEnabled_ && activePipeline_ != PipelineStyle::TVB) ? 1u : 0u;
+        sceneCB.hiZValid = hiZOcclusionValid_ ? 1u : 0u;
 
         FrameMetrics metrics = {};
         const uint32_t frameIndex = device_->GetBufferIndex();
         ReadTimingAndCounters(frameIndex, &metrics);
 
-        CommandList cmd = device_->BeginCommandList(QUEUE_GRAPHICS);
+        const bool useAsyncComputeForCull = asyncComputeEnabled_ && supportsAsyncCompute_;
+        CommandList cmdCull = {};
+        if (useAsyncComputeForCull)
+        {
+            cmdCull = device_->BeginCommandList(QUEUE_COMPUTE);
+        }
+        CommandList cmdGraphics = device_->BeginCommandList(QUEUE_GRAPHICS);
+        if (useAsyncComputeForCull)
+        {
+            // keep compute cull on its own queue
+        }
+        else
+        {
+            cmdCull = cmdGraphics;
+        }
 
         if (countsDirty_)
         {
-            device_->UpdateBuffer(&baseCountBuffer_, &activeCommandCount_, cmd, sizeof(activeCommandCount_), 0);
+            device_->UpdateBuffer(&baseCountBuffer_, &activeCommandCount_, cmdGraphics, sizeof(activeCommandCount_), 0);
             countsDirty_ = false;
         }
 
         const uint32_t zero = 0;
-        device_->UpdateBuffer(&visibleCountBuffer_, &zero, cmd, sizeof(zero), 0);
-        device_->UpdateBuffer(&hashBuffer_, &zero, cmd, sizeof(zero), 0);
+        device_->UpdateBuffer(&visibleCountBuffer_, &zero, cmdCull, sizeof(zero), 0);
+        device_->UpdateBuffer(&hashBuffer_, &zero, cmdGraphics, sizeof(zero), 0);
 
-        device_->QueryReset(&timestampQueryHeap_, 0, kTimestampCount, cmd);
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampFrameStart, cmd);
+        device_->QueryReset(&timestampQueryHeap_, 0, kTimestampCount, cmdGraphics);
+        device_->QueryEnd(&timestampQueryHeap_, kTimestampFrameStart, cmdGraphics);
 
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmd);
-        ExecuteCullStage(sceneCB, cmd);
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmd);
-        device_->CopyBuffer(&visibleCountReadback_[frameIndex], 0, &visibleCountBuffer_, 0, sizeof(uint32_t), cmd);
+        if (!useAsyncComputeForCull)
+        {
+            device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
+            ExecuteCullStage(sceneCB, cmdCull);
+            device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
+        }
+        else
+        {
+            ExecuteCullStage(sceneCB, cmdCull);
+            device_->WaitCommandList(cmdGraphics, cmdCull);
 
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawStart, cmd);
-        ExecuteDrawStage(sceneCB, cmd);
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawEnd, cmd);
+            // Cull timestamps are graphics-queue-local in this benchmark path.
+            // Keep them valid and deterministic when cull executes on async compute.
+            device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
+            device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
+        }
+        device_->CopyBuffer(&visibleCountReadback_[frameIndex], 0, &visibleCountBuffer_, 0, sizeof(uint32_t), cmdGraphics);
 
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampHashStart, cmd);
-        ExecuteHashStage(sceneCB, cmd, frameIndex);
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampHashEnd, cmd);
+        device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawStart, cmdGraphics);
+        ExecuteDrawStage(sceneCB, cmdGraphics);
+        device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawEnd, cmdGraphics);
 
-        ExecutePresentStage(cmd);
+        ExecuteHiZBuildStage(sceneCB, cmdGraphics);
 
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampFrameEnd, cmd);
+        device_->QueryEnd(&timestampQueryHeap_, kTimestampHashStart, cmdGraphics);
+        ExecuteHashStage(sceneCB, cmdGraphics, frameIndex);
+        device_->QueryEnd(&timestampQueryHeap_, kTimestampHashEnd, cmdGraphics);
 
-        device_->QueryResolve(&timestampQueryHeap_, 0, kTimestampCount, &timestampReadback_[frameIndex], 0, cmd);
+        ExecutePresentStage(cmdGraphics);
+
+        device_->QueryEnd(&timestampQueryHeap_, kTimestampFrameEnd, cmdGraphics);
+
+        device_->QueryResolve(&timestampQueryHeap_, 0, kTimestampCount, &timestampReadback_[frameIndex], 0, cmdGraphics);
 
         device_->SubmitCommandLists();
 
@@ -2297,34 +2404,33 @@ private:
 
     void ExecuteCullStage(const SceneCB& sceneCB, CommandList cmd)
     {
-        if (activePipeline_ == PipelineStyle::Wicked)
+        device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
+        BindCommonResources(cmd);
+        device_->BindResource(&hiZTexture_, 13, cmd);
+
+        if (activePipeline_ == PipelineStyle::TVB)
         {
+            device_->BindComputeShader(&csTVBFilter_, cmd);
+            device_->Dispatch(std::max(1u, activeCommandCount_), 1, 1, cmd);
+            device_->Barrier(cmd);
             return;
         }
 
-        device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
-        BindCommonResources(cmd);
+        device_->BindComputeShader(&csInstanceFilter_, cmd);
+        const uint32_t instanceGroups = (activeInstanceCount_ + 63u) / 64u;
+        device_->Dispatch(std::max(1u, instanceGroups), 1, 1, cmd);
+        device_->Barrier(cmd);
 
-        if (activePipeline_ == PipelineStyle::Esoterica)
-        {
-            device_->BindComputeShader(&csInstanceFilter_, cmd);
-            const uint32_t instanceGroups = (activeInstanceCount_ + 63u) / 64u;
-            device_->Dispatch(std::max(1u, instanceGroups), 1, 1, cmd);
-            device_->Barrier(cmd);
+        device_->BindComputeShader(&csClusterFilter_, cmd);
+        const uint32_t commandGroups = (activeCommandCount_ + 63u) / 64u;
+        device_->Dispatch(std::max(1u, commandGroups), 1, 1, cmd);
+        device_->Barrier(cmd);
 
-            device_->BindComputeShader(&csClusterFilter_, cmd);
-            const uint32_t commandGroups = (activeCommandCount_ + 63u) / 64u;
-            device_->Dispatch(std::max(1u, commandGroups), 1, 1, cmd);
-            device_->Barrier(cmd);
+        device_->BindComputeShader(&csCompactArgs_, cmd);
+        device_->Dispatch(std::max(1u, commandGroups), 1, 1, cmd);
+        device_->Barrier(cmd);
 
-            if (activeSuite_ == SuiteMode::Portable)
-            {
-                device_->BindComputeShader(&csTVBFilter_, cmd);
-                device_->Dispatch(std::max(1u, activeCommandCount_), 1, 1, cmd);
-                device_->Barrier(cmd);
-            }
-        }
-        else if (activePipeline_ == PipelineStyle::TVB)
+        if (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable)
         {
             device_->BindComputeShader(&csTVBFilter_, cmd);
             device_->Dispatch(std::max(1u, activeCommandCount_), 1, 1, cmd);
@@ -2345,9 +2451,9 @@ private:
                 &depthTexture_,
                 RenderPassImage::LoadOp::CLEAR,
                 RenderPassImage::StoreOp::STORE,
+                ResourceState::SHADER_RESOURCE,
                 ResourceState::DEPTHSTENCIL,
-                ResourceState::DEPTHSTENCIL,
-                ResourceState::DEPTHSTENCIL),
+                ResourceState::SHADER_RESOURCE),
         };
 
         device_->RenderPassBegin(rp, static_cast<uint32_t>(std::size(rp)), cmd);
@@ -2412,11 +2518,52 @@ private:
             else
             {
                 device_->BindIndexBuffer(&clusterIndexBuffer_, wi::IndexBufferFormat::UINT32, 0, cmd);
-                device_->DrawIndexedInstancedIndirectCount(&baseArgsBuffer_, 0, &baseCountBuffer_, 0, activeCommandCount_, cmd);
+                device_->DrawIndexedInstancedIndirectCount(&visibleArgsBuffer_, 0, &visibleCountBuffer_, 0, activeCommandCount_, cmd);
             }
         }
 
         device_->RenderPassEnd(cmd);
+    }
+
+    void ExecuteHiZBuildStage(const SceneCB& sceneCB, CommandList cmd)
+    {
+        if (!hiZOcclusionEnabled_ || hiZMipCount_ == 0u)
+        {
+            return;
+        }
+
+        SceneCB hiZCB = sceneCB;
+        hiZCB.hiZSourceMip = 0u;
+        device_->BindDynamicConstantBuffer(hiZCB, 0, cmd);
+        device_->BindResource(&depthTexture_, 12, cmd);
+        device_->BindResource(&hiZTexture_, 13, cmd);
+        device_->BindComputeShader(&csHiZInit_, cmd);
+        device_->BindUAV(&hiZTexture_, 9, cmd, 0);
+        device_->Dispatch(
+            std::max(1u, (swapchain_.desc.width + 7u) / 8u),
+            std::max(1u, (swapchain_.desc.height + 7u) / 8u),
+            1,
+            cmd);
+        device_->Barrier(cmd);
+
+        device_->BindComputeShader(&csHiZDownsample_, cmd);
+        for (uint32_t mip = 1u; mip < hiZMipCount_; ++mip)
+        {
+            hiZCB.hiZSourceMip = mip - 1u;
+            device_->BindDynamicConstantBuffer(hiZCB, 0, cmd);
+            device_->BindUAV(&hiZTexture_, 9, cmd, static_cast<int>(mip));
+
+            const uint32_t mipWidth = std::max(1u, swapchain_.desc.width >> mip);
+            const uint32_t mipHeight = std::max(1u, swapchain_.desc.height >> mip);
+            device_->Dispatch(
+                std::max(1u, (mipWidth + 7u) / 8u),
+                std::max(1u, (mipHeight + 7u) / 8u),
+                1,
+                cmd);
+            device_->Barrier(cmd);
+        }
+
+        hiZOcclusionValid_ = true;
     }
 
     void ExecuteHashStage(const SceneCB& sceneCB, CommandList cmd, uint32_t frameIndex)
@@ -2523,7 +2670,11 @@ private:
             metrics.hashValue = *static_cast<const uint32_t*>(hashReadback_[frameIndex].mapped_data);
         }
 
-        if (activePipeline_ == PipelineStyle::Esoterica)
+        if (activePipeline_ == PipelineStyle::TVB)
+        {
+            metrics.visibleCommands = activeCommandCount_;
+        }
+        else
         {
             if (visibleCountReady_[frameIndex] && visibleCountReadback_[frameIndex].mapped_data != nullptr)
             {
@@ -2533,10 +2684,6 @@ private:
             {
                 metrics.visibleCommands = 0u;
             }
-        }
-        else
-        {
-            metrics.visibleCommands = activeCommandCount_;
         }
 
         if (outMetrics != nullptr)
@@ -2680,7 +2827,7 @@ private:
         std::snprintf(
             title,
             sizeof(title),
-            "Visibility Benchmark [%s] | %s | %s | %s | tier %s (%.1fM tris) | cmd %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | auto=%s",
+            "Visibility Benchmark [%s] | %s | %s | %s | tier %s (%.1fM tris) | cmd %u vis %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | async=%s hiz=%s auto=%s",
             BackendName(),
             SuiteName(activeSuite_),
             PipelineName(activePipeline_),
@@ -2688,12 +2835,15 @@ private:
             kTierPresets[activeTier_].name,
             tierMillions,
             activeCommandCount_,
+            metrics.visibleCommands,
             activeInstanceCount_,
             fps,
             metrics.cpuMs,
             metrics.gpuCullMs,
             metrics.gpuDrawMs,
             metrics.gpuFrameMs,
+            asyncComputeEnabled_ ? "on" : "off",
+            hiZOcclusionEnabled_ ? "on" : "off",
             autoRun_ ? "on" : "off");
         SDL_SetWindowTitle(window_, title);
     }
@@ -2719,6 +2869,8 @@ private:
     Shader csClusterFilter_ = {};
     Shader csCompactArgs_ = {};
     Shader csTVBFilter_ = {};
+    Shader csHiZInit_ = {};
+    Shader csHiZDownsample_ = {};
     Shader csHash_ = {};
     Shader csMeshArgs_ = {};
 
@@ -2732,6 +2884,7 @@ private:
 
     Texture primitiveIDTexture_ = {};
     Texture depthTexture_ = {};
+    Texture hiZTexture_ = {};
 
     GPUBuffer vertexBuffer_ = {};
     GPUBuffer instanceBuffer_ = {};
@@ -2797,6 +2950,11 @@ private:
     bool countsDirty_ = true;
     bool requestQuit_ = false;
     bool validationEnabled_ = true;
+    bool hiZOcclusionEnabled_ = true;
+    bool hiZOcclusionValid_ = false;
+    uint32_t hiZMipCount_ = 1u;
+    bool supportsAsyncCompute_ = true;
+    bool asyncComputeEnabled_ = true;
 
     float sceneTime_ = 0.0f;
     float sceneExtent_ = 25.0f;
