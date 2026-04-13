@@ -392,6 +392,18 @@ struct IndirectDrawArgsIndexedInstanced
 };
 static_assert(sizeof(IndirectDrawArgsIndexedInstanced) == 20, "IndirectDrawArgsIndexedInstanced ABI mismatch");
 
+#if WICKED_SUBSET_USE_DX12
+// DX12 DrawIndexedIndirectCount command signature prefixes a 32-bit root constant (DrawID).
+struct DrawIndexedIndirectCountArgs
+{
+    uint32_t DrawID = 0;
+    IndirectDrawArgsIndexedInstanced Draw = {};
+};
+static_assert(sizeof(DrawIndexedIndirectCountArgs) == 24, "DrawIndexedIndirectCountArgs ABI mismatch");
+#else
+using DrawIndexedIndirectCountArgs = IndirectDrawArgsIndexedInstanced;
+#endif
+
 struct IndirectDispatchArgs
 {
     uint32_t ThreadGroupCountX = 0;
@@ -1600,12 +1612,21 @@ private:
                 command.primitiveBase = primitiveBase + cluster.primitiveOffset;
                 commands_.push_back(command);
 
-                IndirectDrawArgsIndexedInstanced args = {};
+                DrawIndexedIndirectCountArgs args = {};
+#if WICKED_SUBSET_USE_DX12
+                args.DrawID = static_cast<uint32_t>(commands_.size() - 1u);
+                args.Draw.IndexCountPerInstance = cluster.indexCount;
+                args.Draw.InstanceCount = 1;
+                args.Draw.StartIndexLocation = cluster.indexOffset;
+                args.Draw.BaseVertexLocation = static_cast<int32_t>(cluster.baseVertex);
+                args.Draw.StartInstanceLocation = static_cast<uint32_t>(commands_.size() - 1u);
+#else
                 args.IndexCountPerInstance = cluster.indexCount;
                 args.InstanceCount = 1;
                 args.StartIndexLocation = cluster.indexOffset;
                 args.BaseVertexLocation = static_cast<int32_t>(cluster.baseVertex);
                 args.StartInstanceLocation = static_cast<uint32_t>(commands_.size() - 1u);
+#endif
                 baseArgs_.push_back(args);
             }
 
@@ -1737,7 +1758,7 @@ private:
 
         desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE;
         desc.misc_flags = ResourceMiscFlag::INDIRECT_ARGS | ResourceMiscFlag::BUFFER_RAW;
-        desc.size = static_cast<uint64_t>(baseArgs_.size() * sizeof(IndirectDrawArgsIndexedInstanced));
+        desc.size = static_cast<uint64_t>(baseArgs_.size() * sizeof(DrawIndexedIndirectCountArgs));
         if (!device_->CreateBuffer(&desc, baseArgs_.data(), &baseArgsBuffer_))
         {
             std::fprintf(stderr, "CreateBuffer(baseArgsBuffer) failed\n");
@@ -3056,7 +3077,7 @@ private:
     std::vector<uint32_t> templatePackedTriangles_;
     std::vector<uint32_t> clusterDrawIndices_;
     std::vector<uint32_t> drawCommandIndices_;
-    std::vector<IndirectDrawArgsIndexedInstanced> baseArgs_;
+    std::vector<DrawIndexedIndirectCountArgs> baseArgs_;
     std::vector<ShapeTemplate> shapeTemplates_;
 
     uint32_t totalInstanceCount_ = 0;

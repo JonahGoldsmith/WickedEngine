@@ -8,12 +8,24 @@ static const uint kMaxClusterVertices = 64u;
 static const uint kMaxClusterTriangles = 124u;
 static const uint kMaxClusterIndices = kMaxClusterTriangles * 3u;
 
+#if defined(__hlsl_dx_compiler) && !defined(__spirv__)
+static const uint kArgDrawIDOffset = 0u;
+static const uint kArgIndexCountOffset = 4u;
+static const uint kArgInstanceCountOffset = 8u;
+static const uint kArgStartIndexOffset = 12u;
+static const uint kArgBaseVertexOffset = 16u;
+static const uint kArgStartInstanceOffset = 20u;
+static const uint kIndirectArgStride = 24u;
+static const uint kIndirectArgDWordCount = 6u;
+#else
 static const uint kArgIndexCountOffset = 0u;
 static const uint kArgInstanceCountOffset = 4u;
 static const uint kArgStartIndexOffset = 8u;
 static const uint kArgBaseVertexOffset = 12u;
 static const uint kArgStartInstanceOffset = 16u;
 static const uint kIndirectArgStride = 20u;
+static const uint kIndirectArgDWordCount = 5u;
+#endif
 
 groupshared uint gTVBVisibleTriCount;
 groupshared uint gMeshCommandIndex;
@@ -169,9 +181,12 @@ bool CullTriangle(float4 clip0, float4 clip1, float4 clip2)
     return false;
 }
 
-void StoreIndexedIndirectArg(RWByteAddressBuffer outBuffer, uint commandIndex, uint indexCount, uint startIndex, uint baseVertex, uint startInstance)
+void StoreIndexedIndirectArg(RWByteAddressBuffer outBuffer, uint commandIndex, uint drawID, uint indexCount, uint startIndex, uint baseVertex, uint startInstance)
 {
     const uint byteOffset = commandIndex * kIndirectArgStride;
+#if defined(__hlsl_dx_compiler) && !defined(__spirv__)
+    outBuffer.Store(byteOffset + kArgDrawIDOffset, drawID);
+#endif
     outBuffer.Store(byteOffset + kArgIndexCountOffset, indexCount);
     outBuffer.Store(byteOffset + kArgInstanceCountOffset, 1u);
     outBuffer.Store(byteOffset + kArgStartIndexOffset, startIndex);
@@ -305,7 +320,7 @@ void cs_compact_visible_args(uint3 DTid : SV_DispatchThreadID)
     const uint dstOffset = visibleIndex * kIndirectArgStride;
 
     [unroll]
-    for (uint i = 0u; i < 5u; ++i)
+    for (uint i = 0u; i < kIndirectArgDWordCount; ++i)
     {
         const uint value = gSourceArgs.Load(srcOffset + i * 4u);
         gVisibleArgsOut.Store(dstOffset + i * 4u, value);
@@ -386,6 +401,7 @@ void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
     {
         StoreIndexedIndirectArg(
             gTVBArgsOut,
+            drawCommandIndex,
             drawCommandIndex,
             gTVBVisibleTriCount * 3u,
             drawCommandIndex * kMaxClusterIndices,
