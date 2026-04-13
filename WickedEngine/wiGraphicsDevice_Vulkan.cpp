@@ -1712,7 +1712,7 @@ using namespace vulkan_internal;
 		waitSemaphore.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 		arrput(submit_waitSemaphoreInfos, waitSemaphore);
 	}
-	void GraphicsDevice_Vulkan::CommandQueue::submit(GraphicsDevice_Vulkan* device, VkFence fence)
+	void GraphicsDevice_Vulkan::CommandQueue::submit(GraphicsDevice_Vulkan* device, VkFence fence, bool compatibility_full_sync)
 	{
 		if (queue == VK_NULL_HANDLE)
 			return;
@@ -1720,7 +1720,7 @@ using namespace vulkan_internal;
 
 		// Main submit with command lists and semaphores:
 		{
-			if (fence != VK_NULL_HANDLE)
+			if (fence != VK_NULL_HANDLE && compatibility_full_sync)
 			{
 				// end of frame mark:
 				for (int q = 0; q < QUEUE_COUNT; ++q)
@@ -7203,11 +7203,13 @@ using namespace vulkan_internal;
 	CommandList GraphicsDevice_Vulkan::BeginCommandList(QUEUE_TYPE queue)
 	{
 		cmd_locker.lock();
-		uint32_t cmd_current = cmd_count++;
+		uint32_t cmd_current = cmd_sequence++;
+		++cmd_count;
 		if (cmd_current >= commandlists.size())
 		{
 			commandlists.push_back(cmd_allocator.allocate());
 		}
+		pending_commandlist_ids.push_back(cmd_current);
 		CommandList cmd;
 		cmd.internal_state = commandlists[cmd_current];
 		cmd_locker.unlock();
@@ -7321,8 +7323,83 @@ using namespace vulkan_internal;
 
 		return cmd;
 	}
-	void GraphicsDevice_Vulkan::SubmitCommandLists()
+	void GraphicsDevice_Vulkan::SubmitCommandListsInternal(const uint32_t* selected_commandlists, uint32_t selected_commandlist_count, bool explicit_selection, bool compatibility_full_sync)
 	{
+		std::vector<uint32_t> submit_indices;
+		submit_indices.reserve(selected_commandlist_count > 0 ? selected_commandlist_count : pending_commandlist_ids.size());
+		std::vector<uint8_t> selection_mask(commandlists.size(), 0);
+		std::vector<uint8_t> pending_mask(commandlists.size(), 0);
+		for (uint32_t pending_id : pending_commandlist_ids)
+		{
+			if (pending_id < pending_mask.size())
+			{
+				pending_mask[pending_id] = 1;
+			}
+		}
+
+		auto add_selected = [&](uint32_t cmd) {
+			if (cmd >= commandlists.size())
+				return;
+			if (!pending_mask[cmd])
+				return;
+			if (selection_mask[cmd])
+				return;
+			selection_mask[cmd] = 1;
+			submit_indices.push_back(cmd);
+		};
+
+		if (explicit_selection)
+		{
+			for (uint32_t i = 0; i < selected_commandlist_count; ++i)
+			{
+				const uint32_t selected_id = selected_commandlists[i];
+				if (selected_id >= commandlists.size())
+				{
+					SDL_assert(false); // caller must pass a valid pending command list index
+					continue;
+				}
+				if (!pending_mask[selected_id])
+				{
+					SDL_assert(false); // explicit partial submit must reference command lists that are still pending
+					continue;
+				}
+				add_selected(selected_id);
+			}
+		}
+		else
+		{
+			for (uint32_t pending_id : pending_commandlist_ids)
+			{
+				add_selected(pending_id);
+			}
+		}
+
+		// Close over same-submit local dependencies: if a selected list waits on an unsubmitted predecessor,
+		// the predecessor is automatically included so local WaitCommandList ordering stays correct.
+		bool dependency_added = true;
+		while (dependency_added)
+		{
+			dependency_added = false;
+			for (uint32_t cmd : submit_indices)
+			{
+				CommandList_Vulkan& commandlist = *commandlists[cmd];
+				for (uint32_t dependency_cmd : commandlist.wait_for_commandlist_ids)
+				{
+					if (dependency_cmd >= commandlists.size())
+						continue;
+					if (!pending_mask[dependency_cmd])
+						continue;
+					if (selection_mask[dependency_cmd])
+						continue;
+					selection_mask[dependency_cmd] = 1;
+					submit_indices.push_back(dependency_cmd);
+					dependency_added = true;
+				}
+			}
+		}
+
+		std::sort(submit_indices.begin(), submit_indices.end());
+
 		// Submit resource initialization transitions:
 		{
 			TransitionHandler& transition_handler = GetTransitionHandler();
@@ -7376,7 +7453,7 @@ using namespace vulkan_internal;
 					queue.signal(sema);
 					queues[q].wait(sema);
 				}
-				queue.submit(this, VK_NULL_HANDLE);
+				queue.submit(this, VK_NULL_HANDLE, compatibility_full_sync);
 				arrfree(init_transitions);
 				init_transitions = nullptr;
 			}
@@ -7384,9 +7461,8 @@ using namespace vulkan_internal;
 
 		// Submit current frame:
 		{
-			uint32_t cmd_last = cmd_count;
-			cmd_count = 0;
-			for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
+			uint32_t submitted_queue_mask = 0;
+			for (uint32_t cmd : submit_indices)
 			{
 				CommandList_Vulkan& commandlist = *commandlists[cmd];
 				vulkan_check(vkEndCommandBuffer(commandlist.GetCommandBuffer()));
@@ -7398,7 +7474,7 @@ using namespace vulkan_internal;
 				{
 					// If the current commandlist must resolve a dependency, then previous ones will be submitted before doing that:
 					//	This improves GPU utilization because not the whole batch of command lists will need to synchronize, but only the one that handles it
-					queue.submit(this, VK_NULL_HANDLE);
+					queue.submit(this, VK_NULL_HANDLE, compatibility_full_sync);
 				}
 
 				VkCommandBufferSubmitInfo cbSubmitInfo = {};
@@ -7451,7 +7527,7 @@ using namespace vulkan_internal;
 					}
 					commandlist.signals.clear();
 
-					queue.submit(this, VK_NULL_HANDLE);
+					queue.submit(this, VK_NULL_HANDLE, compatibility_full_sync);
 				}
 
 				for (auto& x : commandlist.pipelines_worker)
@@ -7471,30 +7547,56 @@ using namespace vulkan_internal;
 					}
 				}
 				commandlist.pipelines_worker.clear();
+				commandlist.prev_swapchains.clear();
+				commandlist.waits.clear();
+				commandlist.signals.clear();
+				commandlist.wait_for_commandlist_ids.clear();
+				submitted_queue_mask |= (1u << commandlist.queue);
 			}
 
 			// final submits with fences:
 			for (int q = 0; q < QUEUE_COUNT; ++q)
 			{
-				queues[q].submit(this, frame_fence[GetBufferIndex()][q]);
+				if ((submitted_queue_mask & (1u << q)) == 0)
+					continue;
+				if (queues[q].submit_cmds == nullptr && queues[q].submit_waitSemaphoreInfos == nullptr && queues[q].submit_signalSemaphoreInfos == nullptr && queues[q].swapchains == nullptr)
+					continue;
+				frame_submission_serial[GetBufferIndex()][q] = ++queue_submission_serial[q];
+				queues[q].submit(this, frame_fence[GetBufferIndex()][q], compatibility_full_sync);
+			}
+
+			for (uint32_t cmd : submit_indices)
+			{
+				auto it = std::find(pending_commandlist_ids.begin(), pending_commandlist_ids.end(), cmd);
+				if (it != pending_commandlist_ids.end())
+				{
+					pending_commandlist_ids.erase(it);
+				}
+			}
+			if (!submit_indices.empty())
+			{
+				cmd_count -= (uint32_t)submit_indices.size();
 			}
 		}
 
-		// Sync up every queue to every other queue at the end of the frame:
-		//	Note: it disables overlapping queues into the next frame
-		//	Note: it's not submitted immediately here, but the waits are recorded before next frame submits
-		for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
+		if (compatibility_full_sync)
 		{
-			if (queues[queue1].queue == nullptr)
-				continue;
-			for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+			// Sync up every queue to every other queue at the end of the frame:
+			//	Note: it disables overlapping queues into the next frame
+			//	Note: it's not submitted immediately here, but the waits are recorded before next frame submits
+			for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
 			{
-				if (queue1 == queue2)
+				if (queues[queue1].queue == nullptr)
 					continue;
-				VkSemaphore semaphore = queues[queue2].frame_semaphores[GetBufferIndex()][queue1];
-				if (semaphore == VK_NULL_HANDLE)
-					continue;
-				queues[queue1].wait(semaphore);
+				for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+				{
+					if (queue1 == queue2)
+						continue;
+					VkSemaphore semaphore = queues[queue2].frame_semaphores[GetBufferIndex()][queue1];
+					if (semaphore == VK_NULL_HANDLE)
+						continue;
+					queues[queue1].wait(semaphore);
+				}
 			}
 		}
 
@@ -7550,9 +7652,215 @@ using namespace vulkan_internal;
 		allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
 	}
 
+	void GraphicsDevice_Vulkan::SubmitCommandLists()
+	{
+		SubmitDesc desc = {};
+		desc.throttle_cpu = true;
+		desc.max_inflight_per_queue = BUFFERCOUNT;
+		compatibility_submit_full_sync = true;
+		(void)SubmitCommandListsEx(desc);
+		compatibility_submit_full_sync = false;
+	}
+
+	SubmissionToken GraphicsDevice_Vulkan::SubmitCommandListsEx(const SubmitDesc& desc)
+	{
+		const bool compatibility_full_sync = compatibility_submit_full_sync;
+
+		QueueSubmissionStats stats = {};
+		stats.frameIndex = FRAMECOUNT;
+		for (uint32_t i = 0; i < desc.queue_dependency_count; ++i)
+		{
+			WaitQueuePoint(desc.queue_dependencies[i].point);
+			stats.dependencyEdges++;
+			stats.crossQueueDependencyEdges++;
+			if (desc.queue_dependencies[i].point.queue < QUEUE_COUNT)
+			{
+				stats.queues[desc.queue_dependencies[i].point.queue].cpuFenceWaits++;
+			}
+		}
+		for (uint32_t i = 0; i < desc.submission_dependency_count; ++i)
+		{
+			WaitSubmission(desc.submission_dependencies[i]);
+			stats.dependencyEdges++;
+			stats.crossQueueDependencyEdges++;
+		}
+
+		const bool explicit_selection = desc.command_lists != nullptr && desc.command_list_count > 0;
+		std::vector<uint8_t> pending_mask(commandlists.size(), 0);
+		for (uint32_t pending_id : pending_commandlist_ids)
+		{
+			if (pending_id < pending_mask.size())
+			{
+				pending_mask[pending_id] = 1;
+			}
+		}
+		std::vector<uint32_t> selected_commandlists;
+		if (explicit_selection)
+		{
+			std::vector<uint8_t> selected_mask(commandlists.size(), 0);
+			selected_commandlists.reserve(desc.command_list_count);
+			for (uint32_t i = 0; i < desc.command_list_count; ++i)
+			{
+				const CommandList& list = desc.command_lists[i];
+				if (!wiGraphicsCommandListIsValid(list))
+					continue;
+				const CommandList_Vulkan& commandlist = GetCommandList(list);
+				if (commandlist.id >= commandlists.size())
+					continue;
+				if (!pending_mask[commandlist.id])
+					continue;
+				if (selected_mask[commandlist.id] != 0)
+					continue;
+				selected_mask[commandlist.id] = 1;
+				selected_commandlists.push_back(commandlist.id);
+			}
+			stats.commandListCount = (uint32_t)selected_commandlists.size();
+			if (selected_commandlists.empty())
+			{
+				submission_stats = stats;
+				return {};
+			}
+		}
+		else
+		{
+			stats.commandListCount = (uint32_t)pending_commandlist_ids.size();
+			if (pending_commandlist_ids.empty())
+			{
+				submission_stats = stats;
+				return {};
+			}
+		}
+
+		SubmitCommandListsInternal(
+			explicit_selection ? selected_commandlists.data() : nullptr,
+			(uint32_t)selected_commandlists.size(),
+			explicit_selection,
+			compatibility_full_sync);
+
+		SubmissionToken token = {};
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			if (queues[q].queue == VK_NULL_HANDLE)
+				continue;
+			if (frame_submission_serial[GetBufferIndex()][q] == queue_submission_serial[q] && frame_submission_serial[GetBufferIndex()][q] != 0)
+			{
+				token.Merge(GetLastSubmittedQueuePoint((QUEUE_TYPE)q));
+				stats.queues[q].packetsSubmitted += 1u;
+			}
+		}
+		submission_stats = stats;
+		return token;
+	}
+	UploadTicket GraphicsDevice_Vulkan::EnqueueBufferUpload(const BufferUploadDesc& desc)
+	{
+		return GraphicsDevice::EnqueueBufferUpload(desc);
+	}
+	UploadTicket GraphicsDevice_Vulkan::EnqueueTextureUpload(const TextureUploadDesc& desc)
+	{
+		return GraphicsDevice::EnqueueTextureUpload(desc);
+	}
+
 	void GraphicsDevice_Vulkan::WaitForGPU() const
 	{
 		vulkan_check(vkDeviceWaitIdle(device));
+	}
+	void GraphicsDevice_Vulkan::RefreshQueueCompletionCache(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT || queues[queue].queue == VK_NULL_HANDLE)
+			return;
+
+		uint64_t completed = queue_completed_serial[queue];
+		for (uint32_t fr = 0; fr < BUFFERCOUNT; ++fr)
+		{
+			const VkFence fence = frame_fence[fr][queue];
+			if (fence == VK_NULL_HANDLE)
+				continue;
+			if (vkGetFenceStatus(device, fence) != VK_SUCCESS)
+				continue;
+
+			const uint64_t serial = frame_submission_serial[fr][queue];
+			frame_completed_serial[fr][queue] = serial;
+			completed = std::max(completed, serial);
+		}
+
+		queue_completed_serial[queue] = completed;
+	}
+	bool GraphicsDevice_Vulkan::WaitForQueuePointFallback(QueueSyncPoint point) const
+	{
+		if (!point.IsValid())
+			return true;
+
+		RefreshQueueCompletionCache(point.queue);
+		if (queue_completed_serial[point.queue] >= point.value)
+			return true;
+
+		VkFence wait_fence = VK_NULL_HANDLE;
+		uint64_t wait_serial = (std::numeric_limits<uint64_t>::max)();
+		for (uint32_t fr = 0; fr < BUFFERCOUNT; ++fr)
+		{
+			const uint64_t serial = frame_submission_serial[fr][point.queue];
+			if (serial < point.value)
+				continue;
+			const VkFence fence = frame_fence[fr][point.queue];
+			if (fence == VK_NULL_HANDLE)
+				continue;
+			if (vkGetFenceStatus(device, fence) == VK_SUCCESS)
+			{
+				frame_completed_serial[fr][point.queue] = serial;
+				queue_completed_serial[point.queue] = std::max(queue_completed_serial[point.queue], serial);
+				return queue_completed_serial[point.queue] >= point.value;
+			}
+			if (serial < wait_serial)
+			{
+				wait_serial = serial;
+				wait_fence = fence;
+			}
+		}
+
+		if (wait_fence != VK_NULL_HANDLE)
+		{
+			while (vulkan_check(vkWaitForFences(device, 1, &wait_fence, VK_TRUE, timeout_value)) == VK_TIMEOUT)
+			{
+				VULKAN_LOG_ERROR("[WaitQueuePoint] vkWaitForFences resulted in VK_TIMEOUT for queue %s", GetQueueTypeName(point.queue));
+				std::this_thread::yield();
+			}
+			RefreshQueueCompletionCache(point.queue);
+			return queue_completed_serial[point.queue] >= point.value;
+		}
+
+		WaitForGPU();
+		RefreshQueueCompletionCache(point.queue);
+		return queue_completed_serial[point.queue] >= point.value;
+	}
+	bool GraphicsDevice_Vulkan::IsQueuePointComplete(QueueSyncPoint point) const
+	{
+		if (!point.IsValid())
+			return true;
+		const QueueSyncPoint completed = GetLastCompletedQueuePoint(point.queue);
+		return completed.IsValid() && completed.value >= point.value;
+	}
+	void GraphicsDevice_Vulkan::WaitQueuePoint(QueueSyncPoint point) const
+	{
+		(void)WaitForQueuePointFallback(point);
+	}
+	QueueSyncPoint GraphicsDevice_Vulkan::GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT || queues[queue].queue == VK_NULL_HANDLE)
+			return {};
+		return QueueSyncPoint{ queue, queue_submission_serial[queue] };
+	}
+	QueueSyncPoint GraphicsDevice_Vulkan::GetLastCompletedQueuePoint(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT || queues[queue].queue == VK_NULL_HANDLE)
+			return {};
+		RefreshQueueCompletionCache(queue);
+		return QueueSyncPoint{ queue, queue_completed_serial[queue] };
+	}
+	bool GraphicsDevice_Vulkan::GetQueueSubmissionStats(QueueSubmissionStats& out) const
+	{
+		out = submission_stats;
+		out.frameIndex = FRAMECOUNT;
+		return true;
 	}
 	void GraphicsDevice_Vulkan::ClearPipelineStateCache()
 	{
@@ -7595,6 +7903,10 @@ using namespace vulkan_internal;
 		result.desc.layout = ResourceState::SWAPCHAIN;
 		result.desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::RENDER_TARGET;
 		return result;
+	}
+	bool GraphicsDevice_Vulkan::AcquireSwapChainBackBuffer(const SwapChain* swapchain, CommandList cmd)
+	{
+		return GraphicsDevice::AcquireSwapChainBackBuffer(swapchain, cmd);
 	}
 	ColorSpace GraphicsDevice_Vulkan::GetSwapChainColorSpace(const SwapChain* swapchain) const
 	{
@@ -7837,6 +8149,7 @@ using namespace vulkan_internal;
 		CommandList_Vulkan& commandlist = GetCommandList(cmd);
 		CommandList_Vulkan& commandlist_wait_for = GetCommandList(wait_for);
 		SDL_assert(commandlist_wait_for.id < commandlist.id); // can't wait for future command list!
+		commandlist.wait_for_commandlist_ids.push_back(commandlist_wait_for.id);
 		VkSemaphore semaphore = new_semaphore();
 		commandlist.waits.push_back(semaphore);
 		commandlist_wait_for.signals.push_back(semaphore);

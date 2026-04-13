@@ -5,6 +5,7 @@
 
 #include <cassert>
 #include <cstring>
+#include <cstdlib>
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -69,6 +70,137 @@ namespace wi
 
 		QUEUE_COUNT,
 	};
+	inline constexpr const char* GetQueueTypeName(QUEUE_TYPE queue)
+	{
+		switch (queue)
+		{
+		default:
+		case QUEUE_GRAPHICS:
+			return "graphics";
+		case QUEUE_COMPUTE:
+			return "compute";
+		case QUEUE_COPY:
+			return "copy";
+		case QUEUE_VIDEO_DECODE:
+			return "video";
+		}
+	}
+
+	struct QueueSubmissionStats
+	{
+		struct QueueStats
+		{
+			uint32_t commandLists = 0;
+			uint32_t packetsSubmitted = 0;
+			uint32_t dependencyWaits = 0;
+			uint32_t dependencySignals = 0;
+			uint32_t cpuFenceWaits = 0;
+		};
+		QueueStats queues[QUEUE_COUNT] = {};
+		uint32_t commandListCount = 0;
+		uint32_t dependencyEdges = 0;
+		uint32_t crossQueueDependencyEdges = 0;
+		double submitCPUms = 0.0;
+		uint64_t frameIndex = 0;
+	};
+
+	struct QueueSyncPoint
+	{
+		QUEUE_TYPE queue = QUEUE_COUNT;
+		uint64_t value = 0;
+
+		constexpr bool IsValid() const
+		{
+			return queue < QUEUE_COUNT && value != 0;
+		}
+	};
+
+	struct SubmissionToken
+	{
+		uint32_t queue_mask = 0;
+		uint64_t values[QUEUE_COUNT] = {};
+
+		constexpr bool IsValid() const
+		{
+			return queue_mask != 0;
+		}
+
+		constexpr QueueSyncPoint Get(QUEUE_TYPE queue) const
+		{
+			return (queue_mask & (1u << queue)) ? QueueSyncPoint{ queue, values[queue] } : QueueSyncPoint{};
+		}
+
+		void Merge(QueueSyncPoint point)
+		{
+			if (!point.IsValid())
+				return;
+			queue_mask |= (1u << point.queue);
+			values[point.queue] = std::max(values[point.queue], point.value);
+		}
+
+		void Merge(const SubmissionToken& other)
+		{
+			if (!other.IsValid())
+				return;
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((other.queue_mask & (1u << q)) == 0)
+					continue;
+				Merge(QueueSyncPoint{ (QUEUE_TYPE)q, other.values[q] });
+			}
+		}
+	};
+
+	struct QueueDependency
+	{
+		QueueSyncPoint point;
+	};
+
+	struct SubmitDesc
+	{
+		// If command_lists is nullptr, backend should submit all command lists started since the previous submit.
+		const CommandList* command_lists = nullptr;
+		uint32_t command_list_count = 0;
+
+		// Optional explicit external queue dependencies:
+		const QueueDependency* queue_dependencies = nullptr;
+		uint32_t queue_dependency_count = 0;
+
+		// Optional explicit submit-token dependencies:
+		const SubmissionToken* submission_dependencies = nullptr;
+		uint32_t submission_dependency_count = 0;
+
+		bool throttle_cpu = false;
+		uint32_t max_inflight_per_queue = 0;
+	};
+
+	struct BufferUploadDesc
+	{
+		const GPUBuffer* dst = nullptr;
+		uint64_t dst_offset = 0;
+		const void* data = nullptr;
+		uint64_t size = 0;
+		bool block_until_complete = false;
+	};
+
+	struct TextureUploadDesc
+	{
+		const Texture* dst = nullptr;
+		const SubresourceData* subresources = nullptr;
+		uint32_t subresource_count = 0;
+		bool block_until_complete = false;
+	};
+
+	struct UploadTicket
+	{
+		SubmissionToken token;
+		QueueSyncPoint completion;
+
+		constexpr bool IsValid() const
+		{
+			return completion.IsValid();
+		}
+	};
 
 	class GraphicsDevice
 	{
@@ -124,12 +256,120 @@ namespace wi
 		// Begin a new command list for GPU command recording.
 		//	This will be valid until SubmitCommandLists() is called.
 		virtual CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) = 0;
-		// Submit all command list that were used with BeginCommandList before this call.
-		//	This will make every command list to be in "available" state and restarts them
+		// Compatibility wrapper submit path.
+		//	Backends should implement this by forwarding to SubmitCommandListsEx() with full-sync semantics.
 		virtual void SubmitCommandLists() = 0;
+		// Explicit submit path.
+		virtual SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc)
+		{
+			(void)desc;
+			SubmitCommandLists();
+			SubmissionToken token = {};
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				token.Merge(GetLastSubmittedQueuePoint((QUEUE_TYPE)q));
+			}
+			return token;
+		}
 
 		// The CPU will wait until all submitted GPU work is finished execution
 		virtual void WaitForGPU() const = 0;
+
+		virtual bool IsQueuePointComplete(QueueSyncPoint point) const
+		{
+			if (!point.IsValid())
+				return true;
+			const QueueSyncPoint completed = GetLastCompletedQueuePoint(point.queue);
+			return completed.IsValid() && completed.value >= point.value;
+		}
+		virtual void WaitQueuePoint(QueueSyncPoint point) const
+		{
+			if (!point.IsValid())
+				return;
+			WaitForGPU();
+		}
+		virtual bool IsSubmissionComplete(const SubmissionToken& token) const
+		{
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((token.queue_mask & (1u << q)) == 0)
+					continue;
+				if (!IsQueuePointComplete(QueueSyncPoint{ (QUEUE_TYPE)q, token.values[q] }))
+					return false;
+			}
+			return true;
+		}
+		virtual void WaitSubmission(const SubmissionToken& token) const
+		{
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((token.queue_mask & (1u << q)) == 0)
+					continue;
+				WaitQueuePoint(QueueSyncPoint{ (QUEUE_TYPE)q, token.values[q] });
+			}
+		}
+		virtual QueueSyncPoint GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const
+		{
+			(void)queue;
+			return {};
+		}
+		virtual QueueSyncPoint GetLastCompletedQueuePoint(QUEUE_TYPE queue) const
+		{
+			(void)queue;
+			return {};
+		}
+
+		virtual UploadTicket EnqueueBufferUpload(const BufferUploadDesc& desc)
+		{
+			UploadTicket ticket = {};
+			if (desc.dst == nullptr || desc.data == nullptr || desc.size == 0)
+				return ticket;
+
+			CommandList cmd = BeginCommandList(QUEUE_COPY);
+			GPUBarrier to_copy = wiGraphicsCreateGPUBarrierBuffer(desc.dst, ResourceState::SHADER_RESOURCE, ResourceState::COPY_DST);
+			Barrier(to_copy, cmd);
+			UpdateBuffer(desc.dst, desc.data, cmd, desc.size, desc.dst_offset);
+
+			SubmitDesc submit = {};
+			submit.command_lists = &cmd;
+			submit.command_list_count = 1;
+			ticket.token = SubmitCommandListsEx(submit);
+
+			QueueSyncPoint completion = ticket.token.Get(QUEUE_COPY);
+			if (!completion.IsValid())
+			{
+				for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+				{
+					if ((ticket.token.queue_mask & (1u << q)) == 0)
+						continue;
+					completion = QueueSyncPoint{ (QUEUE_TYPE)q, ticket.token.values[q] };
+					break;
+				}
+			}
+			ticket.completion = completion;
+			if (desc.block_until_complete && ticket.IsValid())
+			{
+				WaitUpload(ticket);
+			}
+			return ticket;
+		}
+		virtual UploadTicket EnqueueTextureUpload(const TextureUploadDesc& desc)
+		{
+			(void)desc;
+			return {};
+		}
+		virtual bool IsUploadComplete(const UploadTicket& ticket) const
+		{
+			return IsQueuePointComplete(ticket.completion);
+		}
+		virtual void WaitUpload(const UploadTicket& ticket) const
+		{
+			WaitQueuePoint(ticket.completion);
+		}
+		virtual QueueSyncPoint GetUploadSyncPoint(const UploadTicket& ticket) const
+		{
+			return ticket.completion;
+		}
 
 		// The current PipelineState cache will be cleared. It is useful to clear this when reloading shaders, to avoid accumulating unused pipeline states
 		virtual void ClearPipelineStateCache() = 0;
@@ -172,6 +412,12 @@ namespace wi
 
 		// Get a Texture resource that represents the current back buffer of the SwapChain
 		virtual Texture GetBackBuffer(const SwapChain* swapchain) const = 0;
+		// Explicitly acquire/register the swapchain backbuffer for this frame on the given command list.
+		// Default implementation is a no-op compatibility check for backends that still perform acquire in RenderPassBegin().
+		virtual bool AcquireSwapChainBackBuffer(const SwapChain* swapchain, CommandList cmd)
+		{
+			return swapchain != nullptr && wiGraphicsSwapChainIsValid(swapchain) && wiGraphicsCommandListIsValid(cmd);
+		}
 		// Returns the current color space of the swapchain output
 		virtual ColorSpace GetSwapChainColorSpace(const SwapChain* swapchain) const = 0;
 		// Returns true if the swapchain could support HDR output regardless of current format
@@ -197,6 +443,8 @@ namespace wi
 
 		// Returns an identifier string for the graphics device subclass
 		virtual const char* GetTag() const { return ""; }
+		// Returns last submit telemetry if backend implements it
+		virtual bool GetQueueSubmissionStats(QueueSubmissionStats& out) const { (void)out; return false; }
 
 		/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 		// Command List functions are below:

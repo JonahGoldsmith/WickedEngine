@@ -65,6 +65,14 @@
 #include "wiShaderCompiler.h"
 
 #include "platform_window_helpers.h"
+#include "frame_tagged_heap_allocator.h"
+
+#ifndef WICKED_SUBSET_FRAME_BUFFERED
+#define WICKED_SUBSET_FRAME_BUFFERED 0
+#endif
+#ifndef WICKED_SUBSET_FRAME_SLOT_COUNT
+#define WICKED_SUBSET_FRAME_SLOT_COUNT 16
+#endif
 
 #ifndef WICKED_SUBSET_CUBE_INDIRECT_COMPARE_SHADER_PATH
 #define WICKED_SUBSET_CUBE_INDIRECT_COMPARE_SHADER_PATH ""
@@ -107,6 +115,8 @@ using wi::ResourceMiscFlag;
 using wi::Shader;
 using wi::ShaderModel;
 using wi::ShaderStage;
+using wi::SubmissionToken;
+using wi::SubmitDesc;
 using wi::SwapChain;
 using wi::SwapChainDesc;
 using wi::Usage;
@@ -883,6 +893,18 @@ private:
             return false;
         }
 
+#if WICKED_SUBSET_FRAME_BUFFERED
+        const uint32_t slotIndex = frameSlotCursor_ % static_cast<uint32_t>(frameSlots_.size());
+        FrameSlot& slot = frameSlots_[slotIndex];
+        if (slot.inUse && slot.submission.IsValid() && !device_->IsSubmissionComplete(slot.submission))
+        {
+            device_->WaitSubmission(slot.submission);
+        }
+        slot.inUse = false;
+        ++frameSlotCursor_;
+        const uint64_t frameTag = taggedHeapFrameId_++;
+#endif
+
         sceneTimeSeconds_ += dt;
         sceneOrbitAngle_ += dt * orbitSpeed_;
 
@@ -935,6 +957,9 @@ private:
             indirectCountDirty_ = false;
         }
 
+#if WICKED_SUBSET_FRAME_BUFFERED
+        device_->AcquireSwapChainBackBuffer(&swapchain_, cmd);
+#endif
         device_->RenderPassBegin(&swapchain_, cmd);
 
         wi::Viewport vp;
@@ -955,16 +980,27 @@ private:
             drawMode_ == DrawMode::DispatchMeshIndirect ||
             drawMode_ == DrawMode::DispatchMeshIndirectCount;
 
+#if WICKED_SUBSET_FRAME_BUFFERED
+        SceneCB* sceneCBTagged = taggedHeap_.Allocate<SceneCB>(wi::framealloc::MakeFrameTag(frameTag, wi::framealloc::FrameTagKind::Render), 1);
+        if (sceneCBTagged != nullptr)
+        {
+            *sceneCBTagged = sceneCB;
+        }
+        const SceneCB& sceneCBRef = sceneCBTagged != nullptr ? *sceneCBTagged : sceneCB;
+#else
+        const SceneCB& sceneCBRef = sceneCB;
+#endif
+
         if (meshMode)
         {
             device_->BindPipelineState(&pipelineMesh_, cmd);
-            device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
+            device_->BindDynamicConstantBuffer(sceneCBRef, 0, cmd);
             device_->BindResource(&vertexBuffer_, 0, cmd);
         }
         else
         {
             device_->BindPipelineState(&pipeline_, cmd);
-            device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
+            device_->BindDynamicConstantBuffer(sceneCBRef, 0, cmd);
 
             const GPUBuffer* vbs[] = {
                 &vertexBuffer_,
@@ -1021,7 +1057,16 @@ private:
 
         device_->RenderPassEnd(cmd);
 
+#if WICKED_SUBSET_FRAME_BUFFERED
+        SubmitDesc submit = {};
+        submit.command_lists = &cmd;
+        submit.command_list_count = 1;
+        slot.submission = device_->SubmitCommandListsEx(submit);
+        slot.inUse = slot.submission.IsValid();
+        taggedHeap_.FreeTag(wi::framealloc::MakeFrameTag(frameTag, wi::framealloc::FrameTagKind::Render));
+#else
         device_->SubmitCommandLists();
+#endif
 
         const uint64_t cpuEnd = SDL_GetPerformanceCounter();
         if (cpuFrameMs != nullptr)
@@ -1432,6 +1477,18 @@ private:
     bool autoCycleModes_ = true;
     double modeTimerSeconds_ = 0.0;
     double modeAutoSwitchSeconds_ = 6.0;
+
+#if WICKED_SUBSET_FRAME_BUFFERED
+    struct FrameSlot
+    {
+        SubmissionToken submission = {};
+        bool inUse = false;
+    };
+    std::array<FrameSlot, WICKED_SUBSET_FRAME_SLOT_COUNT> frameSlots_ = {};
+    uint32_t frameSlotCursor_ = 0;
+    uint64_t taggedHeapFrameId_ = 1;
+    wi::framealloc::FrameTaggedHeapAllocator taggedHeap_;
+#endif
 };
 
 } // namespace

@@ -65,6 +65,14 @@
 #include "wiShaderCompiler.h"
 
 #include "platform_window_helpers.h"
+#include "frame_tagged_heap_allocator.h"
+
+#ifndef WICKED_SUBSET_FRAME_BUFFERED
+#define WICKED_SUBSET_FRAME_BUFFERED 0
+#endif
+#ifndef WICKED_SUBSET_FRAME_SLOT_COUNT
+#define WICKED_SUBSET_FRAME_SLOT_COUNT 16
+#endif
 
 #ifndef WICKED_SUBSET_CUBE_SHADER_PATH
 #define WICKED_SUBSET_CUBE_SHADER_PATH ""
@@ -100,6 +108,8 @@ using wi::QUEUE_GRAPHICS;
 using wi::Shader;
 using wi::ShaderModel;
 using wi::ShaderStage;
+using wi::SubmissionToken;
+using wi::SubmitDesc;
 using wi::SwapChain;
 using wi::SwapChainDesc;
 using wi::ValidationMode;
@@ -597,6 +607,19 @@ private:
             return false;
         }
 
+#if WICKED_SUBSET_FRAME_BUFFERED
+        const uint32_t slotIndex = frameSlotCursor_ % static_cast<uint32_t>(frameSlots_.size());
+        FrameSlot& slot = frameSlots_[slotIndex];
+        if (slot.inUse && slot.submission.IsValid() && !device_->IsSubmissionComplete(slot.submission))
+        {
+            device_->WaitSubmission(slot.submission);
+        }
+        slot.inUse = false;
+        ++frameSlotCursor_;
+
+        const uint64_t frameTag = taggedHeapFrameId_++;
+#endif
+
         colorPhase_ += colorCycleSpeed_ * dt;
         cubeRotationAngle_ += cubeRotationSpeed_ * dt;
 
@@ -622,9 +645,25 @@ private:
         push.rotationAxisAngle[2] = 0.2f;
         push.rotationAxisAngle[3] = cubeRotationAngle_;
 
+#if WICKED_SUBSET_FRAME_BUFFERED
+        CameraCB* cameraCBTagged = taggedHeap_.Allocate<CameraCB>(wi::framealloc::MakeFrameTag(frameTag, wi::framealloc::FrameTagKind::Render), 1);
+        CubePushConstants* pushTagged = taggedHeap_.Allocate<CubePushConstants>(wi::framealloc::MakeFrameTag(frameTag, wi::framealloc::FrameTagKind::Render), 1);
+        if (cameraCBTagged != nullptr)
+        {
+            *cameraCBTagged = cameraCB;
+        }
+        if (pushTagged != nullptr)
+        {
+            *pushTagged = push;
+        }
+#endif
+
         CommandList cmd = device_->BeginCommandList(QUEUE_GRAPHICS);
 
         // Important: this path performs acquire/present scheduling for swapchain rendering.
+#if WICKED_SUBSET_FRAME_BUFFERED
+        device_->AcquireSwapChainBackBuffer(&swapchain_, cmd);
+#endif
         device_->RenderPassBegin(&swapchain_, cmd);
 
         wi::Viewport vp;
@@ -643,14 +682,36 @@ private:
         device_->BindPipelineState(&pipeline_, cmd);
 
         // Camera matrix is supplied through dynamic CB allocation each frame.
-        device_->BindDynamicConstantBuffer(cameraCB, 0, cmd);
+        device_->BindDynamicConstantBuffer(
+#if WICKED_SUBSET_FRAME_BUFFERED
+            cameraCBTagged != nullptr ? *cameraCBTagged : cameraCB,
+#else
+            cameraCB,
+#endif
+            0,
+            cmd);
         // Per-draw color and rotation are push constants.
-        device_->PushConstants(&push, static_cast<uint32_t>(sizeof(push)), cmd);
+        const CubePushConstants& pushRef =
+#if WICKED_SUBSET_FRAME_BUFFERED
+            pushTagged != nullptr ? *pushTagged : push;
+#else
+            push;
+#endif
+        device_->PushConstants(&pushRef, static_cast<uint32_t>(sizeof(pushRef)), cmd);
         device_->DrawInstanced(36, 1, 0, 0, cmd);
 
         device_->RenderPassEnd(cmd);
 
+#if WICKED_SUBSET_FRAME_BUFFERED
+        SubmitDesc submit = {};
+        submit.command_lists = &cmd;
+        submit.command_list_count = 1;
+        slot.submission = device_->SubmitCommandListsEx(submit);
+        slot.inUse = slot.submission.IsValid();
+        taggedHeap_.FreeTag(wi::framealloc::MakeFrameTag(frameTag, wi::framealloc::FrameTagKind::Render));
+#else
         device_->SubmitCommandLists();
+#endif
         if (framesRendered_ == 0)
         {
             std::fprintf(stderr, "[WickedBackendCubeDemo] first frame submitted\n");
@@ -833,6 +894,18 @@ private:
     float colorCycleSpeed_ = 0.9f;
     float cubeRotationAngle_ = 0.0f;
     float cubeRotationSpeed_ = 1.1f;
+
+#if WICKED_SUBSET_FRAME_BUFFERED
+    struct FrameSlot
+    {
+        SubmissionToken submission = {};
+        bool inUse = false;
+    };
+    std::array<FrameSlot, WICKED_SUBSET_FRAME_SLOT_COUNT> frameSlots_ = {};
+    uint32_t frameSlotCursor_ = 0;
+    uint64_t taggedHeapFrameId_ = 1;
+    wi::framealloc::FrameTaggedHeapAllocator taggedHeap_;
+#endif
 };
 
 } // namespace

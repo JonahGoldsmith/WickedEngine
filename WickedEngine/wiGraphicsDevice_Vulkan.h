@@ -384,7 +384,7 @@ namespace wi
 			void clear();
 			void signal(VkSemaphore semaphore);
 			void wait(VkSemaphore semaphore);
-			void submit(GraphicsDevice_Vulkan* device, VkFence fence);
+			void submit(GraphicsDevice_Vulkan* device, VkFence fence, bool compatibility_full_sync);
 
 		} queues[QUEUE_COUNT];
 
@@ -426,6 +426,12 @@ namespace wi
 		inline TransitionHandler& GetTransitionHandler() { return transition_handlers[GetBufferIndex()]; }
 
 		VkFence frame_fence[BUFFERCOUNT][QUEUE_COUNT] = {};
+		uint64_t frame_submission_serial[BUFFERCOUNT][QUEUE_COUNT] = {};
+		mutable uint64_t frame_completed_serial[BUFFERCOUNT][QUEUE_COUNT] = {};
+		uint64_t queue_submission_serial[QUEUE_COUNT] = {};
+		mutable uint64_t queue_completed_serial[QUEUE_COUNT] = {};
+		QueueSubmissionStats submission_stats = {};
+		bool compatibility_submit_full_sync = false;
 
 		struct DescriptorBinder
 		{
@@ -597,8 +603,9 @@ namespace wi
 
 			QUEUE_TYPE queue = {};
 			uint32_t id = 0;
-				std::deque<VkSemaphore> waits;
-				std::deque<VkSemaphore> signals;
+			std::deque<VkSemaphore> waits;
+			std::deque<VkSemaphore> signals;
+			std::deque<uint32_t> wait_for_commandlist_ids;
 
 			DescriptorBinder binder;
 			DescriptorBinderPool binder_pools[BUFFERCOUNT];
@@ -628,6 +635,7 @@ namespace wi
 				buffer_index = bufferindex;
 				waits.clear();
 				signals.clear();
+				wait_for_commandlist_ids.clear();
 				binder_pools[buffer_index].reset();
 				binder.reset();
 				frame_allocators[buffer_index].reset();
@@ -661,6 +669,8 @@ namespace wi
 		};
 		wi::allocator::BlockAllocator<CommandList_Vulkan, 64> cmd_allocator;
 		std::deque<CommandList_Vulkan*> commandlists;
+		std::deque<uint32_t> pending_commandlist_ids;
+		uint32_t cmd_sequence = 0;
 		uint32_t cmd_count = 0;
 		wi::SpinLock cmd_locker;
 
@@ -677,6 +687,9 @@ namespace wi
 
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
+		void SubmitCommandListsInternal(const uint32_t* selected_commandlists, uint32_t selected_commandlist_count, bool explicit_selection, bool compatibility_full_sync);
+		void RefreshQueueCompletionCache(QUEUE_TYPE queue) const;
+		bool WaitForQueuePointFallback(QueueSyncPoint point) const;
 
 		void set_fence_name(VkFence fence, const char* name);
 		void set_semaphore_name(VkSemaphore semaphore, const char* name);
@@ -713,14 +726,23 @@ namespace wi
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
 		void SubmitCommandLists() override;
+		SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc) override;
+		UploadTicket EnqueueBufferUpload(const BufferUploadDesc& desc) override;
+		UploadTicket EnqueueTextureUpload(const TextureUploadDesc& desc) override;
 
 		void WaitForGPU() const override;
+		bool IsQueuePointComplete(QueueSyncPoint point) const override;
+		void WaitQueuePoint(QueueSyncPoint point) const override;
+		QueueSyncPoint GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const override;
+		QueueSyncPoint GetLastCompletedQueuePoint(QUEUE_TYPE queue) const override;
 		void ClearPipelineStateCache() override;
 		size_t GetActivePipelineCount() const override { return pipelines_global.size(); }
+		bool GetQueueSubmissionStats(QueueSubmissionStats& out) const override;
 
 		ShaderFormat GetShaderFormat() const override { return ShaderFormat::SPIRV; }
 
 		Texture GetBackBuffer(const SwapChain* swapchain) const override;
+		bool AcquireSwapChainBackBuffer(const SwapChain* swapchain, CommandList cmd) override;
 
 		ColorSpace GetSwapChainColorSpace(const SwapChain* swapchain) const override;
 		bool IsSwapChainSupportsHDR(const SwapChain* swapchain) const override;

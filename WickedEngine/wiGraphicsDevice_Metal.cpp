@@ -2187,6 +2187,12 @@ using namespace metal_internal;
 		
 		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
 		{
+			if (queues[q].queue.get() != nullptr)
+			{
+				queue_submit_fence[q] = NS::TransferPtr(device->newSharedEvent());
+				queue_submit_fence[q]->setSignaledValue(0);
+				queue_submit_values[q].store(0, std::memory_order_release);
+			}
 			for (uint32_t i = 0; i < BUFFERCOUNT; ++i)
 			{
 				if (queues[q].queue.get() == nullptr)
@@ -3930,18 +3936,22 @@ using namespace metal_internal;
 		
 		return cmd;
 	}
-	void GraphicsDevice_Metal::SubmitCommandLists()
+	void GraphicsDevice_Metal::SubmitCommandListsInternal(bool fullsync_compat, const uint8_t* submit_mask, uint32_t cmd_last)
 	{
 		allocationhandler->destroylocker.lock();
 		allocationhandler->residency_set->commit();
 		allocationhandler->destroylocker.unlock();
-		
-		uint32_t cmd_last = cmd_count;
-		cmd_count = 0;
+
+		auto is_selected = [&](uint32_t cmd_index) -> bool
+		{
+			return submit_mask == nullptr || submit_mask[cmd_index] != 0;
+		};
 		
 		// Presents wait:
 		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 		{
+			if (!is_selected(cmd))
+				continue;
 			auto& commandlist = *commandlists[cmd];
 			for (size_t i = 0; i < arrlenu(commandlist.presents); ++i)
 			{
@@ -3954,6 +3964,8 @@ using namespace metal_internal;
 		// Submit work and resolve dependencies:
 		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 		{
+			if (!is_selected(cmd))
+				continue;
 			auto& commandlist = *commandlists[cmd];
 			if (commandlist.barriers != nullptr && arrlenu(commandlist.barriers) > 0)
 			{
@@ -4040,21 +4052,31 @@ using namespace metal_internal;
 		}
 		
 		// Mark the completion of queues for this frame:
+		const uint32_t bufferindex_current = GetBufferIndex();
 		frame_fence_values[GetBufferIndex()]++;
 		for (int q = 0; q < QUEUE_COUNT; ++q)
 		{
 			CommandQueue& queue = queues[q];
 			if (queue.queue.get() == nullptr)
 				continue;
+
+			const bool queue_had_work = queue.submit_cmds != nullptr && arrlenu(queue.submit_cmds) > 0;
 			
 			queue.submit();
 			
 			queue.queue->signalEvent(frame_fence[GetBufferIndex()][q].get(), frame_fence_values[GetBufferIndex()]);
+			if (queue_had_work && queue_submit_fence[q].get() != nullptr)
+			{
+				const uint64_t queue_submit_value = queue_submit_values[q].fetch_add(1, std::memory_order_acq_rel) + 1;
+				queue.queue->signalEvent(queue_submit_fence[q].get(), queue_submit_value);
+			}
 		}
 		
 		// Presents submit:
 		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 		{
+			if (!is_selected(cmd))
+				continue;
 			auto& commandlist = *commandlists[cmd];
 			for (size_t i = 0; i < arrlenu(commandlist.presents); ++i)
 			{
@@ -4067,22 +4089,36 @@ using namespace metal_internal;
 			arrsetlen(commandlist.presents, 0);
 		}
 		
-		// Sync up every queue to every other queue at the end of the frame:
-		//	Note: it disables overlapping queues into the next frame
-		for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
+		// Compatibility path enforces full queue-to-queue sync at submit tail.
+		if (fullsync_compat)
 		{
-			if (queues[queue1].queue.get() == nullptr)
-				continue;
-			for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+			for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
 			{
-				if (queue1 == queue2)
+				if (queues[queue1].queue.get() == nullptr)
 					continue;
-				if (queues[queue2].queue.get() == nullptr)
-					continue;
-				MTL::SharedEvent* fence = frame_fence[GetBufferIndex()][queue2].get();
-				queues[queue1].queue->wait(fence, frame_fence_values[GetBufferIndex()]);
+				for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+				{
+					if (queue1 == queue2)
+						continue;
+					if (queues[queue2].queue.get() == nullptr)
+						continue;
+					MTL::SharedEvent* fence = frame_fence[bufferindex_current][queue2].get();
+					queues[queue1].queue->wait(fence, frame_fence_values[bufferindex_current]);
+				}
 			}
 		}
+
+		// Keep non-submitted command lists pending for a later submit.
+		uint32_t pending_count = 0;
+		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
+		{
+			if (is_selected(cmd))
+				continue;
+			commandlists[pending_count] = commandlists[cmd];
+			commandlists[pending_count]->id = pending_count;
+			++pending_count;
+		}
+		cmd_count = pending_count;
 		
 		// From here, we begin a new frame, this affects GetBufferIndex()!
 		FRAMECOUNT++;
@@ -4103,6 +4139,198 @@ using namespace metal_internal;
 		allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
 	}
 
+	void GraphicsDevice_Metal::SubmitCommandLists()
+	{
+		SubmitDesc desc = {};
+		desc.throttle_cpu = true;
+		desc.max_inflight_per_queue = BUFFERCOUNT;
+		(void)SubmitCommandListsEx(desc);
+	}
+
+	SubmissionToken GraphicsDevice_Metal::SubmitCommandListsEx(const SubmitDesc& desc)
+	{
+		const uint32_t cmd_last = cmd_count;
+		uint8_t* submit_mask = nullptr;
+		if (cmd_last > 0)
+		{
+			arrsetlen(submit_mask, cmd_last);
+			for (uint32_t i = 0; i < cmd_last; ++i)
+			{
+				submit_mask[i] = 0;
+			}
+			if (desc.command_lists != nullptr && desc.command_list_count > 0)
+			{
+				auto mark_commandlist_for_submit = [&](CommandList cmd)
+				{
+					if (!wiGraphicsCommandListIsValid(cmd))
+						return;
+					auto* internal = (CommandList_Metal*)cmd.internal_state;
+					if (internal == nullptr)
+						return;
+
+					uint32_t idx = internal->id;
+					if (idx < cmd_last && commandlists[idx] == internal)
+					{
+						submit_mask[idx] = 1;
+						return;
+					}
+
+					for (uint32_t search = 0; search < cmd_last; ++search)
+					{
+						if (commandlists[search] == internal)
+						{
+							submit_mask[search] = 1;
+							return;
+						}
+					}
+				};
+
+				for (uint32_t i = 0; i < desc.command_list_count; ++i)
+				{
+					mark_commandlist_for_submit(desc.command_lists[i]);
+				}
+
+				// Ensure selected command lists include same-submit local predecessors they explicitly wait on.
+				bool expanded = true;
+				while (expanded)
+				{
+					expanded = false;
+					for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
+					{
+						if (submit_mask[cmd] == 0)
+							continue;
+
+						auto& commandlist = *commandlists[cmd];
+						for (size_t wait_index = 0; wait_index < arrlenu(commandlist.waits); ++wait_index)
+						{
+							const Semaphore& wait_semaphore = commandlist.waits[wait_index];
+							for (uint32_t predecessor = 0; predecessor < cmd; ++predecessor)
+							{
+								if (submit_mask[predecessor] != 0)
+									continue;
+
+								auto& predecessor_cmd = *commandlists[predecessor];
+								bool matched_signal = false;
+								for (size_t signal_index = 0; signal_index < arrlenu(predecessor_cmd.signals); ++signal_index)
+								{
+									const Semaphore& signal_semaphore = predecessor_cmd.signals[signal_index];
+									if (signal_semaphore.event == wait_semaphore.event && signal_semaphore.fenceValue == wait_semaphore.fenceValue)
+									{
+										matched_signal = true;
+										break;
+									}
+								}
+								if (matched_signal)
+								{
+									submit_mask[predecessor] = 1;
+									expanded = true;
+								}
+							}
+						}
+					}
+				}
+			}
+			else
+			{
+				for (uint32_t i = 0; i < cmd_last; ++i)
+				{
+					submit_mask[i] = 1;
+				}
+			}
+		}
+
+		bool target_queue_mask[QUEUE_COUNT] = {};
+		uint32_t selected_count = 0;
+		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
+		{
+			if (submit_mask == nullptr || submit_mask[cmd] == 0)
+				continue;
+			++selected_count;
+			const QUEUE_TYPE queue = commandlists[cmd]->queue;
+			if (queue < QUEUE_COUNT)
+			{
+				target_queue_mask[queue] = true;
+			}
+		}
+
+		auto enqueue_dependency_wait = [&](QueueSyncPoint point)
+		{
+			if (!point.IsValid())
+				return;
+			if (point.queue >= QUEUE_COUNT)
+				return;
+			if (IsQueuePointComplete(point))
+				return;
+			MTL::SharedEvent* dependency_fence = queue_submit_fence[point.queue].get();
+			if (dependency_fence == nullptr)
+			{
+				WaitQueuePoint(point);
+				return;
+			}
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if (!target_queue_mask[q])
+					continue;
+				if (queues[q].queue.get() == nullptr)
+					continue;
+				queues[q].queue->wait(dependency_fence, point.value);
+			}
+		};
+
+		for (uint32_t i = 0; i < desc.queue_dependency_count; ++i)
+		{
+			enqueue_dependency_wait(desc.queue_dependencies[i].point);
+		}
+		for (uint32_t i = 0; i < desc.submission_dependency_count; ++i)
+		{
+			const SubmissionToken& dependency = desc.submission_dependencies[i];
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((dependency.queue_mask & (1u << q)) == 0)
+					continue;
+				enqueue_dependency_wait(QueueSyncPoint{ (QUEUE_TYPE)q, dependency.values[q] });
+			}
+		}
+
+		const bool fullsync_compat =
+			desc.command_lists == nullptr &&
+			desc.command_list_count == 0 &&
+			desc.queue_dependency_count == 0 &&
+			desc.submission_dependency_count == 0 &&
+			desc.throttle_cpu &&
+			desc.max_inflight_per_queue == BUFFERCOUNT;
+		uint64_t submitted_before[QUEUE_COUNT] = {};
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			submitted_before[q] = queue_submit_values[q].load(std::memory_order_acquire);
+		}
+		if (selected_count > 0)
+		{
+			SubmitCommandListsInternal(fullsync_compat, submit_mask, cmd_last);
+		}
+
+		SubmissionToken token = {};
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			if (queues[q].queue.get() == nullptr)
+				continue;
+			const uint64_t submitted_after = queue_submit_values[q].load(std::memory_order_acquire);
+			if (submitted_after <= submitted_before[q])
+				continue;
+			token.Merge(QueueSyncPoint{ (QUEUE_TYPE)q, submitted_after });
+		}
+		arrfree(submit_mask);
+		return token;
+	}
+	UploadTicket GraphicsDevice_Metal::EnqueueBufferUpload(const BufferUploadDesc& desc)
+	{
+		return GraphicsDevice::EnqueueBufferUpload(desc);
+	}
+	UploadTicket GraphicsDevice_Metal::EnqueueTextureUpload(const TextureUploadDesc& desc)
+	{
+		return GraphicsDevice::EnqueueTextureUpload(desc);
+	}
+
 	void GraphicsDevice_Metal::WaitForGPU() const
 	{
 		NS::SharedPtr<MTL::SharedEvent> event = NS::TransferPtr(device->newSharedEvent());
@@ -4114,6 +4342,47 @@ using namespace metal_internal;
 			queue.queue->signalEvent(event.get(), 1);
 			WaitForSharedEventWithAssert(event.get(), 1, "WaitForGPU queue drain");
 		}
+	}
+	bool GraphicsDevice_Metal::IsQueuePointComplete(QueueSyncPoint point) const
+	{
+		if (!point.IsValid())
+			return true;
+		const QueueSyncPoint completed = GetLastCompletedQueuePoint(point.queue);
+		return completed.IsValid() && completed.value >= point.value;
+	}
+	void GraphicsDevice_Metal::WaitQueuePoint(QueueSyncPoint point) const
+	{
+		if (!point.IsValid())
+			return;
+		if (point.queue < QUEUE_COUNT && queue_submit_fence[point.queue].get() != nullptr)
+		{
+			WaitForSharedEventWithAssert(queue_submit_fence[point.queue].get(), point.value, "WaitQueuePoint queue submit fence");
+			return;
+		}
+		if (!IsQueuePointComplete(point))
+		{
+			WaitForGPU();
+		}
+	}
+	QueueSyncPoint GraphicsDevice_Metal::GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT || queues[queue].queue.get() == nullptr)
+			return {};
+		return QueueSyncPoint{ queue, queue_submit_values[queue].load(std::memory_order_acquire) };
+	}
+	QueueSyncPoint GraphicsDevice_Metal::GetLastCompletedQueuePoint(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT || queues[queue].queue.get() == nullptr)
+			return {};
+		if (queue_submit_fence[queue].get() == nullptr)
+			return {};
+		return QueueSyncPoint{ queue, queue_submit_fence[queue]->signaledValue() };
+	}
+	bool GraphicsDevice_Metal::GetQueueSubmissionStats(QueueSubmissionStats& out) const
+	{
+		out = {};
+		out.frameIndex = FRAMECOUNT;
+		return true;
 	}
 	void GraphicsDevice_Metal::ClearPipelineStateCache()
 	{
@@ -4143,6 +4412,10 @@ using namespace metal_internal;
 		result.desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::RENDER_TARGET;
 		result.desc.format = swapchain->desc.format;
 		return result;
+	}
+	bool GraphicsDevice_Metal::AcquireSwapChainBackBuffer(const SwapChain* swapchain, CommandList cmd)
+	{
+		return GraphicsDevice::AcquireSwapChainBackBuffer(swapchain, cmd);
 	}
 	ColorSpace GraphicsDevice_Metal::GetSwapChainColorSpace(const SwapChain* swapchain) const
 	{

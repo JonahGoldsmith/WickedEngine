@@ -171,6 +171,8 @@ namespace wi
 			D3D12_COMMAND_QUEUE_DESC desc = {};
 			Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
 			ID3D12CommandList** submit_cmds = nullptr;
+			Microsoft::WRL::ComPtr<ID3D12Fence> timeline_fence;
+			uint64_t timeline_submitted_value = 0;
 
 			void signal(const Semaphore& semaphore);
 			void wait(const Semaphore& semaphore);
@@ -271,6 +273,7 @@ namespace wi
 			uint32_t id = 0;
 			Semaphore** waits = nullptr;
 			Semaphore** signals = nullptr;
+			uint32_t* wait_for_ids = nullptr;
 
 			DescriptorBinder binder;
 			GPULinearAllocator frame_allocators[BUFFERCOUNT];
@@ -329,6 +332,7 @@ namespace wi
 					}
 				}
 				dx12_internal::destroy_stb_array(signals);
+				dx12_internal::destroy_stb_array(wait_for_ids);
 				binder.reset();
 				frame_allocators[buffer_index].reset();
 				prev_pt = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
@@ -403,6 +407,7 @@ namespace wi
 		wi::allocator::BlockAllocator<CommandList_DX12, 64> cmd_allocator;
 		CommandList_DX12** commandlists = nullptr;
 		uint32_t cmd_count = 0;
+		uint32_t cmd_next_id = 0;
 		wi::SpinLock cmd_locker;
 
 		constexpr CommandList_DX12& GetCommandList(CommandList cmd) const
@@ -418,6 +423,7 @@ namespace wi
 
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
+		void SubmitCommandListsInternal(bool full_sync, const SubmitDesc* desc);
 
 	public:
 		GraphicsDevice_DX12(ValidationMode validationMode = ValidationMode::Disabled, GPUPreference preference = GPUPreference::Discrete);
@@ -450,11 +456,19 @@ namespace wi
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
 		void SubmitCommandLists() override;
+		SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc) override;
+		UploadTicket EnqueueBufferUpload(const BufferUploadDesc& desc) override;
+		UploadTicket EnqueueTextureUpload(const TextureUploadDesc& desc) override;
 		void OnDeviceRemoved();
 
 		void WaitForGPU() const override;
+		bool IsQueuePointComplete(QueueSyncPoint point) const override;
+		void WaitQueuePoint(QueueSyncPoint point) const override;
+		QueueSyncPoint GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const override;
+		QueueSyncPoint GetLastCompletedQueuePoint(QUEUE_TYPE queue) const override;
 		void ClearPipelineStateCache() override;
 		size_t GetActivePipelineCount() const override { return hmlenu(pipelines_global); }
+		bool GetQueueSubmissionStats(QueueSubmissionStats& out) const override;
 
 		ShaderFormat GetShaderFormat() const override
 		{
@@ -466,6 +480,7 @@ namespace wi
 		}
 
 		Texture GetBackBuffer(const SwapChain* swapchain) const override;
+		bool AcquireSwapChainBackBuffer(const SwapChain* swapchain, CommandList cmd) override;
 
 		ColorSpace GetSwapChainColorSpace(const SwapChain* swapchain) const override;
 		bool IsSwapChainSupportsHDR(const SwapChain* swapchain) const override;

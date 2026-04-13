@@ -472,6 +472,79 @@ if(WICKED_SUBSET_BUILD_CUBE_DEMO)
 
     wicked_subset_copy_shadercompiler_runtime(wicked_subset_cube_demo)
 
+    add_executable(wicked_subset_cube_demo_framebuffered ${WICKED_SUBSET_DEMO_SOURCES})
+    wicked_subset_apply_common_flags(wicked_subset_cube_demo_framebuffered)
+
+    target_compile_definitions(wicked_subset_cube_demo_framebuffered PRIVATE
+        WICKED_SUBSET_CUBE_SHADER_PATH="${WICKED_SUBSET_SHADER_DIR}/wicked_subset_cube_demo.hlsl"
+        WICKED_SUBSET_ENGINE_SHADER_DIR="${WICKED_SUBSET_ENGINE_ROOT}/shaders"
+        WICKED_SUBSET_FRAME_BUFFERED=1
+        WICKED_SUBSET_FRAME_SLOT_COUNT=16
+    )
+
+    wicked_subset_apply_mmgr_settings(wicked_subset_cube_demo_framebuffered)
+
+    target_include_directories(wicked_subset_cube_demo_framebuffered PRIVATE
+        "${WICKED_SUBSET_SRC_DIR}"
+        "${WICKED_SUBSET_SHADER_DIR}"
+        "${WICKED_SUBSET_ENGINE_ROOT}"
+        "${WICKED_SUBSET_ENGINE_ROOT}/Utility/metal"
+    )
+
+    target_link_libraries(wicked_subset_cube_demo_framebuffered PRIVATE
+        wicked_subset_shadercompiler_obj
+    )
+
+    wicked_subset_link_mmgr_runtime_object(wicked_subset_cube_demo_framebuffered)
+
+    if(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_METAL)
+        target_link_libraries(wicked_subset_cube_demo_framebuffered PRIVATE
+            wicked_subset_graphics_metal_obj
+        )
+    elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_DX12)
+        target_link_libraries(wicked_subset_cube_demo_framebuffered PRIVATE
+            wicked_subset_graphics_dx12_obj
+        )
+        target_link_libraries(wicked_subset_cube_demo_framebuffered PRIVATE d3d12 dxgi dxguid)
+    elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_VULKAN)
+        target_compile_definitions(wicked_subset_cube_demo_framebuffered PRIVATE
+            WICKEDENGINE_BUILD_VULKAN
+        )
+        target_link_libraries(wicked_subset_cube_demo_framebuffered PRIVATE
+            wicked_subset_graphics_vulkan_obj
+        )
+        target_sources(wicked_subset_cube_demo_framebuffered PRIVATE
+            "${WICKED_SUBSET_ENGINE_ROOT}/Utility/spirv_reflect.c"
+        )
+    endif()
+
+    if(APPLE)
+        target_compile_options(wicked_subset_cube_demo_framebuffered PRIVATE
+            "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>"
+            "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>"
+        )
+    endif()
+
+    target_link_libraries(wicked_subset_cube_demo_framebuffered PRIVATE SDL3::SDL3)
+
+    if(APPLE)
+        target_link_libraries(wicked_subset_cube_demo_framebuffered PRIVATE
+            "-framework Cocoa"
+            "-framework Foundation"
+            "-framework Metal"
+            "-framework MetalKit"
+            "-framework MetalPerformanceShaders"
+            "-framework QuartzCore"
+            "-framework CoreGraphics"
+            "-framework CoreVideo"
+            "-framework IOKit"
+        )
+    elseif(UNIX)
+        target_link_libraries(wicked_subset_cube_demo_framebuffered PRIVATE dl)
+    endif()
+
+    wicked_subset_copy_shadercompiler_runtime(wicked_subset_cube_demo_framebuffered)
+
     set(WICKED_SUBSET_INDIRECT_COMPARE_DEMO_SOURCES
         "${WICKED_SUBSET_SRC_DIR}/wicked_subset_cube_indirect_compare_demo.cpp"
         "${WICKED_SUBSET_SRC_DIR}/wicked_runtime_stubs.cpp"
@@ -578,6 +651,79 @@ if(WICKED_SUBSET_BUILD_CUBE_DEMO)
     endif()
 
     wicked_subset_copy_shadercompiler_runtime(wicked_subset_cube_indirect_compare_demo)
+
+    add_executable(wicked_subset_cube_indirect_compare_demo_framebuffered ${WICKED_SUBSET_INDIRECT_COMPARE_DEMO_SOURCES})
+    wicked_subset_apply_common_flags(wicked_subset_cube_indirect_compare_demo_framebuffered)
+
+    target_compile_definitions(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE
+        WICKED_SUBSET_CUBE_INDIRECT_COMPARE_SHADER_PATH="${WICKED_SUBSET_SHADER_DIR}/wicked_subset_cube_indirect_compare_demo.hlsl"
+        WICKED_SUBSET_ENGINE_SHADER_DIR="${WICKED_SUBSET_ENGINE_ROOT}/shaders"
+        WICKED_SUBSET_FRAME_BUFFERED=1
+        WICKED_SUBSET_FRAME_SLOT_COUNT=16
+    )
+
+    wicked_subset_apply_mmgr_settings(wicked_subset_cube_indirect_compare_demo_framebuffered)
+
+    target_include_directories(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE
+        "${WICKED_SUBSET_SRC_DIR}"
+        "${WICKED_SUBSET_SHADER_DIR}"
+        "${WICKED_SUBSET_ENGINE_ROOT}"
+        "${WICKED_SUBSET_ENGINE_ROOT}/Utility/metal"
+    )
+
+    target_link_libraries(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE
+        wicked_subset_shadercompiler_obj
+    )
+
+    wicked_subset_link_mmgr_runtime_object(wicked_subset_cube_indirect_compare_demo_framebuffered)
+
+    if(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_METAL)
+        target_link_libraries(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE
+            wicked_subset_graphics_metal_obj
+        )
+    elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_DX12)
+        target_link_libraries(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE
+            wicked_subset_graphics_dx12_obj
+        )
+        target_link_libraries(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE d3d12 dxgi dxguid)
+    elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_VULKAN)
+        target_compile_definitions(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE
+            WICKEDENGINE_BUILD_VULKAN
+        )
+        target_link_libraries(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE
+            wicked_subset_graphics_vulkan_obj
+        )
+        target_sources(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE
+            "${WICKED_SUBSET_ENGINE_ROOT}/Utility/spirv_reflect.c"
+        )
+    endif()
+
+    if(APPLE)
+        target_compile_options(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE
+            "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>"
+            "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>"
+        )
+    endif()
+
+    target_link_libraries(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE SDL3::SDL3)
+
+    if(APPLE)
+        target_link_libraries(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE
+            "-framework Cocoa"
+            "-framework Foundation"
+            "-framework Metal"
+            "-framework MetalKit"
+            "-framework MetalPerformanceShaders"
+            "-framework QuartzCore"
+            "-framework CoreGraphics"
+            "-framework CoreVideo"
+            "-framework IOKit"
+        )
+    elseif(UNIX)
+        target_link_libraries(wicked_subset_cube_indirect_compare_demo_framebuffered PRIVATE dl)
+    endif()
+
+    wicked_subset_copy_shadercompiler_runtime(wicked_subset_cube_indirect_compare_demo_framebuffered)
 endif()
 
 if(WICKED_SUBSET_BUILD_VISIBILITY_BENCHMARK_DEMO)
@@ -683,6 +829,74 @@ if(WICKED_SUBSET_BUILD_VISIBILITY_BENCHMARK_DEMO)
     endif()
 
     wicked_subset_copy_shadercompiler_runtime(wicked_subset_visibility_pipeline_benchmark)
+
+    add_executable(wicked_subset_visibility_pipeline_benchmark_framebuffered ${WICKED_SUBSET_VISIBILITY_BENCHMARK_DEMO_SOURCES})
+    wicked_subset_apply_common_flags(wicked_subset_visibility_pipeline_benchmark_framebuffered)
+
+    target_compile_definitions(wicked_subset_visibility_pipeline_benchmark_framebuffered PRIVATE
+        WICKED_SUBSET_VISIBILITY_BENCHMARK_SHADER_PATH="${WICKED_SUBSET_SHADER_DIR}/wicked_subset_visibility_pipeline_benchmark.hlsl"
+        WICKED_SUBSET_ENGINE_SHADER_DIR="${WICKED_SUBSET_ENGINE_ROOT}/shaders"
+        WICKED_SUBSET_BACKEND=${WICKED_ENGINECONFIG_SUBSET_BACKEND}
+        WICKED_SUBSET_FRAME_BUFFERED=1
+        WICKED_SUBSET_FRAME_SLOT_COUNT=16
+    )
+
+    wicked_subset_apply_mmgr_settings(wicked_subset_visibility_pipeline_benchmark_framebuffered)
+
+    target_include_directories(wicked_subset_visibility_pipeline_benchmark_framebuffered PRIVATE
+        "${WICKED_SUBSET_SRC_DIR}"
+        "${WICKED_SUBSET_SHADER_DIR}"
+        "${WICKED_SUBSET_ENGINE_ROOT}"
+        "${WICKED_SUBSET_ENGINE_ROOT}/Utility/metal"
+    )
+
+    target_sources(wicked_subset_visibility_pipeline_benchmark_framebuffered PRIVATE
+        $<TARGET_OBJECTS:wicked_subset_shadercompiler_obj>
+    )
+    wicked_subset_link_mmgr_runtime_object(wicked_subset_visibility_pipeline_benchmark_framebuffered)
+
+    if(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_METAL)
+        target_sources(wicked_subset_visibility_pipeline_benchmark_framebuffered PRIVATE
+            $<TARGET_OBJECTS:wicked_subset_graphics_metal_obj>
+        )
+    elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_DX12)
+        target_sources(wicked_subset_visibility_pipeline_benchmark_framebuffered PRIVATE
+            $<TARGET_OBJECTS:wicked_subset_graphics_dx12_obj>
+        )
+        target_link_libraries(wicked_subset_visibility_pipeline_benchmark_framebuffered PRIVATE d3d12 dxgi dxguid)
+    elseif(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_VULKAN)
+        target_sources(wicked_subset_visibility_pipeline_benchmark_framebuffered PRIVATE
+            $<TARGET_OBJECTS:wicked_subset_graphics_vulkan_obj>
+            "${WICKED_SUBSET_ENGINE_ROOT}/Utility/spirv_reflect.c"
+        )
+    endif()
+
+    if(APPLE)
+        target_compile_options(wicked_subset_visibility_pipeline_benchmark_framebuffered PRIVATE
+            "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>"
+            "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>"
+        )
+    endif()
+
+    target_link_libraries(wicked_subset_visibility_pipeline_benchmark_framebuffered PRIVATE SDL3::SDL3)
+
+    if(APPLE)
+        target_link_libraries(wicked_subset_visibility_pipeline_benchmark_framebuffered PRIVATE
+            "-framework Cocoa"
+            "-framework Foundation"
+            "-framework Metal"
+            "-framework MetalKit"
+            "-framework MetalPerformanceShaders"
+            "-framework QuartzCore"
+            "-framework CoreGraphics"
+            "-framework CoreVideo"
+            "-framework IOKit"
+        )
+    elseif(UNIX)
+        target_link_libraries(wicked_subset_visibility_pipeline_benchmark_framebuffered PRIVATE dl)
+    endif()
+
+    wicked_subset_copy_shadercompiler_runtime(wicked_subset_visibility_pipeline_benchmark_framebuffered)
 endif()
 
 message(STATUS "Wicked graphics subset targets: ${WICKED_SUBSET_OBJECT_TARGETS}")

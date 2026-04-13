@@ -66,6 +66,14 @@
 #include "wiShaderCompiler.h"
 
 #include "platform_window_helpers.h"
+#include "frame_tagged_heap_allocator.h"
+
+#ifndef WICKED_SUBSET_FRAME_BUFFERED
+#define WICKED_SUBSET_FRAME_BUFFERED 0
+#endif
+#ifndef WICKED_SUBSET_FRAME_SLOT_COUNT
+#define WICKED_SUBSET_FRAME_SLOT_COUNT 16
+#endif
 
 #ifndef WICKED_SUBSET_VISIBILITY_BENCHMARK_SHADER_PATH
 #define WICKED_SUBSET_VISIBILITY_BENCHMARK_SHADER_PATH ""
@@ -114,6 +122,8 @@ using wi::ResourceState;
 using wi::Shader;
 using wi::ShaderModel;
 using wi::ShaderStage;
+using wi::SubmissionToken;
+using wi::SubmitDesc;
 using wi::SwapChain;
 using wi::SwapChainDesc;
 using wi::Texture;
@@ -138,6 +148,7 @@ static constexpr uint32_t kTimestampFrameEnd = 7u;
 static constexpr uint32_t kArgByteStride = 20u;
 static constexpr float kPi = 3.14159265358979323846f;
 static constexpr uint32_t kMaxMeshDispatchGroups = 65535u;
+static constexpr uint32_t kFrameHistoryCount = WICKED_SUBSET_FRAME_BUFFERED ? WICKED_SUBSET_FRAME_SLOT_COUNT : wi::GraphicsDevice::GetBufferCount();
 
 uint32_t ComputeMipCount(uint32_t width, uint32_t height)
 {
@@ -1865,7 +1876,7 @@ private:
         GPUBufferDesc hashReadbackDesc = {};
         hashReadbackDesc.usage = Usage::READBACK;
         hashReadbackDesc.size = sizeof(uint32_t);
-        for (uint32_t i = 0; i < wi::GraphicsDevice::GetBufferCount(); ++i)
+        for (uint32_t i = 0; i < kFrameHistoryCount; ++i)
         {
             if (!device_->CreateBuffer(&hashReadbackDesc, nullptr, &hashReadback_[i]))
             {
@@ -1947,7 +1958,7 @@ private:
         readbackDesc.usage = Usage::READBACK;
         readbackDesc.size = static_cast<uint64_t>(kTimestampCount) * sizeof(uint64_t);
 
-        for (uint32_t i = 0; i < wi::GraphicsDevice::GetBufferCount(); ++i)
+        for (uint32_t i = 0; i < kFrameHistoryCount; ++i)
         {
             if (!device_->CreateBuffer(&readbackDesc, nullptr, &timestampReadback_[i]))
             {
@@ -2408,8 +2419,30 @@ private:
         sceneCB.hiZEnabled = (hiZOcclusionEnabled_ && activePipeline_ != PipelineStyle::TVB) ? 1u : 0u;
         sceneCB.hiZValid = hiZOcclusionValid_ ? 1u : 0u;
 
+#if WICKED_SUBSET_FRAME_BUFFERED
+        const uint64_t frameTag = taggedHeapFrameId_++;
+        SceneCB* sceneCBTagged = taggedHeap_.Allocate<SceneCB>(wi::framealloc::MakeFrameTag(frameTag, wi::framealloc::FrameTagKind::Render), 1);
+        if (sceneCBTagged != nullptr)
+        {
+            *sceneCBTagged = sceneCB;
+        }
+        const SceneCB& sceneCBRef = sceneCBTagged != nullptr ? *sceneCBTagged : sceneCB;
+#else
+        const SceneCB& sceneCBRef = sceneCB;
+#endif
+
         FrameMetrics metrics = {};
+#if WICKED_SUBSET_FRAME_BUFFERED
+        const uint32_t frameIndex = frameSlotCursor_ % kFrameHistoryCount;
+        if (frameSubmissionValid_[frameIndex] &&
+            frameSubmission_[frameIndex].IsValid() &&
+            !device_->IsSubmissionComplete(frameSubmission_[frameIndex]))
+        {
+            device_->WaitSubmission(frameSubmission_[frameIndex]);
+        }
+#else
         const uint32_t frameIndex = device_->GetBufferIndex();
+#endif
         ReadTimingAndCounters(frameIndex, &metrics);
 
         const bool useAsyncComputeForCull = IsAsyncCullActiveForCurrentMode();
@@ -2447,12 +2480,12 @@ private:
         if (!useAsyncComputeForCull)
         {
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
-            ExecuteCullStage(sceneCB, cmdCull);
+            ExecuteCullStage(sceneCBRef, cmdCull);
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
         }
         else
         {
-            ExecuteCullStage(sceneCB, cmdCull);
+            ExecuteCullStage(sceneCBRef, cmdCull);
             device_->WaitCommandList(cmdGraphics, cmdCull);
 
             // Cull timestamps are graphics-queue-local in this benchmark path.
@@ -2477,13 +2510,13 @@ private:
 
         device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawStart, cmdGraphics);
         PrepareDrawBufferStates(cmdGraphics);
-        ExecuteDrawStage(sceneCB, cmdGraphics);
+        ExecuteDrawStage(sceneCBRef, cmdGraphics);
         device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawEnd, cmdGraphics);
 
-        ExecuteHiZBuildStage(sceneCB, cmdGraphics);
+        ExecuteHiZBuildStage(sceneCBRef, cmdGraphics);
 
         device_->QueryEnd(&timestampQueryHeap_, kTimestampHashStart, cmdGraphics);
-        ExecuteHashStage(sceneCB, cmdGraphics, frameIndex);
+        ExecuteHashStage(sceneCBRef, cmdGraphics, frameIndex);
         device_->QueryEnd(&timestampQueryHeap_, kTimestampHashEnd, cmdGraphics);
 
         ExecutePresentStage(cmdGraphics);
@@ -2492,7 +2525,25 @@ private:
 
         device_->QueryResolve(&timestampQueryHeap_, 0, kTimestampCount, &timestampReadback_[frameIndex], 0, cmdGraphics);
 
+#if WICKED_SUBSET_FRAME_BUFFERED
+        CommandList submitLists[2] = {};
+        uint32_t submitCount = 0;
+        if (useAsyncComputeForCull && wi::wiGraphicsCommandListIsValid(cmdCull))
+        {
+            submitLists[submitCount++] = cmdCull;
+        }
+        submitLists[submitCount++] = cmdGraphics;
+
+        SubmitDesc submit = {};
+        submit.command_lists = submitLists;
+        submit.command_list_count = submitCount;
+        frameSubmission_[frameIndex] = device_->SubmitCommandListsEx(submit);
+        frameSubmissionValid_[frameIndex] = frameSubmission_[frameIndex].IsValid();
+        ++frameSlotCursor_;
+        taggedHeap_.FreeTag(wi::framealloc::MakeFrameTag(frameTag, wi::framealloc::FrameTagKind::Render));
+#else
         device_->SubmitCommandLists();
+#endif
 
         timestampReady_[frameIndex] = true;
         hashReady_[frameIndex] = true;
@@ -2710,6 +2761,9 @@ private:
 
     void ExecutePresentStage(CommandList cmd)
     {
+#if WICKED_SUBSET_FRAME_BUFFERED
+        device_->AcquireSwapChainBackBuffer(&swapchain_, cmd);
+#endif
         device_->RenderPassBegin(&swapchain_, cmd);
 
         wi::Viewport vp;
@@ -3032,8 +3086,8 @@ private:
     GPUBuffer tvbFilteredPrimitiveIDBuffer_ = {};
 
     GPUBuffer hashBuffer_ = {};
-    std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> hashReadback_ = {};
-    std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> visibleCountReadback_ = {};
+    std::array<GPUBuffer, kFrameHistoryCount> hashReadback_ = {};
+    std::array<GPUBuffer, kFrameHistoryCount> visibleCountReadback_ = {};
 
     ResourceState vertexBufferState_ = ResourceState::SHADER_RESOURCE;
     ResourceState drawCommandIndexBufferState_ = ResourceState::VERTEX_BUFFER;
@@ -3049,10 +3103,17 @@ private:
     ResourceState tvbFilteredPrimitiveIDBufferState_ = ResourceState::UNORDERED_ACCESS;
 
     GPUQueryHeap timestampQueryHeap_ = {};
-    std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> timestampReadback_ = {};
-    std::array<bool, wi::GraphicsDevice::GetBufferCount()> timestampReady_ = {};
-    std::array<bool, wi::GraphicsDevice::GetBufferCount()> hashReady_ = {};
-    std::array<bool, wi::GraphicsDevice::GetBufferCount()> visibleCountReady_ = {};
+    std::array<GPUBuffer, kFrameHistoryCount> timestampReadback_ = {};
+    std::array<bool, kFrameHistoryCount> timestampReady_ = {};
+    std::array<bool, kFrameHistoryCount> hashReady_ = {};
+    std::array<bool, kFrameHistoryCount> visibleCountReady_ = {};
+#if WICKED_SUBSET_FRAME_BUFFERED
+    std::array<SubmissionToken, kFrameHistoryCount> frameSubmission_ = {};
+    std::array<bool, kFrameHistoryCount> frameSubmissionValid_ = {};
+    uint32_t frameSlotCursor_ = 0;
+    uint64_t taggedHeapFrameId_ = 1;
+    wi::framealloc::FrameTaggedHeapAllocator taggedHeap_;
+#endif
 
     std::vector<Vec3> vertices_;
     std::vector<GPUInstanceData> instances_;

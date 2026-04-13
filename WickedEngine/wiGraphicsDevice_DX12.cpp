@@ -2688,6 +2688,18 @@ std::mutex queue_locker;
 			wi::platform::Exit();
 		}
 
+		auto init_queue_timeline = [&](GraphicsDevice_DX12::CommandQueue& queue, const wchar_t* name)
+		{
+			HRESULT fence_hr = dx12_check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, PPV_ARGS(queue.timeline_fence)));
+			if (FAILED(fence_hr))
+			{
+				DX12_LOG_ERROR("ID3D12Device::CreateFence[%ls] failed! ERROR: %s", name, dx12_internal::HrToString(fence_hr));
+				wi::platform::Exit();
+			}
+			dx12_check(queue.timeline_fence->SetName(name));
+			queue.timeline_submitted_value = queue.timeline_fence->GetCompletedValue();
+		};
+
 		{
 			queues[QUEUE_GRAPHICS].desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 			queues[QUEUE_GRAPHICS].desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
@@ -2700,6 +2712,7 @@ std::mutex queue_locker;
 				wi::platform::Exit();
 			}
 			dx12_check(queues[QUEUE_GRAPHICS].queue->SetName(L"QUEUE_GRAPHICS"));
+			init_queue_timeline(queues[QUEUE_GRAPHICS], L"QUEUE_GRAPHICS::timeline");
 		}
 
 		{
@@ -2714,6 +2727,7 @@ std::mutex queue_locker;
 				wi::platform::Exit();
 			}
 			dx12_check(queues[QUEUE_COMPUTE].queue->SetName(L"QUEUE_COMPUTE"));
+			init_queue_timeline(queues[QUEUE_COMPUTE], L"QUEUE_COMPUTE::timeline");
 		}
 
 		{
@@ -2728,6 +2742,7 @@ std::mutex queue_locker;
 				wi::platform::Exit();
 			}
 			dx12_check(queues[QUEUE_COPY].queue->SetName(L"QUEUE_COPY"));
+			init_queue_timeline(queues[QUEUE_COPY], L"QUEUE_COPY::timeline");
 		}
 
 		if (SUCCEEDED(device.As(&video_device)))
@@ -2740,6 +2755,7 @@ std::mutex queue_locker;
 			if (SUCCEEDED(hr))
 			{
 				dx12_check(queues[QUEUE_VIDEO_DECODE].queue->SetName(L"QUEUE_VIDEO_DECODE"));
+				init_queue_timeline(queues[QUEUE_VIDEO_DECODE], L"QUEUE_VIDEO_DECODE::timeline");
 
 				D3D12_FEATURE_DATA_VIDEO_DECODE_PROFILE_COUNT video_decode_profile_count = {};
 				dx12_check(video_device->CheckFeatureSupport(D3D12_FEATURE_VIDEO_DECODE_PROFILE_COUNT, &video_decode_profile_count, sizeof(video_decode_profile_count)));
@@ -5767,7 +5783,7 @@ std::mutex queue_locker;
 		CommandList_DX12& commandlist = GetCommandList(cmd);
 		commandlist.reset(GetBufferIndex());
 		commandlist.queue = queue;
-		commandlist.id = cmd_current;
+		commandlist.id = cmd_next_id++;
 
 		if (commandlist.GetCommandList() == nullptr)
 		{
@@ -5854,18 +5870,201 @@ std::mutex queue_locker;
 
 		return cmd;
 	}
-	void GraphicsDevice_DX12::SubmitCommandLists()
+	void GraphicsDevice_DX12::SubmitCommandListsInternal(bool full_sync, const SubmitDesc* desc)
 	{
 #ifdef PLATFORM_XBOX
 		std::scoped_lock lock(queue_locker); // queue operations are not thread-safe on XBOX
 #endif // PLATFORM_XBOX
 
-		// Submit current frame:
+		const uint32_t cmd_last = cmd_count;
+		if (cmd_last == 0)
 		{
-			uint32_t cmd_last = cmd_count;
-			cmd_count = 0;
+			return;
+		}
+
+		uint8_t* selected = nullptr;
+		arrsetlen(selected, cmd_last);
+		std::memset(selected, 0, cmd_last * sizeof(*selected));
+
+		auto find_commandlist_index_by_id = [&](uint32_t id) -> int
+		{
+			for (uint32_t i = 0; i < cmd_last; ++i)
+			{
+				if (commandlists[i] != nullptr && commandlists[i]->id == id)
+				{
+					return (int)i;
+				}
+			}
+			return -1;
+		};
+		auto find_commandlist_index_by_handle = [&](CommandList handle) -> int
+		{
+			if (!wiGraphicsCommandListIsValid(handle))
+				return -1;
+			for (uint32_t i = 0; i < cmd_last; ++i)
+			{
+				if (commandlists[i] == static_cast<CommandList_DX12*>(handle.internal_state))
+				{
+					return (int)i;
+				}
+			}
+			return -1;
+		};
+		auto expand_selection = [&](uint32_t start_index)
+		{
+			uint32_t* stack = nullptr;
+			arrput(stack, start_index);
+			while (arrlenu(stack) > 0)
+			{
+				const uint32_t index = dx12_internal::pop_back_stb_array(stack);
+				if (selected[index] != 0)
+					continue;
+
+				selected[index] = 1;
+				CommandList_DX12& commandlist = *commandlists[index];
+
+				auto include_related = [&](uint32_t related_id)
+				{
+					const int related_index = find_commandlist_index_by_id(related_id);
+					// The predecessor might have been submitted in an earlier partial batch already.
+					// In that case, keep going and let the semaphore wait resolve at queue submit time.
+					if (related_index >= 0 && selected[(uint32_t)related_index] == 0)
+					{
+						arrput(stack, (uint32_t)related_index);
+					}
+				};
+
+				for (size_t i = 0; i < arrlenu(commandlist.wait_for_ids); ++i)
+				{
+					include_related(commandlist.wait_for_ids[i]);
+				}
+			}
+			dx12_internal::destroy_stb_array(stack);
+		};
+
+		const bool explicit_selection = desc != nullptr && desc->command_lists != nullptr && desc->command_list_count > 0;
+		if (explicit_selection)
+		{
+			for (uint32_t i = 0; i < desc->command_list_count; ++i)
+			{
+				const int index = find_commandlist_index_by_handle(desc->command_lists[i]);
+				WI_DX12_ASSERT(index >= 0);
+				if (index >= 0)
+				{
+					expand_selection((uint32_t)index);
+				}
+			}
+		}
+		else
+		{
+			for (uint32_t i = 0; i < cmd_last; ++i)
+			{
+				selected[i] = 1;
+			}
+		}
+
+		uint32_t selected_count = 0;
+		for (uint32_t i = 0; i < cmd_last; ++i)
+		{
+			if (selected[i] != 0)
+			{
+				++selected_count;
+			}
+		}
+		if (selected_count == 0)
+		{
+			arrfree(selected);
+			return;
+		}
+
+		bool queue_has_work[QUEUE_COUNT] = {};
+		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
+		{
+			if (selected[cmd] == 0)
+				continue;
+			WI_DX12_ASSERT(commandlists[cmd] != nullptr);
+			queue_has_work[commandlists[cmd]->queue] = true;
+		}
+
+		uint64_t dependency_wait_values[QUEUE_COUNT] = {};
+		bool dependency_wait_required[QUEUE_COUNT] = {};
+		auto accumulate_dependency = [&](QueueSyncPoint point)
+		{
+			if (!point.IsValid() || point.queue >= QUEUE_COUNT)
+				return;
+			CommandQueue& dependency_queue = queues[point.queue];
+			if (dependency_queue.queue == nullptr || dependency_queue.timeline_fence == nullptr)
+				return;
+			dependency_wait_required[point.queue] = true;
+			dependency_wait_values[point.queue] = std::max(dependency_wait_values[point.queue], point.value);
+		};
+
+		if (desc != nullptr)
+		{
+			for (uint32_t i = 0; i < desc->queue_dependency_count; ++i)
+			{
+				accumulate_dependency(desc->queue_dependencies[i].point);
+			}
+			for (uint32_t i = 0; i < desc->submission_dependency_count; ++i)
+			{
+				const SubmissionToken& token = desc->submission_dependencies[i];
+				for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+				{
+					if ((token.queue_mask & (1u << q)) == 0)
+						continue;
+					accumulate_dependency(QueueSyncPoint{ (QUEUE_TYPE)q, token.values[q] });
+				}
+			}
+		}
+
+		auto signal_queue_timeline = [&](QUEUE_TYPE queue_index, bool had_work)
+		{
+			CommandQueue& queue = queues[queue_index];
+			if (queue.queue == nullptr || queue.timeline_fence == nullptr)
+				return;
+			if (!had_work)
+				return;
+			queue.timeline_submitted_value++;
+			dx12_check(queue.queue->Signal(queue.timeline_fence.Get(), queue.timeline_submitted_value));
+		};
+
+		auto flush_queue = [&](QUEUE_TYPE queue_index)
+		{
+			CommandQueue& queue = queues[queue_index];
+			if (queue.queue == nullptr)
+				return;
+			const bool had_work = queue.submit_cmds != nullptr && arrlenu(queue.submit_cmds) > 0;
+			if (!had_work)
+				return;
+			queue.submit();
+			signal_queue_timeline(queue_index, true);
+		};
+
+		for (uint32_t dep = 0; dep < QUEUE_COUNT; ++dep)
+		{
+			if (!dependency_wait_required[dep] || dependency_wait_values[dep] == 0)
+				continue;
+			CommandQueue& dependency_queue = queues[dep];
+			if (dependency_queue.queue == nullptr || dependency_queue.timeline_fence == nullptr)
+				continue;
+
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if (!queue_has_work[q] || q == dep)
+					continue;
+				if (queues[q].queue == nullptr)
+					continue;
+				dx12_check(queues[q].queue->Wait(dependency_queue.timeline_fence.Get(), dependency_wait_values[dep]));
+			}
+		}
+
+		// Submit selected command lists only. Unselected command lists remain pending and keep their original order.
+		{
 			for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 			{
+				if (selected[cmd] == 0)
+					continue;
+
 				CommandList_DX12& commandlist = *commandlists[cmd];
 				if (commandlist.queue == QUEUE_VIDEO_DECODE)
 				{
@@ -5883,7 +6082,7 @@ std::mutex queue_locker;
 				{
 					// If the current commandlist must resolve a dependency, then previous ones will be submitted before doing that:
 					//	This improves GPU utilization because not the whole batch of command lists will need to synchronize, but only the one that handles it
-					queue.submit();
+					flush_queue(commandlist.queue);
 				}
 
 				arrput(queue.submit_cmds, commandlist.GetCommandList());
@@ -5897,12 +6096,12 @@ std::mutex queue_locker;
 						// Wait for command list dependency:
 						queue.wait(semaphore);
 
-						// semaphore is not recycled here, only the signals recycle themselves vecause wait will use the same
+						// semaphore is not recycled here, only the signals recycle themselves because wait will use the same
 						delete commandlist.waits[i];
 					}
 					dx12_internal::destroy_stb_array(commandlist.waits);
 
-					queue.submit();
+					flush_queue(commandlist.queue);
 
 					for (size_t i = 0; i < arrlenu(commandlist.signals); ++i)
 					{
@@ -5937,17 +6136,19 @@ std::mutex queue_locker;
 			frame_fence_values[GetBufferIndex()]++;
 			for (int q = 0; q < QUEUE_COUNT; ++q)
 			{
+				flush_queue((QUEUE_TYPE)q);
 				CommandQueue& queue = queues[q];
 				if (queue.queue == nullptr)
 					continue;
-
-				queue.submit();
 
 				dx12_check(queue.queue->Signal(frame_fence[GetBufferIndex()][q].Get(), frame_fence_values[GetBufferIndex()]));
 			}
 
 			for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 			{
+				if (selected[cmd] == 0)
+					continue;
+
 				CommandList_DX12& commandlist = *commandlists[cmd];
 				for (size_t i = 0; i < arrlenu(commandlist.swapchains); ++i)
 				{
@@ -5990,20 +6191,22 @@ std::mutex queue_locker;
 			}
 		}
 
-		// Sync up every queue to every other queue at the end of the frame:
-		//	Note: it disables overlapping queues into the next frame
-		for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
+		if (full_sync)
 		{
-			if (queues[queue1].queue == nullptr)
-				continue;
-			for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+			// Sync up every queue to every other queue at the end of the frame:
+			//	Note: it disables overlapping queues into the next frame
+			for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
 			{
-				if (queue1 == queue2)
+				if (queues[queue1].queue == nullptr)
 					continue;
-				if (queues[queue2].queue == nullptr)
-					continue;
-				ID3D12Fence* fence = frame_fence[GetBufferIndex()][queue2].Get();
-				queues[queue1].queue->Wait(fence, frame_fence_values[GetBufferIndex()]);
+				for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+				{
+					if (queue1 == queue2)
+						continue;
+					if (queues[queue2].queue == nullptr || queues[queue2].timeline_fence == nullptr)
+						continue;
+					queues[queue1].queue->Wait(queues[queue2].timeline_fence.Get(), queues[queue2].timeline_submitted_value);
+				}
 			}
 		}
 
@@ -6029,6 +6232,66 @@ std::mutex queue_locker;
 		}
 
 		allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
+
+		uint32_t write_index = 0;
+		for (uint32_t read_index = 0; read_index < cmd_last; ++read_index)
+		{
+			if (selected[read_index] != 0)
+				continue;
+			commandlists[write_index++] = commandlists[read_index];
+		}
+		cmd_count = write_index;
+
+		arrfree(selected);
+	}
+
+	void GraphicsDevice_DX12::SubmitCommandLists()
+	{
+		SubmitDesc desc = {};
+		desc.throttle_cpu = true;
+		desc.max_inflight_per_queue = BUFFERCOUNT;
+		(void)SubmitCommandListsEx(desc);
+	}
+
+	SubmissionToken GraphicsDevice_DX12::SubmitCommandListsEx(const SubmitDesc& desc)
+	{
+		uint64_t submitted_values_before[QUEUE_COUNT] = {};
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			if (queues[q].queue == nullptr || queues[q].timeline_fence == nullptr)
+				continue;
+			submitted_values_before[q] = queues[q].timeline_submitted_value;
+		}
+
+		const bool compatibility_mode =
+			desc.command_lists == nullptr &&
+			desc.command_list_count == 0 &&
+			desc.queue_dependency_count == 0 &&
+			desc.submission_dependency_count == 0 &&
+			desc.throttle_cpu &&
+			desc.max_inflight_per_queue == BUFFERCOUNT;
+
+		SubmitCommandListsInternal(compatibility_mode, &desc);
+
+		SubmissionToken token = {};
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			if (queues[q].queue == nullptr || queues[q].timeline_fence == nullptr)
+				continue;
+			if (queues[q].timeline_submitted_value > submitted_values_before[q])
+			{
+				token.Merge(GetLastSubmittedQueuePoint((QUEUE_TYPE)q));
+			}
+		}
+		return token;
+	}
+	UploadTicket GraphicsDevice_DX12::EnqueueBufferUpload(const BufferUploadDesc& desc)
+	{
+		return GraphicsDevice::EnqueueBufferUpload(desc);
+	}
+	UploadTicket GraphicsDevice_DX12::EnqueueTextureUpload(const TextureUploadDesc& desc)
+	{
+		return GraphicsDevice::EnqueueTextureUpload(desc);
 	}
 
 	void GraphicsDevice_DX12::OnDeviceRemoved()
@@ -6300,6 +6563,69 @@ std::mutex queue_locker;
 			fence->Signal(0);
 		}
 	}
+	bool GraphicsDevice_DX12::IsQueuePointComplete(QueueSyncPoint point) const
+	{
+		if (!point.IsValid())
+			return true;
+		if (point.queue >= QUEUE_COUNT || queues[point.queue].queue == nullptr || queues[point.queue].timeline_fence == nullptr)
+			return false;
+		return queues[point.queue].timeline_fence->GetCompletedValue() >= point.value;
+	}
+	void GraphicsDevice_DX12::WaitQueuePoint(QueueSyncPoint point) const
+	{
+		if (!point.IsValid())
+			return;
+		if (point.queue >= QUEUE_COUNT || queues[point.queue].queue == nullptr || queues[point.queue].timeline_fence == nullptr)
+		{
+			WaitForGPU();
+			return;
+		}
+		const uint64_t completed = queues[point.queue].timeline_fence->GetCompletedValue();
+		if (completed < point.value)
+		{
+	#ifdef PLATFORM_WINDOWS_DESKTOP
+			HANDLE eventHandle = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+			if (eventHandle == nullptr)
+			{
+				WaitForGPU();
+				return;
+			}
+			dx12_check(queues[point.queue].timeline_fence->SetEventOnCompletion(point.value, eventHandle));
+			WaitForSingleObject(eventHandle, INFINITE);
+			CloseHandle(eventHandle);
+	#else
+			WaitForGPU();
+	#endif
+		}
+	}
+	QueueSyncPoint GraphicsDevice_DX12::GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT || queues[queue].queue == nullptr || queues[queue].timeline_fence == nullptr)
+			return {};
+		return QueueSyncPoint{ queue, queues[queue].timeline_submitted_value };
+	}
+	QueueSyncPoint GraphicsDevice_DX12::GetLastCompletedQueuePoint(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT || queues[queue].queue == nullptr || queues[queue].timeline_fence == nullptr)
+			return {};
+		return QueueSyncPoint{ queue, queues[queue].timeline_fence->GetCompletedValue() };
+	}
+	bool GraphicsDevice_DX12::GetQueueSubmissionStats(QueueSubmissionStats& out) const
+	{
+		out = {};
+		out.frameIndex = FRAMECOUNT;
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			if (queues[q].queue == nullptr)
+				continue;
+			out.queues[q].packetsSubmitted = (uint32_t)std::min<uint64_t>(queues[q].timeline_submitted_value, UINT32_MAX);
+			out.queues[q].commandLists = out.queues[q].packetsSubmitted;
+			out.queues[q].dependencyWaits = 0;
+			out.queues[q].dependencySignals = 0;
+			out.queues[q].cpuFenceWaits = 0;
+		}
+		return true;
+	}
 
 	void GraphicsDevice_DX12::ClearPipelineStateCache()
 	{
@@ -6363,6 +6689,10 @@ std::mutex queue_locker;
 		result.desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::RENDER_TARGET;
 		result.desc.layout = ResourceState::SWAPCHAIN;
 		return result;
+	}
+	bool GraphicsDevice_DX12::AcquireSwapChainBackBuffer(const SwapChain* swapchain, CommandList cmd)
+	{
+		return GraphicsDevice::AcquireSwapChainBackBuffer(swapchain, cmd);
 	}
 
 	ColorSpace GraphicsDevice_DX12::GetSwapChainColorSpace(const SwapChain* swapchain) const
@@ -6496,6 +6826,7 @@ std::mutex queue_locker;
 		Semaphore semaphore = new_semaphore();
 		arrput(commandlist.waits, new Semaphore(semaphore));
 		arrput(commandlist_wait_for.signals, new Semaphore(semaphore));
+		arrput(commandlist.wait_for_ids, commandlist_wait_for.id);
 	}
 	void GraphicsDevice_DX12::RenderPassBegin(const SwapChain* swapchain, CommandList cmd)
 	{

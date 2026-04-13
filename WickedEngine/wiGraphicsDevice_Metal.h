@@ -18,6 +18,7 @@
 
 #include <mutex>
 #include <deque>
+#include <atomic>
 
 #if !defined(SDL_arraysize)
 #define SDL_arraysize(array) (sizeof(array) / sizeof((array)[0]))
@@ -323,6 +324,9 @@ namespace wi
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
 		void precopy(CommandList cmd);
+		void SubmitCommandListsInternal(bool fullsync_compat, const uint8_t* submit_mask, uint32_t cmd_last);
+		std::atomic<uint64_t> queue_submit_values[QUEUE_COUNT] = {};
+		NS::SharedPtr<MTL::SharedEvent> queue_submit_fence[QUEUE_COUNT];
 
 	public:
 		GraphicsDevice_Metal(ValidationMode validationMode = ValidationMode::Disabled, GPUPreference preference = GPUPreference::Discrete);
@@ -356,14 +360,23 @@ namespace wi
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
 		void SubmitCommandLists() override;
+		SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc) override;
+		UploadTicket EnqueueBufferUpload(const BufferUploadDesc& desc) override;
+		UploadTicket EnqueueTextureUpload(const TextureUploadDesc& desc) override;
 
 		void WaitForGPU() const override;
+		bool IsQueuePointComplete(QueueSyncPoint point) const override;
+		void WaitQueuePoint(QueueSyncPoint point) const override;
+		QueueSyncPoint GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const override;
+		QueueSyncPoint GetLastCompletedQueuePoint(QUEUE_TYPE queue) const override;
 		void ClearPipelineStateCache() override;
 		size_t GetActivePipelineCount() const override { return 0; }
+		bool GetQueueSubmissionStats(QueueSubmissionStats& out) const override;
 
 		ShaderFormat GetShaderFormat() const override { return ShaderFormat::METAL; }
 
 		Texture GetBackBuffer(const SwapChain* swapchain) const override;
+		bool AcquireSwapChainBackBuffer(const SwapChain* swapchain, CommandList cmd) override;
 
 		ColorSpace GetSwapChainColorSpace(const SwapChain* swapchain) const override;
 		bool IsSwapChainSupportsHDR(const SwapChain* swapchain) const override;
