@@ -138,6 +138,7 @@ static constexpr uint32_t kTimestampFrameEnd = 7u;
 static constexpr uint32_t kArgByteStride = 20u;
 static constexpr float kPi = 3.14159265358979323846f;
 static constexpr uint32_t kMaxMeshDispatchGroups = 65535u;
+static constexpr uint32_t kCullOutputSlotCount = 2u;
 
 uint32_t ComputeMipCount(uint32_t width, uint32_t height)
 {
@@ -1766,15 +1767,18 @@ private:
         }
 
         desc.bind_flags = BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
-        if (!device_->CreateBuffer(&desc, nullptr, &visibleArgsBuffer_))
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
-            std::fprintf(stderr, "CreateBuffer(visibleArgsBuffer) failed\n");
-            return false;
-        }
-        if (!device_->CreateBuffer(&desc, nullptr, &tvbArgsBuffer_))
-        {
-            std::fprintf(stderr, "CreateBuffer(tvbArgsBuffer) failed\n");
-            return false;
+            if (!device_->CreateBuffer(&desc, nullptr, VisibleArgsBuffer(slot)))
+            {
+                std::fprintf(stderr, "CreateBuffer(visibleArgsBuffer[%u]) failed\n", slot);
+                return false;
+            }
+            if (!device_->CreateBuffer(&desc, nullptr, TVBArgsBuffer(slot)))
+            {
+                std::fprintf(stderr, "CreateBuffer(tvbArgsBuffer[%u]) failed\n", slot);
+                return false;
+            }
         }
 
         GPUBufferDesc countDesc = {};
@@ -1791,10 +1795,13 @@ private:
         }
 
         uint32_t zero = 0;
-        if (!device_->CreateBuffer(&countDesc, &zero, &visibleCountBuffer_))
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
-            std::fprintf(stderr, "CreateBuffer(visibleCountBuffer) failed\n");
-            return false;
+            if (!device_->CreateBuffer(&countDesc, &zero, VisibleCountBuffer(slot)))
+            {
+                std::fprintf(stderr, "CreateBuffer(visibleCountBuffer[%u]) failed\n", slot);
+                return false;
+            }
         }
 
         GPUBufferDesc dispatchDesc = {};
@@ -1803,10 +1810,13 @@ private:
         dispatchDesc.misc_flags = ResourceMiscFlag::INDIRECT_ARGS | ResourceMiscFlag::BUFFER_RAW;
         dispatchDesc.size = sizeof(IndirectDispatchArgs);
         const IndirectDispatchArgs initialDispatch = { 0u, 1u, 1u };
-        if (!device_->CreateBuffer(&dispatchDesc, &initialDispatch, &meshDispatchArgsBuffer_))
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
-            std::fprintf(stderr, "CreateBuffer(meshDispatchArgsBuffer) failed\n");
-            return false;
+            if (!device_->CreateBuffer(&dispatchDesc, &initialDispatch, MeshDispatchArgsBuffer(slot)))
+            {
+                std::fprintf(stderr, "CreateBuffer(meshDispatchArgsBuffer[%u]) failed\n", slot);
+                return false;
+            }
         }
 
         GPUBufferDesc visibilityDesc = {};
@@ -1815,10 +1825,13 @@ private:
         visibilityDesc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
         visibilityDesc.stride = sizeof(uint32_t);
         visibilityDesc.size = static_cast<uint64_t>(totalCommandCount_) * sizeof(uint32_t);
-        if (!device_->CreateBuffer(&visibilityDesc, nullptr, &visibleCommandIndicesBuffer_))
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
-            std::fprintf(stderr, "CreateBuffer(visibleCommandIndicesBuffer) failed\n");
-            return false;
+            if (!device_->CreateBuffer(&visibilityDesc, nullptr, VisibleCommandIndicesBuffer(slot)))
+            {
+                std::fprintf(stderr, "CreateBuffer(visibleCommandIndicesBuffer[%u]) failed\n", slot);
+                return false;
+            }
         }
 
         visibilityDesc.size = static_cast<uint64_t>(totalInstanceCount_) * sizeof(uint32_t);
@@ -1833,10 +1846,13 @@ private:
         tvbIndexDesc.bind_flags = BindFlag::BIND_INDEX_BUFFER | BindFlag::BIND_SHADER_RESOURCE | BindFlag::BIND_UNORDERED_ACCESS;
         tvbIndexDesc.misc_flags = ResourceMiscFlag::BUFFER_RAW;
         tvbIndexDesc.size = static_cast<uint64_t>(totalCommandCount_) * static_cast<uint64_t>(kMaxClusterIndices) * sizeof(uint32_t);
-        if (!device_->CreateBuffer(&tvbIndexDesc, nullptr, &tvbFilteredIndexBuffer_))
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
-            std::fprintf(stderr, "CreateBuffer(tvbFilteredIndexBuffer) failed\n");
-            return false;
+            if (!device_->CreateBuffer(&tvbIndexDesc, nullptr, TVBFilteredIndexBuffer(slot)))
+            {
+                std::fprintf(stderr, "CreateBuffer(tvbFilteredIndexBuffer[%u]) failed\n", slot);
+                return false;
+            }
         }
 
         GPUBufferDesc tvbPrimDesc = {};
@@ -1845,10 +1861,13 @@ private:
         tvbPrimDesc.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
         tvbPrimDesc.stride = sizeof(uint32_t);
         tvbPrimDesc.size = static_cast<uint64_t>(totalCommandCount_) * static_cast<uint64_t>(kMaxClusterTriangles) * sizeof(uint32_t);
-        if (!device_->CreateBuffer(&tvbPrimDesc, nullptr, &tvbFilteredPrimitiveIDBuffer_))
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
-            std::fprintf(stderr, "CreateBuffer(tvbFilteredPrimitiveIDBuffer) failed\n");
-            return false;
+            if (!device_->CreateBuffer(&tvbPrimDesc, nullptr, TVBFilteredPrimitiveIDBuffer(slot)))
+            {
+                std::fprintf(stderr, "CreateBuffer(tvbFilteredPrimitiveIDBuffer[%u]) failed\n", slot);
+                return false;
+            }
         }
 
         GPUBufferDesc hashDesc = {};
@@ -1886,16 +1905,27 @@ private:
         device_->SetName(&clusterIndexBuffer_, "subset_visibility_benchmark_cluster_indices");
         device_->SetName(&drawCommandIndexBuffer_, "subset_visibility_benchmark_draw_command_ids");
         device_->SetName(&baseArgsBuffer_, "subset_visibility_benchmark_base_args");
-        device_->SetName(&visibleArgsBuffer_, "subset_visibility_benchmark_visible_args");
-        device_->SetName(&tvbArgsBuffer_, "subset_visibility_benchmark_tvb_args");
         device_->SetName(&baseCountBuffer_, "subset_visibility_benchmark_base_count");
-        device_->SetName(&visibleCountBuffer_, "subset_visibility_benchmark_visible_count");
-        device_->SetName(&meshDispatchArgsBuffer_, "subset_visibility_benchmark_mesh_dispatch_args");
-        device_->SetName(&visibleCommandIndicesBuffer_, "subset_visibility_benchmark_visible_commands");
         device_->SetName(&instanceVisibleBuffer_, "subset_visibility_benchmark_instance_visible");
-        device_->SetName(&tvbFilteredIndexBuffer_, "subset_visibility_benchmark_tvb_indices");
-        device_->SetName(&tvbFilteredPrimitiveIDBuffer_, "subset_visibility_benchmark_tvb_primitive_ids");
         device_->SetName(&hashBuffer_, "subset_visibility_benchmark_hash");
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
+        {
+            char name[128] = {};
+            std::snprintf(name, sizeof(name), "subset_visibility_benchmark_visible_args_slot%u", slot);
+            device_->SetName(VisibleArgsBuffer(slot), name);
+            std::snprintf(name, sizeof(name), "subset_visibility_benchmark_tvb_args_slot%u", slot);
+            device_->SetName(TVBArgsBuffer(slot), name);
+            std::snprintf(name, sizeof(name), "subset_visibility_benchmark_visible_count_slot%u", slot);
+            device_->SetName(VisibleCountBuffer(slot), name);
+            std::snprintf(name, sizeof(name), "subset_visibility_benchmark_mesh_dispatch_args_slot%u", slot);
+            device_->SetName(MeshDispatchArgsBuffer(slot), name);
+            std::snprintf(name, sizeof(name), "subset_visibility_benchmark_visible_commands_slot%u", slot);
+            device_->SetName(VisibleCommandIndicesBuffer(slot), name);
+            std::snprintf(name, sizeof(name), "subset_visibility_benchmark_tvb_indices_slot%u", slot);
+            device_->SetName(TVBFilteredIndexBuffer(slot), name);
+            std::snprintf(name, sizeof(name), "subset_visibility_benchmark_tvb_primitive_ids_slot%u", slot);
+            device_->SetName(TVBFilteredPrimitiveIDBuffer(slot), name);
+        }
 
         ResetTransientBufferStates();
         return true;
@@ -1912,15 +1942,36 @@ private:
         clusterIndexBuffer_ = {};
         drawCommandIndexBuffer_ = {};
         baseArgsBuffer_ = {};
-        visibleArgsBuffer_ = {};
-        tvbArgsBuffer_ = {};
+        for (GPUBuffer& b : visibleArgsBuffers_)
+        {
+            b = {};
+        }
+        for (GPUBuffer& b : tvbArgsBuffers_)
+        {
+            b = {};
+        }
         baseCountBuffer_ = {};
-        visibleCountBuffer_ = {};
-        meshDispatchArgsBuffer_ = {};
-        visibleCommandIndicesBuffer_ = {};
+        for (GPUBuffer& b : visibleCountBuffers_)
+        {
+            b = {};
+        }
+        for (GPUBuffer& b : meshDispatchArgsBuffers_)
+        {
+            b = {};
+        }
+        for (GPUBuffer& b : visibleCommandIndicesBuffers_)
+        {
+            b = {};
+        }
         instanceVisibleBuffer_ = {};
-        tvbFilteredIndexBuffer_ = {};
-        tvbFilteredPrimitiveIDBuffer_ = {};
+        for (GPUBuffer& b : tvbFilteredIndexBuffers_)
+        {
+            b = {};
+        }
+        for (GPUBuffer& b : tvbFilteredPrimitiveIDBuffers_)
+        {
+            b = {};
+        }
         hashBuffer_ = {};
         for (GPUBuffer& b : hashReadback_)
         {
@@ -2027,6 +2078,7 @@ private:
         activeInstanceCount_ = tierActiveInstanceCount_[activeTier_];
 
         countsDirty_ = true;
+        ResetCullFrameOverlap();
 
         SDL_Log(
             "[WickedVisibilityPipelineBenchmark] combo -> suite=%s | pipeline=%s | scenario=%s | tier=%s | commands=%u | instances=%u",
@@ -2043,23 +2095,87 @@ private:
         return asyncComputeEnabled_;
     }
 
+    void ResetCullFrameOverlap()
+    {
+        cullHistoryValid_ = false;
+        cullReadSlot_ = 0u;
+        cullWriteSlot_ = 1u;
+    }
+
+    GPUBuffer* VisibleArgsBuffer(uint32_t slot)
+    {
+        return &visibleArgsBuffers_[slot % kCullOutputSlotCount];
+    }
+    GPUBuffer* TVBArgsBuffer(uint32_t slot)
+    {
+        return &tvbArgsBuffers_[slot % kCullOutputSlotCount];
+    }
+    GPUBuffer* VisibleCountBuffer(uint32_t slot)
+    {
+        return &visibleCountBuffers_[slot % kCullOutputSlotCount];
+    }
+    GPUBuffer* MeshDispatchArgsBuffer(uint32_t slot)
+    {
+        return &meshDispatchArgsBuffers_[slot % kCullOutputSlotCount];
+    }
+    GPUBuffer* VisibleCommandIndicesBuffer(uint32_t slot)
+    {
+        return &visibleCommandIndicesBuffers_[slot % kCullOutputSlotCount];
+    }
+    GPUBuffer* TVBFilteredIndexBuffer(uint32_t slot)
+    {
+        return &tvbFilteredIndexBuffers_[slot % kCullOutputSlotCount];
+    }
+    GPUBuffer* TVBFilteredPrimitiveIDBuffer(uint32_t slot)
+    {
+        return &tvbFilteredPrimitiveIDBuffers_[slot % kCullOutputSlotCount];
+    }
+
+    ResourceState* VisibleArgsBufferState(uint32_t slot)
+    {
+        return &visibleArgsBufferStates_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* TVBArgsBufferState(uint32_t slot)
+    {
+        return &tvbArgsBufferStates_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* VisibleCountBufferState(uint32_t slot)
+    {
+        return &visibleCountBufferStates_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* VisibleCommandIndicesBufferState(uint32_t slot)
+    {
+        return &visibleCommandIndicesBufferStates_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* TVBFilteredIndexBufferState(uint32_t slot)
+    {
+        return &tvbFilteredIndexBufferStates_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* TVBFilteredPrimitiveIDBufferState(uint32_t slot)
+    {
+        return &tvbFilteredPrimitiveIDBufferStates_[slot % kCullOutputSlotCount];
+    }
+
     void ResetTransientBufferStates()
     {
-        vertexBufferState_ = ResourceState::SHADER_RESOURCE;
+        vertexBufferState_ = ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER;
         drawCommandIndexBufferState_ = ResourceState::VERTEX_BUFFER;
         clusterIndexBufferState_ = ResourceState::INDEX_BUFFER;
 
         baseCountBufferState_ = ResourceState::INDIRECT_ARGUMENT;
-        visibleCountBufferState_ = ResourceState::UNORDERED_ACCESS;
         hashBufferState_ = ResourceState::UNORDERED_ACCESS;
 
         instanceVisibleBufferState_ = ResourceState::UNORDERED_ACCESS;
-        visibleCommandIndicesBufferState_ = ResourceState::UNORDERED_ACCESS;
-        visibleArgsBufferState_ = ResourceState::UNORDERED_ACCESS;
-
-        tvbFilteredIndexBufferState_ = ResourceState::UNORDERED_ACCESS;
-        tvbArgsBufferState_ = ResourceState::UNORDERED_ACCESS;
-        tvbFilteredPrimitiveIDBufferState_ = ResourceState::UNORDERED_ACCESS;
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
+        {
+            visibleCountBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            visibleCommandIndicesBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            visibleArgsBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            tvbFilteredIndexBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            tvbArgsBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            tvbFilteredPrimitiveIDBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+        }
+        ResetCullFrameOverlap();
     }
 
     void TransitionBufferState(const GPUBuffer* buffer, ResourceState* currentState, ResourceState newState, CommandList cmd)
@@ -2072,42 +2188,49 @@ private:
         *currentState = newState;
     }
 
-    void PrepareDrawBufferStates(CommandList cmd)
+    void PrepareDrawBufferStates(CommandList cmd, uint32_t drawSlot)
     {
+        GPUBuffer* visibleCommandIndicesBuffer = VisibleCommandIndicesBuffer(drawSlot);
+        GPUBuffer* visibleCountBuffer = VisibleCountBuffer(drawSlot);
+        GPUBuffer* visibleArgsBuffer = VisibleArgsBuffer(drawSlot);
+        GPUBuffer* tvbFilteredIndexBuffer = TVBFilteredIndexBuffer(drawSlot);
+        GPUBuffer* tvbArgsBuffer = TVBArgsBuffer(drawSlot);
+        GPUBuffer* tvbFilteredPrimitiveIDBuffer = TVBFilteredPrimitiveIDBuffer(drawSlot);
+
         const bool meshPath = activeSuite_ == SuiteMode::Mesh && supportsMeshShaders_ && activePipeline_ != PipelineStyle::TVB;
         if (meshPath)
         {
-            TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE, cmd);
-            TransitionBufferState(&visibleCommandIndicesBuffer_, &visibleCommandIndicesBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+            TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
+            TransitionBufferState(visibleCommandIndicesBuffer, VisibleCommandIndicesBufferState(drawSlot), ResourceState::SHADER_RESOURCE, cmd);
             TransitionBufferState(
-                &visibleCountBuffer_,
-                &visibleCountBufferState_,
+                visibleCountBuffer,
+                VisibleCountBufferState(drawSlot),
                 ResourceState::SHADER_RESOURCE | ResourceState::INDIRECT_ARGUMENT,
                 cmd);
             return;
         }
 
-        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::VERTEX_BUFFER, cmd);
+        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
         TransitionBufferState(&drawCommandIndexBuffer_, &drawCommandIndexBufferState_, ResourceState::VERTEX_BUFFER, cmd);
 
         if (activePipeline_ == PipelineStyle::TVB)
         {
-            TransitionBufferState(&tvbFilteredIndexBuffer_, &tvbFilteredIndexBufferState_, ResourceState::INDEX_BUFFER, cmd);
-            TransitionBufferState(&tvbArgsBuffer_, &tvbArgsBufferState_, ResourceState::INDIRECT_ARGUMENT, cmd);
-            TransitionBufferState(&tvbFilteredPrimitiveIDBuffer_, &tvbFilteredPrimitiveIDBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+            TransitionBufferState(tvbFilteredIndexBuffer, TVBFilteredIndexBufferState(drawSlot), ResourceState::INDEX_BUFFER, cmd);
+            TransitionBufferState(tvbArgsBuffer, TVBArgsBufferState(drawSlot), ResourceState::INDIRECT_ARGUMENT, cmd);
+            TransitionBufferState(tvbFilteredPrimitiveIDBuffer, TVBFilteredPrimitiveIDBufferState(drawSlot), ResourceState::SHADER_RESOURCE, cmd);
             TransitionBufferState(&baseCountBuffer_, &baseCountBufferState_, ResourceState::INDIRECT_ARGUMENT, cmd);
         }
         else if (activePipeline_ == PipelineStyle::Esoterica)
         {
-            TransitionBufferState(&tvbFilteredIndexBuffer_, &tvbFilteredIndexBufferState_, ResourceState::INDEX_BUFFER, cmd);
-            TransitionBufferState(&tvbArgsBuffer_, &tvbArgsBufferState_, ResourceState::INDIRECT_ARGUMENT, cmd);
-            TransitionBufferState(&tvbFilteredPrimitiveIDBuffer_, &tvbFilteredPrimitiveIDBufferState_, ResourceState::SHADER_RESOURCE, cmd);
-            TransitionBufferState(&visibleCommandIndicesBuffer_, &visibleCommandIndicesBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+            TransitionBufferState(tvbFilteredIndexBuffer, TVBFilteredIndexBufferState(drawSlot), ResourceState::INDEX_BUFFER, cmd);
+            TransitionBufferState(tvbArgsBuffer, TVBArgsBufferState(drawSlot), ResourceState::INDIRECT_ARGUMENT, cmd);
+            TransitionBufferState(tvbFilteredPrimitiveIDBuffer, TVBFilteredPrimitiveIDBufferState(drawSlot), ResourceState::SHADER_RESOURCE, cmd);
+            TransitionBufferState(visibleCommandIndicesBuffer, VisibleCommandIndicesBufferState(drawSlot), ResourceState::SHADER_RESOURCE, cmd);
         }
         else
         {
             TransitionBufferState(&clusterIndexBuffer_, &clusterIndexBufferState_, ResourceState::INDEX_BUFFER, cmd);
-            TransitionBufferState(&visibleArgsBuffer_, &visibleArgsBufferState_, ResourceState::INDIRECT_ARGUMENT, cmd);
+            TransitionBufferState(visibleArgsBuffer, VisibleArgsBufferState(drawSlot), ResourceState::INDIRECT_ARGUMENT, cmd);
         }
     }
 
@@ -2222,6 +2345,7 @@ private:
         else if (key == SDLK_J)
         {
             asyncComputeEnabled_ = !asyncComputeEnabled_;
+            ResetCullFrameOverlap();
             SDL_Log(
                 "[WickedVisibilityPipelineBenchmark] async compute cull queue -> requested=%s effective=%s",
                 asyncComputeEnabled_ ? "enabled" : "disabled",
@@ -2276,6 +2400,7 @@ private:
         activeCommandCount_ = tierActiveCommandCount_[activeTier_];
         activeInstanceCount_ = tierActiveInstanceCount_[activeTier_];
         countsDirty_ = true;
+        ResetCullFrameOverlap();
 
         if (tierChanged)
         {
@@ -2354,7 +2479,7 @@ private:
         SDL_Log("  TVB: triangle visibility filtering with Hi-Z coarse reject -> indexed draw from TVB filtered index stream");
         SDL_Log("  Esoterica: instance+cluster (sphere+Hi-Z) cull -> TVB triangle filtering on visible clusters");
         SDL_Log("  Shared backbone: GPU instance cull, cluster cull, TVB filtering, and Hi-Z depth pyramid build");
-        SDL_Log("  Queueing: cull can run on async compute queue and graphics waits before draw");
+        SDL_Log("  Queueing: async mode uses one-frame-lag ping-pong so frame N draw can overlap frame N+1 cull");
     }
 
     void LogActiveTier() const
@@ -2413,6 +2538,29 @@ private:
         ReadTimingAndCounters(frameIndex, &metrics);
 
         const bool useAsyncComputeForCull = IsAsyncCullActiveForCurrentMode();
+        uint32_t drawSlot = 0u;
+        uint32_t cullSlot = 0u;
+        if (useAsyncComputeForCull)
+        {
+            // One-frame-lag pipeline:
+            // draw reads the previously produced slot while async compute writes the next slot.
+            if (cullHistoryValid_)
+            {
+                drawSlot = cullReadSlot_;
+                cullSlot = cullWriteSlot_;
+            }
+            else
+            {
+                drawSlot = cullWriteSlot_;
+                cullSlot = cullWriteSlot_;
+            }
+        }
+
+        GPUBuffer* drawVisibleCountBuffer = VisibleCountBuffer(drawSlot);
+        ResourceState* drawVisibleCountState = VisibleCountBufferState(drawSlot);
+        GPUBuffer* cullVisibleCountBuffer = VisibleCountBuffer(cullSlot);
+        ResourceState* cullVisibleCountState = VisibleCountBufferState(cullSlot);
+
         CommandList cmdCull = {};
         if (useAsyncComputeForCull)
         {
@@ -2436,8 +2584,8 @@ private:
             countsDirty_ = false;
         }
 
-        TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::UNORDERED_ACCESS, cmdCull);
-        device_->ClearUAV(&visibleCountBuffer_, 0u, cmdCull);
+        TransitionBufferState(cullVisibleCountBuffer, cullVisibleCountState, ResourceState::UNORDERED_ACCESS, cmdCull);
+        device_->ClearUAV(cullVisibleCountBuffer, 0u, cmdCull);
         TransitionBufferState(&hashBuffer_, &hashBufferState_, ResourceState::UNORDERED_ACCESS, cmdGraphics);
         device_->ClearUAV(&hashBuffer_, 0u, cmdGraphics);
 
@@ -2447,46 +2595,49 @@ private:
         if (!useAsyncComputeForCull)
         {
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
-            ExecuteCullStage(sceneCB, cmdCull);
+            ExecuteCullStage(sceneCB, cmdCull, cullSlot);
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
         }
         else
         {
-            ExecuteCullStage(sceneCB, cmdCull);
-            device_->WaitCommandList(cmdGraphics, cmdCull);
+            ExecuteCullStage(sceneCB, cmdCull, cullSlot);
+            if (!cullHistoryValid_)
+            {
+                // Prime first async frame so draw has valid data before one-frame-lag overlap begins.
+                device_->WaitCommandList(cmdGraphics, cmdCull);
+            }
 
             // Cull timestamps are graphics-queue-local in this benchmark path.
             // Keep them valid and deterministic when cull executes on async compute.
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
         }
-        TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::COPY_SRC, cmdGraphics);
-        device_->CopyBuffer(&visibleCountReadback_[frameIndex], 0, &visibleCountBuffer_, 0, sizeof(uint32_t), cmdGraphics);
-        if (activePipeline_ == PipelineStyle::TVB)
+        if (activePipeline_ != PipelineStyle::TVB)
         {
-            TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::UNORDERED_ACCESS, cmdGraphics);
+            TransitionBufferState(
+                drawVisibleCountBuffer,
+                drawVisibleCountState,
+                ResourceState::COPY_SRC,
+                cmdGraphics);
+            device_->CopyBuffer(&visibleCountReadback_[frameIndex], 0, drawVisibleCountBuffer, 0, sizeof(uint32_t), cmdGraphics);
         }
         else
         {
-            TransitionBufferState(
-                &visibleCountBuffer_,
-                &visibleCountBufferState_,
-                ResourceState::SHADER_RESOURCE | ResourceState::INDIRECT_ARGUMENT,
-                cmdGraphics);
+            visibleCountReady_[frameIndex] = false;
         }
 
         device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawStart, cmdGraphics);
-        PrepareDrawBufferStates(cmdGraphics);
-        ExecuteDrawStage(sceneCB, cmdGraphics);
+        PrepareDrawBufferStates(cmdGraphics, drawSlot);
+        ExecuteDrawStage(sceneCB, cmdGraphics, drawSlot);
         device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawEnd, cmdGraphics);
 
         ExecuteHiZBuildStage(sceneCB, cmdGraphics);
 
         device_->QueryEnd(&timestampQueryHeap_, kTimestampHashStart, cmdGraphics);
-        ExecuteHashStage(sceneCB, cmdGraphics, frameIndex);
+        ExecuteHashStage(sceneCB, cmdGraphics, frameIndex, drawSlot);
         device_->QueryEnd(&timestampQueryHeap_, kTimestampHashEnd, cmdGraphics);
 
-        PrepareAsyncCullBaselineStates(cmdGraphics);
+        PrepareAsyncCullBaselineStates(cmdGraphics, drawSlot);
         ExecutePresentStage(cmdGraphics);
 
         device_->QueryEnd(&timestampQueryHeap_, kTimestampFrameEnd, cmdGraphics);
@@ -2495,9 +2646,23 @@ private:
 
         device_->SubmitCommandLists();
 
+        if (useAsyncComputeForCull)
+        {
+            cullHistoryValid_ = true;
+            cullReadSlot_ = cullSlot;
+            cullWriteSlot_ = cullSlot ^ 1u;
+        }
+        else
+        {
+            ResetCullFrameOverlap();
+        }
+
         timestampReady_[frameIndex] = true;
         hashReady_[frameIndex] = true;
-        visibleCountReady_[frameIndex] = true;
+        if (activePipeline_ != PipelineStyle::TVB)
+        {
+            visibleCountReady_[frameIndex] = true;
+        }
 
         const uint64_t cpuEnd = SDL_GetPerformanceCounter();
         metrics.cpuMs = perfFreq > 0 ? (1000.0 * static_cast<double>(cpuEnd - cpuBegin) / static_cast<double>(perfFreq)) : 0.0;
@@ -2511,25 +2676,32 @@ private:
         return true;
     }
 
-    void ExecuteCullStage(const SceneCB& sceneCB, CommandList cmd)
+    void ExecuteCullStage(const SceneCB& sceneCB, CommandList cmd, uint32_t cullSlot)
     {
+        GPUBuffer* visibleCommandIndicesBuffer = VisibleCommandIndicesBuffer(cullSlot);
+        GPUBuffer* visibleCountBuffer = VisibleCountBuffer(cullSlot);
+        GPUBuffer* visibleArgsBuffer = VisibleArgsBuffer(cullSlot);
+        GPUBuffer* tvbFilteredIndexBuffer = TVBFilteredIndexBuffer(cullSlot);
+        GPUBuffer* tvbArgsBuffer = TVBArgsBuffer(cullSlot);
+        GPUBuffer* tvbFilteredPrimitiveIDBuffer = TVBFilteredPrimitiveIDBuffer(cullSlot);
+
         const bool requiresTVBFiltering = (activePipeline_ == PipelineStyle::TVB) ||
                                           (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable);
 
-        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
         TransitionBufferState(&instanceVisibleBuffer_, &instanceVisibleBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
-        TransitionBufferState(&visibleCommandIndicesBuffer_, &visibleCommandIndicesBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
-        TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
-        TransitionBufferState(&visibleArgsBuffer_, &visibleArgsBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(visibleCommandIndicesBuffer, VisibleCommandIndicesBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(visibleCountBuffer, VisibleCountBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(visibleArgsBuffer, VisibleArgsBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
         if (requiresTVBFiltering)
         {
-            TransitionBufferState(&tvbFilteredIndexBuffer_, &tvbFilteredIndexBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
-            TransitionBufferState(&tvbArgsBuffer_, &tvbArgsBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
-            TransitionBufferState(&tvbFilteredPrimitiveIDBuffer_, &tvbFilteredPrimitiveIDBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+            TransitionBufferState(tvbFilteredIndexBuffer, TVBFilteredIndexBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
+            TransitionBufferState(tvbArgsBuffer, TVBArgsBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
+            TransitionBufferState(tvbFilteredPrimitiveIDBuffer, TVBFilteredPrimitiveIDBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
         }
 
         device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
-        BindCommonResources(cmd);
+        BindCommonResources(cmd, cullSlot);
         device_->BindResource(&hiZTexture_, 13, cmd);
 
         if (activePipeline_ == PipelineStyle::TVB)
@@ -2557,8 +2729,8 @@ private:
         const uint32_t commandGroups = (activeCommandCount_ + 63u) / 64u;
         device_->Dispatch(std::max(1u, commandGroups), 1, 1, cmd);
         device_->Barrier(cmd);
-        TransitionBufferState(&visibleCommandIndicesBuffer_, &visibleCommandIndicesBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
-        TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
+        TransitionBufferState(visibleCommandIndicesBuffer, VisibleCommandIndicesBufferState(cullSlot), ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
+        TransitionBufferState(visibleCountBuffer, VisibleCountBufferState(cullSlot), ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
 
         if (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable)
         {
@@ -2575,17 +2747,26 @@ private:
         }
     }
 
-    void PrepareAsyncCullBaselineStates(CommandList cmd)
+    void PrepareAsyncCullBaselineStates(CommandList cmd, uint32_t slot)
     {
         // Keep resources that async cull can touch in compute-compatible states.
-        // This avoids compute-queue transitions from graphics-only states (ex: VERTEX/INDEX).
-        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE, cmd);
-        TransitionBufferState(&tvbFilteredIndexBuffer_, &tvbFilteredIndexBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
-        TransitionBufferState(&tvbArgsBuffer_, &tvbArgsBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+        // This avoids compute-queue transitions from graphics-only states (for example: INDEX).
+        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
+        TransitionBufferState(VisibleCommandIndicesBuffer(slot), VisibleCommandIndicesBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(VisibleCountBuffer(slot), VisibleCountBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(VisibleArgsBuffer(slot), VisibleArgsBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(TVBFilteredIndexBuffer(slot), TVBFilteredIndexBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(TVBArgsBuffer(slot), TVBArgsBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(TVBFilteredPrimitiveIDBuffer(slot), TVBFilteredPrimitiveIDBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
     }
 
-    void ExecuteDrawStage(const SceneCB& sceneCB, CommandList cmd)
+    void ExecuteDrawStage(const SceneCB& sceneCB, CommandList cmd, uint32_t drawSlot)
     {
+        GPUBuffer* visibleCountBuffer = VisibleCountBuffer(drawSlot);
+        GPUBuffer* visibleArgsBuffer = VisibleArgsBuffer(drawSlot);
+        GPUBuffer* tvbArgsBuffer = TVBArgsBuffer(drawSlot);
+        GPUBuffer* tvbFilteredIndexBuffer = TVBFilteredIndexBuffer(drawSlot);
+
         RenderPassImage rp[] = {
             wi::wiGraphicsCreateRenderPassImageRenderTarget(
                 &primitiveIDTexture_,
@@ -2620,7 +2801,7 @@ private:
         if (activeSuite_ == SuiteMode::Mesh && supportsMeshShaders_ && activePipeline_ != PipelineStyle::TVB)
         {
             device_->BindPipelineState(&pipelineMesh_, cmd);
-            BindCommonResources(cmd);
+            BindCommonResources(cmd, drawSlot);
 
             for (uint32_t dispatchBase = 0; dispatchBase < activeCommandCount_; dispatchBase += kMaxMeshDispatchGroups)
             {
@@ -2635,7 +2816,7 @@ private:
         {
             device_->BindPipelineState(&pipelineIndexed_, cmd);
             device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
-            BindCommonResources(cmd);
+            BindCommonResources(cmd, drawSlot);
 
             const GPUBuffer* vbs[] = {
                 &vertexBuffer_,
@@ -2653,18 +2834,18 @@ private:
 
             if (activePipeline_ == PipelineStyle::TVB)
             {
-                device_->BindIndexBuffer(&tvbFilteredIndexBuffer_, wi::IndexBufferFormat::UINT32, 0, cmd);
-                device_->DrawIndexedInstancedIndirectCount(&tvbArgsBuffer_, 0, &baseCountBuffer_, 0, activeCommandCount_, cmd);
+                device_->BindIndexBuffer(tvbFilteredIndexBuffer, wi::IndexBufferFormat::UINT32, 0, cmd);
+                device_->DrawIndexedInstancedIndirectCount(tvbArgsBuffer, 0, &baseCountBuffer_, 0, activeCommandCount_, cmd);
             }
             else if (activePipeline_ == PipelineStyle::Esoterica)
             {
-                device_->BindIndexBuffer(&tvbFilteredIndexBuffer_, wi::IndexBufferFormat::UINT32, 0, cmd);
-                device_->DrawIndexedInstancedIndirectCount(&tvbArgsBuffer_, 0, &visibleCountBuffer_, 0, activeCommandCount_, cmd);
+                device_->BindIndexBuffer(tvbFilteredIndexBuffer, wi::IndexBufferFormat::UINT32, 0, cmd);
+                device_->DrawIndexedInstancedIndirectCount(tvbArgsBuffer, 0, visibleCountBuffer, 0, activeCommandCount_, cmd);
             }
             else
             {
                 device_->BindIndexBuffer(&clusterIndexBuffer_, wi::IndexBufferFormat::UINT32, 0, cmd);
-                device_->DrawIndexedInstancedIndirectCount(&visibleArgsBuffer_, 0, &visibleCountBuffer_, 0, activeCommandCount_, cmd);
+                device_->DrawIndexedInstancedIndirectCount(visibleArgsBuffer, 0, visibleCountBuffer, 0, activeCommandCount_, cmd);
             }
         }
 
@@ -2712,7 +2893,7 @@ private:
         hiZOcclusionValid_ = true;
     }
 
-    void ExecuteHashStage(const SceneCB& sceneCB, CommandList cmd, uint32_t frameIndex)
+    void ExecuteHashStage(const SceneCB& sceneCB, CommandList cmd, uint32_t frameIndex, uint32_t drawSlot)
     {
         if (!validationEnabled_)
         {
@@ -2720,7 +2901,7 @@ private:
         }
 
         device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
-        BindCommonResources(cmd);
+        BindCommonResources(cmd, drawSlot);
 
         device_->BindComputeShader(&csHash_, cmd);
 
@@ -2758,8 +2939,16 @@ private:
         device_->RenderPassEnd(cmd);
     }
 
-    void BindCommonResources(CommandList cmd)
+    void BindCommonResources(CommandList cmd, uint32_t slot)
     {
+        GPUBuffer* visibleCommandIndicesBuffer = VisibleCommandIndicesBuffer(slot);
+        GPUBuffer* visibleCountBuffer = VisibleCountBuffer(slot);
+        GPUBuffer* visibleArgsBuffer = VisibleArgsBuffer(slot);
+        GPUBuffer* tvbFilteredIndexBuffer = TVBFilteredIndexBuffer(slot);
+        GPUBuffer* tvbArgsBuffer = TVBArgsBuffer(slot);
+        GPUBuffer* tvbFilteredPrimitiveIDBuffer = TVBFilteredPrimitiveIDBuffer(slot);
+        GPUBuffer* meshDispatchArgsBuffer = MeshDispatchArgsBuffer(slot);
+
         device_->BindResource(&vertexBuffer_, 0, cmd);
         device_->BindResource(&instanceBuffer_, 1, cmd);
         device_->BindResource(&commandBuffer_, 2, cmd);
@@ -2767,21 +2956,21 @@ private:
         device_->BindResource(&templateVerticesBuffer_, 4, cmd);
         device_->BindResource(&templateTrianglesBuffer_, 5, cmd);
         device_->BindResource(&instanceVisibleBuffer_, 6, cmd);
-        device_->BindResource(&visibleCommandIndicesBuffer_, 7, cmd);
+        device_->BindResource(visibleCommandIndicesBuffer, 7, cmd);
         device_->BindResource(&baseArgsBuffer_, 8, cmd);
-        device_->BindResource(&tvbFilteredPrimitiveIDBuffer_, 9, cmd);
-        device_->BindResource(&visibleCountBuffer_, 10, cmd);
+        device_->BindResource(tvbFilteredPrimitiveIDBuffer, 9, cmd);
+        device_->BindResource(visibleCountBuffer, 10, cmd);
         device_->BindResource(&primitiveIDTexture_, 11, cmd);
 
         device_->BindUAV(&instanceVisibleBuffer_, 0, cmd);
-        device_->BindUAV(&visibleCommandIndicesBuffer_, 1, cmd);
-        device_->BindUAV(&visibleCountBuffer_, 2, cmd);
-        device_->BindUAV(&visibleArgsBuffer_, 3, cmd);
-        device_->BindUAV(&tvbFilteredIndexBuffer_, 4, cmd);
-        device_->BindUAV(&tvbArgsBuffer_, 5, cmd);
-        device_->BindUAV(&tvbFilteredPrimitiveIDBuffer_, 6, cmd);
+        device_->BindUAV(visibleCommandIndicesBuffer, 1, cmd);
+        device_->BindUAV(visibleCountBuffer, 2, cmd);
+        device_->BindUAV(visibleArgsBuffer, 3, cmd);
+        device_->BindUAV(tvbFilteredIndexBuffer, 4, cmd);
+        device_->BindUAV(tvbArgsBuffer, 5, cmd);
+        device_->BindUAV(tvbFilteredPrimitiveIDBuffer, 6, cmd);
         device_->BindUAV(&hashBuffer_, 7, cmd);
-        device_->BindUAV(&meshDispatchArgsBuffer_, 8, cmd);
+        device_->BindUAV(meshDispatchArgsBuffer, 8, cmd);
     }
 
     void ReadTimingAndCounters(uint32_t frameIndex, FrameMetrics* outMetrics)
@@ -3044,18 +3233,18 @@ private:
     GPUBuffer drawCommandIndexBuffer_ = {};
 
     GPUBuffer baseArgsBuffer_ = {};
-    GPUBuffer visibleArgsBuffer_ = {};
-    GPUBuffer tvbArgsBuffer_ = {};
+    std::array<GPUBuffer, kCullOutputSlotCount> visibleArgsBuffers_ = {};
+    std::array<GPUBuffer, kCullOutputSlotCount> tvbArgsBuffers_ = {};
 
     GPUBuffer baseCountBuffer_ = {};
-    GPUBuffer visibleCountBuffer_ = {};
-    GPUBuffer meshDispatchArgsBuffer_ = {};
+    std::array<GPUBuffer, kCullOutputSlotCount> visibleCountBuffers_ = {};
+    std::array<GPUBuffer, kCullOutputSlotCount> meshDispatchArgsBuffers_ = {};
 
-    GPUBuffer visibleCommandIndicesBuffer_ = {};
+    std::array<GPUBuffer, kCullOutputSlotCount> visibleCommandIndicesBuffers_ = {};
     GPUBuffer instanceVisibleBuffer_ = {};
 
-    GPUBuffer tvbFilteredIndexBuffer_ = {};
-    GPUBuffer tvbFilteredPrimitiveIDBuffer_ = {};
+    std::array<GPUBuffer, kCullOutputSlotCount> tvbFilteredIndexBuffers_ = {};
+    std::array<GPUBuffer, kCullOutputSlotCount> tvbFilteredPrimitiveIDBuffers_ = {};
 
     GPUBuffer hashBuffer_ = {};
     std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> hashReadback_ = {};
@@ -3065,14 +3254,14 @@ private:
     ResourceState drawCommandIndexBufferState_ = ResourceState::VERTEX_BUFFER;
     ResourceState clusterIndexBufferState_ = ResourceState::INDEX_BUFFER;
     ResourceState baseCountBufferState_ = ResourceState::INDIRECT_ARGUMENT;
-    ResourceState visibleCountBufferState_ = ResourceState::UNORDERED_ACCESS;
+    std::array<ResourceState, kCullOutputSlotCount> visibleCountBufferStates_ = {};
     ResourceState hashBufferState_ = ResourceState::UNORDERED_ACCESS;
     ResourceState instanceVisibleBufferState_ = ResourceState::UNORDERED_ACCESS;
-    ResourceState visibleCommandIndicesBufferState_ = ResourceState::UNORDERED_ACCESS;
-    ResourceState visibleArgsBufferState_ = ResourceState::UNORDERED_ACCESS;
-    ResourceState tvbFilteredIndexBufferState_ = ResourceState::UNORDERED_ACCESS;
-    ResourceState tvbArgsBufferState_ = ResourceState::UNORDERED_ACCESS;
-    ResourceState tvbFilteredPrimitiveIDBufferState_ = ResourceState::UNORDERED_ACCESS;
+    std::array<ResourceState, kCullOutputSlotCount> visibleCommandIndicesBufferStates_ = {};
+    std::array<ResourceState, kCullOutputSlotCount> visibleArgsBufferStates_ = {};
+    std::array<ResourceState, kCullOutputSlotCount> tvbFilteredIndexBufferStates_ = {};
+    std::array<ResourceState, kCullOutputSlotCount> tvbArgsBufferStates_ = {};
+    std::array<ResourceState, kCullOutputSlotCount> tvbFilteredPrimitiveIDBufferStates_ = {};
 
     GPUQueryHeap timestampQueryHeap_ = {};
     std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> timestampReadback_ = {};
@@ -3115,6 +3304,9 @@ private:
     bool hiZOcclusionValid_ = false;
     uint32_t hiZMipCount_ = 1u;
     bool asyncComputeEnabled_ = true;
+    bool cullHistoryValid_ = false;
+    uint32_t cullReadSlot_ = 0u;
+    uint32_t cullWriteSlot_ = 1u;
 
     float sceneTime_ = 0.0f;
     float sceneExtent_ = 25.0f;

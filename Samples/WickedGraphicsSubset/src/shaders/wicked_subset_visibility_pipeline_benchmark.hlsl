@@ -34,6 +34,9 @@ groupshared uint gMeshCommandIndex;
 groupshared uint gMeshLocalVertexCount;
 groupshared uint gMeshLocalTriCount;
 groupshared uint gMeshValid;
+groupshared uint gMeshVisibleTriCount;
+groupshared uint gMeshVisibleTriIndices[kMaxClusterTriangles];
+groupshared float4 gMeshClipPositions[kMaxClusterVertices];
 
 struct InstanceData
 {
@@ -179,6 +182,29 @@ bool CullTriangle(float4 clip0, float4 clip1, float4 clip2)
     {
         return true;
     }
+
+    return false;
+}
+
+bool CullTriangleMesh(float4 clip0, float4 clip1, float4 clip2)
+{
+    if (clip0.w <= 0.0 || clip1.w <= 0.0 || clip2.w <= 0.0)
+    {
+        return true;
+    }
+
+    if (clip0.x < -clip0.w && clip1.x < -clip1.w && clip2.x < -clip2.w)
+        return true;
+    if (clip0.x > clip0.w && clip1.x > clip1.w && clip2.x > clip2.w)
+        return true;
+    if (clip0.y < -clip0.w && clip1.y < -clip1.w && clip2.y < -clip2.w)
+        return true;
+    if (clip0.y > clip0.w && clip1.y > clip1.w && clip2.y > clip2.w)
+        return true;
+    if (clip0.z < 0.0 && clip1.z < 0.0 && clip2.z < 0.0)
+        return true;
+    if (clip0.z > clip0.w && clip1.z > clip1.w && clip2.z > clip2.w)
+        return true;
 
     return false;
 }
@@ -610,6 +636,7 @@ void ms_clusters(
         gMeshLocalVertexCount = 0u;
         gMeshLocalTriCount = 0u;
         gMeshValid = 0u;
+        gMeshVisibleTriCount = 0u;
 
         const uint dispatchCommandIndex = meshCommandOffset + groupID.x;
         if (dispatchCommandIndex < activeCommandCount)
@@ -618,9 +645,23 @@ void ms_clusters(
             if (meshUseVisibleList != 0u)
             {
                 const uint visibleCount = gVisibleCount.Load(0u);
-                if (dispatchCommandIndex < visibleCount)
+                if (visibleCount > 0u)
                 {
-                    commandIndex = gVisibleCommandIndices[dispatchCommandIndex];
+                    if (dispatchCommandIndex < visibleCount)
+                    {
+                        commandIndex = gVisibleCommandIndices[dispatchCommandIndex];
+                        const ClusterCommand c = gCommands[commandIndex];
+                        const ClusterTemplate cl = gClusterTemplates[c.clusterTemplateIndex];
+                        gMeshCommandIndex = commandIndex;
+                        gMeshLocalVertexCount = cl.localVertexCount;
+                        gMeshLocalTriCount = cl.localTriCount;
+                        gMeshValid = (cl.localVertexCount > 0u && cl.localTriCount > 0u) ? 1u : 0u;
+                    }
+                }
+                else
+                {
+                    // Safety fallback: if visible list is temporarily empty, fall back to direct command indexing.
+                    // This avoids a full-frame mesh-path blackout while async history is warming up.
                     const ClusterCommand c = gCommands[commandIndex];
                     const ClusterTemplate cl = gClusterTemplates[c.clusterTemplateIndex];
                     gMeshCommandIndex = commandIndex;
@@ -636,33 +677,87 @@ void ms_clusters(
                 gMeshCommandIndex = commandIndex;
                 gMeshLocalVertexCount = cl.localVertexCount;
                 gMeshLocalTriCount = cl.localTriCount;
-                gMeshValid = (cl.localVertexCount > 0u && cl.localTriCount > 0u) ? 1u : 0u;
+                gMeshValid = 1u;
+            }
+        }
+
+        if (gMeshValid != 0u)
+        {
+            if (gMeshLocalVertexCount == 0u || gMeshLocalTriCount == 0u)
+            {
+                gMeshValid = 0u;
             }
         }
 
     }
     GroupMemoryBarrierWithGroupSync();
-    SetMeshOutputCounts(gMeshLocalVertexCount, gMeshLocalTriCount);
+
+    if (gMeshValid != 0u)
+    {
+        const ClusterCommand command = gCommands[gMeshCommandIndex];
+        const ClusterTemplate cluster = gClusterTemplates[command.clusterTemplateIndex];
+        const InstanceData inst = gInstances[command.instanceIndex];
+
+        for (uint localVertex = groupThreadID; localVertex < gMeshLocalVertexCount; localVertex += 32u)
+        {
+            const uint shapeVertex = gTemplateVertices[cluster.localVertexOffset + localVertex];
+            const float4 worldPos = mul(float4(gVertices[cluster.baseVertex + shapeVertex], 1.0), inst.world);
+            gMeshClipPositions[localVertex] = mul(worldPos, viewProj);
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+
+        for (uint localTri = groupThreadID; localTri < gMeshLocalTriCount; localTri += 32u)
+        {
+            const uint packed = gTemplatePackedTriangles[cluster.localTriOffset + localTri];
+        const uint3 tri = UnpackTri(packed);
+        const float4 clip0 = gMeshClipPositions[tri.x];
+        const float4 clip1 = gMeshClipPositions[tri.y];
+        const float4 clip2 = gMeshClipPositions[tri.z];
+        const bool culled = CullTriangleMesh(clip0, clip1, clip2);
+        if (!culled)
+        {
+            uint dstTri = 0u;
+            InterlockedAdd(gMeshVisibleTriCount, 1u, dstTri);
+                gMeshVisibleTriIndices[dstTri] = localTri;
+            }
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+    const uint outputVertexCount = (gMeshValid != 0u) ? gMeshLocalVertexCount : 0u;
+    const uint outputTriCount = (gMeshValid != 0u) ? max(gMeshVisibleTriCount, 1u) : 0u;
+    SetMeshOutputCounts(outputVertexCount, outputTriCount);
 
     if (gMeshValid == 0u)
         return;
 
     const ClusterCommand command = gCommands[gMeshCommandIndex];
     const ClusterTemplate cluster = gClusterTemplates[command.clusterTemplateIndex];
-    const InstanceData inst = gInstances[command.instanceIndex];
 
     for (uint localVertex = groupThreadID; localVertex < gMeshLocalVertexCount; localVertex += 32u)
     {
-        const uint shapeVertex = gTemplateVertices[cluster.localVertexOffset + localVertex];
-        const float4 worldPos = mul(float4(gVertices[cluster.baseVertex + shapeVertex], 1.0), inst.world);
-        verts[localVertex].position = mul(worldPos, viewProj);
+        verts[localVertex].position = gMeshClipPositions[localVertex];
     }
 
-    for (uint localTri = groupThreadID; localTri < gMeshLocalTriCount; localTri += 32u)
+    if (gMeshVisibleTriCount == 0u)
     {
+        if (groupThreadID == 0u)
+        {
+            const uint packed = gTemplatePackedTriangles[cluster.localTriOffset];
+            const uint localTri = 0u;
+            tris[0u] = UnpackTri(packed);
+            prims[0u].globalPrimitiveID = command.primitiveBase + localTri + 1u;
+        }
+        return;
+    }
+
+    for (uint visibleTri = groupThreadID; visibleTri < gMeshVisibleTriCount; visibleTri += 32u)
+    {
+        const uint localTri = gMeshVisibleTriIndices[visibleTri];
         const uint packed = gTemplatePackedTriangles[cluster.localTriOffset + localTri];
-        tris[localTri] = UnpackTri(packed);
-        prims[localTri].globalPrimitiveID = command.primitiveBase + localTri + 1u;
+        tris[visibleTri] = UnpackTri(packed);
+        prims[visibleTri].globalPrimitiveID = command.primitiveBase + localTri + 1u;
     }
 }
 
