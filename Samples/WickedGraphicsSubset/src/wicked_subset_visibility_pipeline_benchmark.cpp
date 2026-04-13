@@ -2040,24 +2040,7 @@ private:
 
     bool IsAsyncCullActiveForCurrentMode() const
     {
-        if (!asyncComputeEnabled_)
-        {
-            return false;
-        }
-
-        // TVB-style pipelines transition the filtered index stream between INDEX_BUFFER
-        // and UNORDERED_ACCESS each frame. Keep those transitions on graphics queue
-        // to avoid compute-queue state restrictions on DX12.
-        if (activePipeline_ == PipelineStyle::TVB)
-        {
-            return false;
-        }
-        if (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable)
-        {
-            return false;
-        }
-
-        return true;
+        return asyncComputeEnabled_;
     }
 
     void ResetTransientBufferStates()
@@ -2503,6 +2486,7 @@ private:
         ExecuteHashStage(sceneCB, cmdGraphics, frameIndex);
         device_->QueryEnd(&timestampQueryHeap_, kTimestampHashEnd, cmdGraphics);
 
+        PrepareAsyncCullBaselineStates(cmdGraphics);
         ExecutePresentStage(cmdGraphics);
 
         device_->QueryEnd(&timestampQueryHeap_, kTimestampFrameEnd, cmdGraphics);
@@ -2529,14 +2513,20 @@ private:
 
     void ExecuteCullStage(const SceneCB& sceneCB, CommandList cmd)
     {
+        const bool requiresTVBFiltering = (activePipeline_ == PipelineStyle::TVB) ||
+                                          (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable);
+
         TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE, cmd);
         TransitionBufferState(&instanceVisibleBuffer_, &instanceVisibleBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(&visibleCommandIndicesBuffer_, &visibleCommandIndicesBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(&visibleCountBuffer_, &visibleCountBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(&visibleArgsBuffer_, &visibleArgsBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
-        TransitionBufferState(&tvbFilteredIndexBuffer_, &tvbFilteredIndexBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
-        TransitionBufferState(&tvbArgsBuffer_, &tvbArgsBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
-        TransitionBufferState(&tvbFilteredPrimitiveIDBuffer_, &tvbFilteredPrimitiveIDBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+        if (requiresTVBFiltering)
+        {
+            TransitionBufferState(&tvbFilteredIndexBuffer_, &tvbFilteredIndexBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+            TransitionBufferState(&tvbArgsBuffer_, &tvbArgsBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+            TransitionBufferState(&tvbFilteredPrimitiveIDBuffer_, &tvbFilteredPrimitiveIDBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+        }
 
         device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
         BindCommonResources(cmd);
@@ -2587,6 +2577,15 @@ private:
             }
             device_->Barrier(cmd);
         }
+    }
+
+    void PrepareAsyncCullBaselineStates(CommandList cmd)
+    {
+        // Keep resources that async cull can touch in compute-compatible states.
+        // This avoids compute-queue transitions from graphics-only states (ex: VERTEX/INDEX).
+        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+        TransitionBufferState(&tvbFilteredIndexBuffer_, &tvbFilteredIndexBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(&tvbArgsBuffer_, &tvbArgsBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
     }
 
     void ExecuteDrawStage(const SceneCB& sceneCB, CommandList cmd)
