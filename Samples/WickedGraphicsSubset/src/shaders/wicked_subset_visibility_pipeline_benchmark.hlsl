@@ -8,6 +8,10 @@ static const uint kMaxClusterVertices = 64u;
 static const uint kMaxClusterTriangles = 124u;
 static const uint kMaxClusterIndices = kMaxClusterTriangles * 3u;
 
+#ifndef WICKED_SUBSET_BINDLESS
+#define WICKED_SUBSET_BINDLESS 0
+#endif
+
 // DX12 DrawIndexedIndirectCount path expects a prefixed DrawID root constant.
 // Metal also uses DXC (`__hlsl_dx_compiler`) but must keep the portable 20-byte layout.
 #if defined(__hlsl_dx_compiler) && !defined(__spirv__) && !defined(__metal__)
@@ -30,6 +34,9 @@ static const uint kIndirectArgDWordCount = 5u;
 #endif
 
 groupshared uint gTVBVisibleTriCount;
+groupshared uint gTVBDispatchValid;
+groupshared uint gTVBDrawCommandIndex;
+groupshared uint gTVBCoarseVisible;
 groupshared uint gMeshCommandIndex;
 groupshared uint gMeshLocalVertexCount;
 groupshared uint gMeshLocalTriCount;
@@ -70,6 +77,13 @@ struct ClusterTemplate
     float4 bounds; // xyz local center, w local radius
 };
 
+groupshared ClusterCommand gTVBCommand;
+groupshared InstanceData gTVBInstance;
+groupshared ClusterTemplate gTVBCluster;
+groupshared uint gTVBLocalVertices[kMaxClusterVertices];
+groupshared float4 gTVBClipPositions[kMaxClusterVertices];
+
+#if !WICKED_SUBSET_BINDLESS
 StructuredBuffer<float3> gVertices : register(t0);
 StructuredBuffer<InstanceData> gInstances : register(t1);
 StructuredBuffer<ClusterCommand> gCommands : register(t2);
@@ -81,10 +95,12 @@ StructuredBuffer<uint> gVisibleCommandIndices : register(t7);
 ByteAddressBuffer gSourceArgs : register(t8);
 StructuredBuffer<uint> gTVBFilteredPrimitiveIDs : register(t9);
 ByteAddressBuffer gVisibleCount : register(t10);
+#endif
 Texture2D<uint> gPrimitiveIDTexture : register(t11);
 Texture2D<float> gDepthTexture : register(t12);
 Texture2D<float> gHiZTexture : register(t13);
 
+#if !WICKED_SUBSET_BINDLESS
 RWStructuredBuffer<uint> gInstanceVisibleOut : register(u0);
 RWStructuredBuffer<uint> gVisibleCommandIndicesOut : register(u1);
 RWByteAddressBuffer gVisibleCountOut : register(u2);
@@ -94,7 +110,52 @@ RWByteAddressBuffer gTVBArgsOut : register(u5);
 RWStructuredBuffer<uint> gTVBFilteredPrimitiveIDsOut : register(u6);
 RWByteAddressBuffer gHashOut : register(u7);
 RWByteAddressBuffer gMeshDispatchArgsOut : register(u8);
+#endif
 RWTexture2D<float> gHiZOut : register(u9);
+#if WICKED_SUBSET_BINDLESS
+#ifndef descriptor_index
+#define descriptor_index(x) (max(0, (x)))
+#endif
+#if defined(__hlsl_dx_compiler) && !defined(__spirv__) && __SHADER_TARGET_MAJOR >= 6 && __SHADER_TARGET_MINOR >= 6
+template<typename T>
+struct BindlessResource
+{
+    T operator[](uint index) { return (T)ResourceDescriptorHeap[index]; }
+};
+static const BindlessResource<ByteAddressBuffer> bindless_buffers;
+static const BindlessResource<RWByteAddressBuffer> bindless_rwbuffers;
+#elif defined(__spirv__)
+[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] ByteAddressBuffer bindless_buffers[];
+[[vk::binding(0, DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER)]] RWByteAddressBuffer bindless_rwbuffers[];
+#else
+ByteAddressBuffer bindless_buffers[] : register(space3);
+RWByteAddressBuffer bindless_rwbuffers[] : register(space101);
+#endif
+struct BindlessPush
+{
+    int vertexBufferSRV;
+    int instanceBufferSRV;
+    int commandBufferSRV;
+    int clusterTemplateBufferSRV;
+    int templateVerticesBufferSRV;
+    int templateTrianglesBufferSRV;
+    int instanceVisibleSRV;
+    int visibleCommandIndicesSRV;
+    int sourceArgsSRV;
+    int tvbFilteredPrimitiveIDsSRV;
+    int visibleCountSRV;
+    int instanceVisibleUAV;
+    int visibleCommandIndicesUAV;
+    int visibleCountUAV;
+    int visibleArgsUAV;
+    int tvbFilteredIndicesUAV;
+    int tvbArgsUAV;
+    int tvbFilteredPrimitiveIDsUAV;
+    int hashUAV;
+    int meshDispatchArgsUAV;
+};
+ConstantBuffer<BindlessPush> bindless : register(b1);
+#endif
 
 cbuffer SceneCB : register(b0)
 {
@@ -110,7 +171,284 @@ cbuffer SceneCB : register(b0)
     uint hiZSourceMip;
     uint hiZEnabled;
     uint hiZValid;
-    uint3 _scenePadding;
+    float cullPaddingPixels;
+    float hiZOcclusionBias;
+    float _scenePadding0;
+    float _scenePadding1;
+}
+
+static const uint kVertexStrideBytes = 12u;
+static const uint kInstanceStrideBytes = 112u;
+static const uint kCommandStrideBytes = 16u;
+static const uint kClusterTemplateStrideBytes = 48u;
+static const uint kUIntStrideBytes = 4u;
+
+float4 LoadFloat4(ByteAddressBuffer buffer, uint byteOffset)
+{
+    const uint4 raw = uint4(
+        buffer.Load(byteOffset + 0u),
+        buffer.Load(byteOffset + 4u),
+        buffer.Load(byteOffset + 8u),
+        buffer.Load(byteOffset + 12u));
+    return asfloat(raw);
+}
+
+float3 LoadFloat3(ByteAddressBuffer buffer, uint byteOffset)
+{
+    const uint3 raw = uint3(
+        buffer.Load(byteOffset + 0u),
+        buffer.Load(byteOffset + 4u),
+        buffer.Load(byteOffset + 8u));
+    return asfloat(raw);
+}
+
+uint LoadUInt(ByteAddressBuffer buffer, uint byteOffset)
+{
+    return buffer.Load(byteOffset);
+}
+
+#if WICKED_SUBSET_BINDLESS
+ByteAddressBuffer VertexBufferSRV() { return bindless_buffers[descriptor_index(bindless.vertexBufferSRV)]; }
+ByteAddressBuffer InstanceBufferSRV() { return bindless_buffers[descriptor_index(bindless.instanceBufferSRV)]; }
+ByteAddressBuffer CommandBufferSRV() { return bindless_buffers[descriptor_index(bindless.commandBufferSRV)]; }
+ByteAddressBuffer ClusterTemplateBufferSRV() { return bindless_buffers[descriptor_index(bindless.clusterTemplateBufferSRV)]; }
+ByteAddressBuffer TemplateVerticesBufferSRV() { return bindless_buffers[descriptor_index(bindless.templateVerticesBufferSRV)]; }
+ByteAddressBuffer TemplateTrianglesBufferSRV() { return bindless_buffers[descriptor_index(bindless.templateTrianglesBufferSRV)]; }
+ByteAddressBuffer InstanceVisibleBufferSRV() { return bindless_buffers[descriptor_index(bindless.instanceVisibleSRV)]; }
+ByteAddressBuffer VisibleCommandIndicesBufferSRV() { return bindless_buffers[descriptor_index(bindless.visibleCommandIndicesSRV)]; }
+ByteAddressBuffer SourceArgsBufferSRV() { return bindless_buffers[descriptor_index(bindless.sourceArgsSRV)]; }
+ByteAddressBuffer TVBFilteredPrimitiveIDsBufferSRV() { return bindless_buffers[descriptor_index(bindless.tvbFilteredPrimitiveIDsSRV)]; }
+ByteAddressBuffer VisibleCountBufferSRV() { return bindless_buffers[descriptor_index(bindless.visibleCountSRV)]; }
+RWByteAddressBuffer InstanceVisibleBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.instanceVisibleUAV)]; }
+RWByteAddressBuffer VisibleCommandIndicesBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.visibleCommandIndicesUAV)]; }
+RWByteAddressBuffer VisibleCountBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.visibleCountUAV)]; }
+RWByteAddressBuffer VisibleArgsBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.visibleArgsUAV)]; }
+RWByteAddressBuffer TVBFilteredIndicesBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.tvbFilteredIndicesUAV)]; }
+RWByteAddressBuffer TVBFilteredPrimitiveIDsBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.tvbFilteredPrimitiveIDsUAV)]; }
+RWByteAddressBuffer HashBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.hashUAV)]; }
+RWByteAddressBuffer MeshDispatchArgsBufferUAV() { return bindless_rwbuffers[descriptor_index(bindless.meshDispatchArgsUAV)]; }
+#endif
+
+RWByteAddressBuffer TVBArgsBufferUAV()
+{
+#if WICKED_SUBSET_BINDLESS
+    return bindless_rwbuffers[descriptor_index(bindless.tvbArgsUAV)];
+#else
+    return gTVBArgsOut;
+#endif
+}
+
+float3 LoadVertex(uint vertexIndex)
+{
+#if WICKED_SUBSET_BINDLESS
+    return LoadFloat3(VertexBufferSRV(), vertexIndex * kVertexStrideBytes);
+#else
+    return gVertices[vertexIndex];
+#endif
+}
+
+InstanceData LoadInstance(uint instanceIndex)
+{
+#if WICKED_SUBSET_BINDLESS
+    const uint base = instanceIndex * kInstanceStrideBytes;
+    ByteAddressBuffer buffer = InstanceBufferSRV();
+    InstanceData inst;
+    inst.world[0] = LoadFloat4(buffer, base + 0u);
+    inst.world[1] = LoadFloat4(buffer, base + 16u);
+    inst.world[2] = LoadFloat4(buffer, base + 32u);
+    inst.world[3] = LoadFloat4(buffer, base + 48u);
+    inst.color = LoadFloat4(buffer, base + 64u);
+    inst.bounds = LoadFloat4(buffer, base + 80u);
+    inst.scale = asfloat(buffer.Load(base + 96u));
+    inst._padding0 = asfloat(uint3(
+        buffer.Load(base + 100u),
+        buffer.Load(base + 104u),
+        buffer.Load(base + 108u)));
+    return inst;
+#else
+    return gInstances[instanceIndex];
+#endif
+}
+
+ClusterCommand LoadClusterCommand(uint commandIndex)
+{
+#if WICKED_SUBSET_BINDLESS
+    const uint base = commandIndex * kCommandStrideBytes;
+    ByteAddressBuffer buffer = CommandBufferSRV();
+    ClusterCommand command;
+    command.clusterTemplateIndex = buffer.Load(base + 0u);
+    command.instanceIndex = buffer.Load(base + 4u);
+    command.primitiveBase = buffer.Load(base + 8u);
+    command._padding0 = buffer.Load(base + 12u);
+    return command;
+#else
+    return gCommands[commandIndex];
+#endif
+}
+
+ClusterTemplate LoadClusterTemplate(uint clusterTemplateIndex)
+{
+#if WICKED_SUBSET_BINDLESS
+    const uint base = clusterTemplateIndex * kClusterTemplateStrideBytes;
+    ByteAddressBuffer buffer = ClusterTemplateBufferSRV();
+    ClusterTemplate cluster;
+    cluster.indexOffset = buffer.Load(base + 0u);
+    cluster.indexCount = buffer.Load(base + 4u);
+    cluster.baseVertex = buffer.Load(base + 8u);
+    cluster.primitiveOffset = buffer.Load(base + 12u);
+    cluster.localVertexOffset = buffer.Load(base + 16u);
+    cluster.localVertexCount = buffer.Load(base + 20u);
+    cluster.localTriOffset = buffer.Load(base + 24u);
+    cluster.localTriCount = buffer.Load(base + 28u);
+    cluster.bounds = LoadFloat4(buffer, base + 32u);
+    return cluster;
+#else
+    return gClusterTemplates[clusterTemplateIndex];
+#endif
+}
+
+uint LoadTemplateVertex(uint index)
+{
+#if WICKED_SUBSET_BINDLESS
+    return LoadUInt(TemplateVerticesBufferSRV(), index * kUIntStrideBytes);
+#else
+    return gTemplateVertices[index];
+#endif
+}
+
+uint LoadTemplatePackedTriangle(uint index)
+{
+#if WICKED_SUBSET_BINDLESS
+    return LoadUInt(TemplateTrianglesBufferSRV(), index * kUIntStrideBytes);
+#else
+    return gTemplatePackedTriangles[index];
+#endif
+}
+
+uint LoadInstanceVisible(uint index)
+{
+#if WICKED_SUBSET_BINDLESS
+    return LoadUInt(InstanceVisibleBufferSRV(), index * kUIntStrideBytes);
+#else
+    return gInstanceVisible[index];
+#endif
+}
+
+uint LoadVisibleCommandIndex(uint index)
+{
+#if WICKED_SUBSET_BINDLESS
+    return LoadUInt(VisibleCommandIndicesBufferSRV(), index * kUIntStrideBytes);
+#else
+    return gVisibleCommandIndices[index];
+#endif
+}
+
+uint LoadSourceArgDWord(uint byteOffset)
+{
+#if WICKED_SUBSET_BINDLESS
+    return SourceArgsBufferSRV().Load(byteOffset);
+#else
+    return gSourceArgs.Load(byteOffset);
+#endif
+}
+
+uint LoadVisibleCountValue()
+{
+#if WICKED_SUBSET_BINDLESS
+    return VisibleCountBufferSRV().Load(0u);
+#else
+    return gVisibleCount.Load(0u);
+#endif
+}
+
+uint LoadTVBFilteredPrimitiveID(uint index)
+{
+#if WICKED_SUBSET_BINDLESS
+    return LoadUInt(TVBFilteredPrimitiveIDsBufferSRV(), index * kUIntStrideBytes);
+#else
+    return gTVBFilteredPrimitiveIDs[index];
+#endif
+}
+
+void StoreInstanceVisible(uint index, uint value)
+{
+#if WICKED_SUBSET_BINDLESS
+    InstanceVisibleBufferUAV().Store(index * kUIntStrideBytes, value);
+#else
+    gInstanceVisibleOut[index] = value;
+#endif
+}
+
+void StoreVisibleCommandIndex(uint index, uint value)
+{
+#if WICKED_SUBSET_BINDLESS
+    VisibleCommandIndicesBufferUAV().Store(index * kUIntStrideBytes, value);
+#else
+    gVisibleCommandIndicesOut[index] = value;
+#endif
+}
+
+void StoreTVBFilteredPrimitiveID(uint index, uint value)
+{
+#if WICKED_SUBSET_BINDLESS
+    TVBFilteredPrimitiveIDsBufferUAV().Store(index * kUIntStrideBytes, value);
+#else
+    gTVBFilteredPrimitiveIDsOut[index] = value;
+#endif
+}
+
+void StoreVisibleArgDWord(uint byteOffset, uint value)
+{
+#if WICKED_SUBSET_BINDLESS
+    VisibleArgsBufferUAV().Store(byteOffset, value);
+#else
+    gVisibleArgsOut.Store(byteOffset, value);
+#endif
+}
+
+void StoreTVBFilteredIndexDWord(uint byteOffset, uint value)
+{
+#if WICKED_SUBSET_BINDLESS
+    TVBFilteredIndicesBufferUAV().Store(byteOffset, value);
+#else
+    gTVBFilteredIndicesOut.Store(byteOffset, value);
+#endif
+}
+
+void StoreTVBArgDWord(uint byteOffset, uint value)
+{
+#if WICKED_SUBSET_BINDLESS
+    TVBArgsBufferUAV().Store(byteOffset, value);
+#else
+    gTVBArgsOut.Store(byteOffset, value);
+#endif
+}
+
+void InterlockedAddVisibleCount(uint value, out uint originalValue)
+{
+#if WICKED_SUBSET_BINDLESS
+    VisibleCountBufferUAV().InterlockedAdd(0u, value, originalValue);
+#else
+    gVisibleCountOut.InterlockedAdd(0u, value, originalValue);
+#endif
+}
+
+void StoreMeshDispatchArgDWord(uint byteOffset, uint value)
+{
+#if WICKED_SUBSET_BINDLESS
+    MeshDispatchArgsBufferUAV().Store(byteOffset, value);
+#else
+    gMeshDispatchArgsOut.Store(byteOffset, value);
+#endif
+}
+
+void InterlockedXorHash(uint value, out uint originalValue)
+{
+#if WICKED_SUBSET_BINDLESS
+    HashBufferUAV().InterlockedXor(0u, value, originalValue);
+#else
+    gHashOut.InterlockedXor(0u, value, originalValue);
+#endif
 }
 
 bool SphereVisible(float3 center, float radius)
@@ -122,9 +460,11 @@ bool SphereVisible(float3 center, float radius)
 
     const float radiusX = radius * abs(projectionScale.x);
     const float radiusY = radius * abs(projectionScale.y);
-    if (clip.x > w + radiusX || clip.x < -w - radiusX)
+    const float padX = (2.0f * cullPaddingPixels / max(viewportSize.x, 1.0f)) * w;
+    const float padY = (2.0f * cullPaddingPixels / max(viewportSize.y, 1.0f)) * w;
+    if (clip.x > w + radiusX + padX || clip.x < -w - radiusX - padX)
         return false;
-    if (clip.y > w + radiusY || clip.y < -w - radiusY)
+    if (clip.y > w + radiusY + padY || clip.y < -w - radiusY - padY)
         return false;
 
     return true;
@@ -271,7 +611,7 @@ bool IsSphereOccludedByHiZ(float2 uvMin, float2 uvMax, float nearDepth)
         minDepth = min(minDepth, gHiZTexture.Load(int3(px, py, mip)));
     }
 
-    return nearDepth > (minDepth + 0.0025f);
+    return nearDepth > (minDepth + hiZOcclusionBias);
 }
 
 [numthreads(64, 1, 1)]
@@ -281,9 +621,9 @@ void cs_instance_filter(uint3 DTid : SV_DispatchThreadID)
     if (instanceIndex >= activeInstanceCount)
         return;
 
-    const InstanceData inst = gInstances[instanceIndex];
+    const InstanceData inst = LoadInstance(instanceIndex);
     const bool visible = SphereVisible(inst.bounds.xyz, inst.bounds.w);
-    gInstanceVisibleOut[instanceIndex] = visible ? 1u : 0u;
+    StoreInstanceVisible(instanceIndex, visible ? 1u : 0u);
 }
 
 [numthreads(64, 1, 1)]
@@ -293,12 +633,12 @@ void cs_cluster_filter(uint3 DTid : SV_DispatchThreadID)
     if (commandIndex >= activeCommandCount)
         return;
 
-    const ClusterCommand command = gCommands[commandIndex];
-    if (gInstanceVisible[command.instanceIndex] == 0u)
+    const ClusterCommand command = LoadClusterCommand(commandIndex);
+    if (LoadInstanceVisible(command.instanceIndex) == 0u)
         return;
 
-    const InstanceData inst = gInstances[command.instanceIndex];
-    const ClusterTemplate cluster = gClusterTemplates[command.clusterTemplateIndex];
+    const InstanceData inst = LoadInstance(command.instanceIndex);
+    const ClusterTemplate cluster = LoadClusterTemplate(command.clusterTemplateIndex);
 
     const float3 localCenter = cluster.bounds.xyz;
     const float worldRadius = cluster.bounds.w * inst.scale;
@@ -320,6 +660,11 @@ void cs_cluster_filter(uint3 DTid : SV_DispatchThreadID)
 
     float2 uvMin = (ndcCenter - ndcRadius) * 0.5f + 0.5f;
     float2 uvMax = (ndcCenter + ndcRadius) * 0.5f + 0.5f;
+    const float2 uvPadding = float2(
+        cullPaddingPixels / max(viewportSize.x, 1.0f),
+        cullPaddingPixels / max(viewportSize.y, 1.0f));
+    uvMin -= uvPadding;
+    uvMax += uvPadding;
     uvMin = saturate(uvMin);
     uvMax = saturate(uvMax);
 
@@ -331,8 +676,8 @@ void cs_cluster_filter(uint3 DTid : SV_DispatchThreadID)
     }
 
     uint dstIndex = 0u;
-    gVisibleCountOut.InterlockedAdd(0u, 1u, dstIndex);
-    gVisibleCommandIndicesOut[dstIndex] = commandIndex;
+    InterlockedAddVisibleCount(1u, dstIndex);
+    StoreVisibleCommandIndex(dstIndex, commandIndex);
 
     const uint srcOffset = commandIndex * kIndirectArgStride;
     const uint dstOffset = dstIndex * kIndirectArgStride;
@@ -340,8 +685,8 @@ void cs_cluster_filter(uint3 DTid : SV_DispatchThreadID)
     [unroll]
     for (uint i = 0u; i < kIndirectArgDWordCount; ++i)
     {
-        const uint value = gSourceArgs.Load(srcOffset + i * 4u);
-        gVisibleArgsOut.Store(dstOffset + i * 4u, value);
+        const uint value = LoadSourceArgDWord(srcOffset + i * 4u);
+        StoreVisibleArgDWord(dstOffset + i * 4u, value);
     }
 }
 
@@ -349,19 +694,19 @@ void cs_cluster_filter(uint3 DTid : SV_DispatchThreadID)
 void cs_compact_visible_args(uint3 DTid : SV_DispatchThreadID)
 {
     const uint visibleIndex = DTid.x;
-    const uint visibleCount = gVisibleCount.Load(0u);
+    const uint visibleCount = LoadVisibleCountValue();
     if (visibleIndex >= visibleCount)
         return;
 
-    const uint commandIndex = gVisibleCommandIndices[visibleIndex];
+    const uint commandIndex = LoadVisibleCommandIndex(visibleIndex);
     const uint srcOffset = commandIndex * kIndirectArgStride;
     const uint dstOffset = visibleIndex * kIndirectArgStride;
 
     [unroll]
     for (uint i = 0u; i < kIndirectArgDWordCount; ++i)
     {
-        const uint value = gSourceArgs.Load(srcOffset + i * 4u);
-        gVisibleArgsOut.Store(dstOffset + i * 4u, value);
+        const uint value = LoadSourceArgDWord(srcOffset + i * 4u);
+        StoreVisibleArgDWord(dstOffset + i * 4u, value);
     }
 }
 
@@ -369,106 +714,126 @@ void cs_compact_visible_args(uint3 DTid : SV_DispatchThreadID)
 void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
 {
     const uint dispatchIndex = meshCommandOffset + Gid.x;
-    uint commandIndex = dispatchIndex;
-    uint drawCommandIndex = dispatchIndex;
-
-    if (pipelineStyle == kPipelineEsoterica)
-    {
-        const uint visibleCount = gVisibleCount.Load(0u);
-        if (dispatchIndex >= visibleCount)
-            return;
-        commandIndex = gVisibleCommandIndices[dispatchIndex];
-        drawCommandIndex = dispatchIndex;
-    }
-    else
-    {
-        if (dispatchIndex >= activeCommandCount)
-            return;
-    }
-
     if (GTid.x == 0u)
     {
         gTVBVisibleTriCount = 0u;
-    }
-    GroupMemoryBarrierWithGroupSync();
+        gTVBDispatchValid = 0u;
+        gTVBCoarseVisible = 0u;
+        gTVBDrawCommandIndex = dispatchIndex;
 
-    const ClusterCommand command = gCommands[commandIndex];
-    const InstanceData inst = gInstances[command.instanceIndex];
-    const ClusterTemplate cluster = gClusterTemplates[command.clusterTemplateIndex];
-
-    const float3 localCenter = cluster.bounds.xyz;
-    const float worldRadius = cluster.bounds.w * inst.scale;
-    const float3 worldCenter = mul(float4(localCenter, 1.0), inst.world).xyz;
-
-    bool coarseVisible = SphereVisible(worldCenter, worldRadius);
-    if (coarseVisible)
-    {
-        const float4 clipCenter = mul(float4(worldCenter, 1.0), viewProj);
-        if (clipCenter.w <= 1e-6f)
+        uint commandIndex = dispatchIndex;
+        if (pipelineStyle == kPipelineEsoterica)
         {
-            coarseVisible = false;
+            const uint visibleCount = LoadVisibleCountValue();
+            if (dispatchIndex < visibleCount)
+            {
+                commandIndex = LoadVisibleCommandIndex(dispatchIndex);
+                gTVBDispatchValid = 1u;
+            }
         }
         else
         {
-            const float invW = 1.0f / clipCenter.w;
-            const float2 ndcCenter = clipCenter.xy * invW;
-            const float ndcDepth = saturate(clipCenter.z * invW);
-            const float2 ndcRadius = float2(
-                worldRadius * abs(projectionScale.x) * abs(invW),
-                worldRadius * abs(projectionScale.y) * abs(invW));
-
-            float2 uvMin = (ndcCenter - ndcRadius) * 0.5f + 0.5f;
-            float2 uvMax = (ndcCenter + ndcRadius) * 0.5f + 0.5f;
-            uvMin = saturate(uvMin);
-            uvMax = saturate(uvMax);
-
-            if (uvMin.x < uvMax.x && uvMin.y < uvMax.y)
+            if (dispatchIndex < activeCommandCount)
             {
-                const float nearDepth = ComputeApproximateSphereNearDepth(ndcDepth, worldRadius, clipCenter.w);
-                if (IsSphereOccludedByHiZ(uvMin, uvMax, nearDepth))
+                gTVBDispatchValid = 1u;
+            }
+        }
+
+        if (gTVBDispatchValid != 0u)
+        {
+            gTVBCommand = LoadClusterCommand(commandIndex);
+            gTVBInstance = LoadInstance(gTVBCommand.instanceIndex);
+            gTVBCluster = LoadClusterTemplate(gTVBCommand.clusterTemplateIndex);
+
+            const float3 localCenter = gTVBCluster.bounds.xyz;
+            const float worldRadius = gTVBCluster.bounds.w * gTVBInstance.scale;
+            const float3 worldCenter = mul(float4(localCenter, 1.0), gTVBInstance.world).xyz;
+
+            bool coarseVisible = SphereVisible(worldCenter, worldRadius);
+            if (coarseVisible)
+            {
+                const float4 clipCenter = mul(float4(worldCenter, 1.0), viewProj);
+                if (clipCenter.w <= 1e-6f)
                 {
                     coarseVisible = false;
                 }
+                else
+                {
+                    const float invW = 1.0f / clipCenter.w;
+                    const float2 ndcCenter = clipCenter.xy * invW;
+                    const float ndcDepth = saturate(clipCenter.z * invW);
+                    const float2 ndcRadius = float2(
+                        worldRadius * abs(projectionScale.x) * abs(invW),
+                        worldRadius * abs(projectionScale.y) * abs(invW));
+
+                    float2 uvMin = (ndcCenter - ndcRadius) * 0.5f + 0.5f;
+                    float2 uvMax = (ndcCenter + ndcRadius) * 0.5f + 0.5f;
+                    const float2 uvPadding = float2(
+                        cullPaddingPixels / max(viewportSize.x, 1.0f),
+                        cullPaddingPixels / max(viewportSize.y, 1.0f));
+                    uvMin -= uvPadding;
+                    uvMax += uvPadding;
+                    uvMin = saturate(uvMin);
+                    uvMax = saturate(uvMax);
+
+                    if (uvMin.x < uvMax.x && uvMin.y < uvMax.y)
+                    {
+                        const float nearDepth = ComputeApproximateSphereNearDepth(ndcDepth, worldRadius, clipCenter.w);
+                        if (IsSphereOccludedByHiZ(uvMin, uvMax, nearDepth))
+                        {
+                            coarseVisible = false;
+                        }
+                    }
+                }
             }
+
+            gTVBCoarseVisible = coarseVisible ? 1u : 0u;
         }
     }
+    GroupMemoryBarrierWithGroupSync();
 
-    if (!coarseVisible || cluster.localTriCount == 0u)
+    if (gTVBDispatchValid == 0u)
+        return;
+
+    if (gTVBCoarseVisible == 0u || gTVBCluster.localTriCount == 0u)
     {
         if (GTid.x == 0u)
         {
             StoreIndexedIndirectArg(
-                gTVBArgsOut,
-                drawCommandIndex,
-                drawCommandIndex,
+                TVBArgsBufferUAV(),
+                gTVBDrawCommandIndex,
+                gTVBDrawCommandIndex,
                 0u,
-                drawCommandIndex * kMaxClusterIndices,
-                cluster.baseVertex,
-                drawCommandIndex);
+                gTVBDrawCommandIndex * kMaxClusterIndices,
+                gTVBCluster.baseVertex,
+                gTVBDrawCommandIndex);
         }
         return;
     }
 
-    if (GTid.x < cluster.localTriCount)
+    if (GTid.x < gTVBCluster.localVertexCount)
     {
-        const uint packed = gTemplatePackedTriangles[cluster.localTriOffset + GTid.x];
+        const uint localVertex = LoadTemplateVertex(gTVBCluster.localVertexOffset + GTid.x);
+        gTVBLocalVertices[GTid.x] = localVertex;
+
+        const uint vertexIndex = gTVBCluster.baseVertex + localVertex;
+        const float4 world = mul(float4(LoadVertex(vertexIndex), 1.0), gTVBInstance.world);
+        gTVBClipPositions[GTid.x] = mul(world, viewProj);
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (GTid.x < gTVBCluster.localTriCount)
+    {
+        const uint packed = LoadTemplatePackedTriangle(gTVBCluster.localTriOffset + GTid.x);
         const uint3 localTri = UnpackTri(packed);
 
-        const uint localVertex0 = gTemplateVertices[cluster.localVertexOffset + localTri.x];
-        const uint localVertex1 = gTemplateVertices[cluster.localVertexOffset + localTri.y];
-        const uint localVertex2 = gTemplateVertices[cluster.localVertexOffset + localTri.z];
+        const uint localVertex0 = gTVBLocalVertices[localTri.x];
+        const uint localVertex1 = gTVBLocalVertices[localTri.y];
+        const uint localVertex2 = gTVBLocalVertices[localTri.z];
 
-        const uint vertexIndex0 = cluster.baseVertex + localVertex0;
-        const uint vertexIndex1 = cluster.baseVertex + localVertex1;
-        const uint vertexIndex2 = cluster.baseVertex + localVertex2;
-
-        const float4 world0 = mul(float4(gVertices[vertexIndex0], 1.0), inst.world);
-        const float4 world1 = mul(float4(gVertices[vertexIndex1], 1.0), inst.world);
-        const float4 world2 = mul(float4(gVertices[vertexIndex2], 1.0), inst.world);
-
-        const float4 clip0 = mul(world0, viewProj);
-        const float4 clip1 = mul(world1, viewProj);
-        const float4 clip2 = mul(world2, viewProj);
+        const float4 clip0 = gTVBClipPositions[localTri.x];
+        const float4 clip1 = gTVBClipPositions[localTri.y];
+        const float4 clip2 = gTVBClipPositions[localTri.z];
 
         const bool culled = CullTriangle(clip0, clip1, clip2);
         if (!culled)
@@ -476,13 +841,13 @@ void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
             uint dstTri = 0u;
             InterlockedAdd(gTVBVisibleTriCount, 1u, dstTri);
 
-            const uint filteredIndexOffset = drawCommandIndex * kMaxClusterIndices + dstTri * 3u;
-            gTVBFilteredIndicesOut.Store((filteredIndexOffset + 0u) * 4u, localVertex0);
-            gTVBFilteredIndicesOut.Store((filteredIndexOffset + 1u) * 4u, localVertex1);
-            gTVBFilteredIndicesOut.Store((filteredIndexOffset + 2u) * 4u, localVertex2);
+            const uint filteredIndexOffset = gTVBDrawCommandIndex * kMaxClusterIndices + dstTri * 3u;
+            StoreTVBFilteredIndexDWord((filteredIndexOffset + 0u) * 4u, localVertex0);
+            StoreTVBFilteredIndexDWord((filteredIndexOffset + 1u) * 4u, localVertex1);
+            StoreTVBFilteredIndexDWord((filteredIndexOffset + 2u) * 4u, localVertex2);
 
-            const uint primitiveOffset = drawCommandIndex * kMaxClusterTriangles + dstTri;
-            gTVBFilteredPrimitiveIDsOut[primitiveOffset] = command.primitiveBase + GTid.x;
+            const uint primitiveOffset = gTVBDrawCommandIndex * kMaxClusterTriangles + dstTri;
+            StoreTVBFilteredPrimitiveID(primitiveOffset, gTVBCommand.primitiveBase + GTid.x);
         }
     }
 
@@ -491,13 +856,13 @@ void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
     if (GTid.x == 0u)
     {
         StoreIndexedIndirectArg(
-            gTVBArgsOut,
-            drawCommandIndex,
-            drawCommandIndex,
+            TVBArgsBufferUAV(),
+            gTVBDrawCommandIndex,
+            gTVBDrawCommandIndex,
             gTVBVisibleTriCount * 3u,
-            drawCommandIndex * kMaxClusterIndices,
-            cluster.baseVertex,
-            drawCommandIndex);
+            gTVBDrawCommandIndex * kMaxClusterIndices,
+            gTVBCluster.baseVertex,
+            gTVBDrawCommandIndex);
     }
 }
 
@@ -505,10 +870,10 @@ void cs_tvb_filter(uint3 Gid : SV_GroupID, uint3 GTid : SV_GroupThreadID)
 void cs_write_mesh_dispatch_args(uint3 DTid : SV_DispatchThreadID)
 {
     (void)DTid;
-    const uint visibleCount = gVisibleCount.Load(0u);
-    gMeshDispatchArgsOut.Store(0u, visibleCount);
-    gMeshDispatchArgsOut.Store(4u, 1u);
-    gMeshDispatchArgsOut.Store(8u, 1u);
+    const uint visibleCount = LoadVisibleCountValue();
+    StoreMeshDispatchArgDWord(0u, visibleCount);
+    StoreMeshDispatchArgDWord(4u, 1u);
+    StoreMeshDispatchArgDWord(8u, 1u);
 }
 
 [numthreads(8, 8, 1)]
@@ -561,7 +926,7 @@ void cs_hash_primitive_id(uint3 DTid : SV_DispatchThreadID)
     const uint hashValue = value * 16777619u ^ (pixel.x * 73856093u) ^ (pixel.y * 19349663u);
 
     uint ignored = 0u;
-    gHashOut.InterlockedXor(0u, hashValue, ignored);
+    InterlockedXorHash(hashValue, ignored);
 }
 
 struct VSOut
@@ -585,11 +950,11 @@ VSOut vs_indexed(IndexedVSIn input)
     uint commandIndex = drawCommandIndex;
     if (pipelineStyle == kPipelineEsoterica)
     {
-        commandIndex = gVisibleCommandIndices[drawCommandIndex];
+        commandIndex = LoadVisibleCommandIndex(drawCommandIndex);
     }
 
-    const ClusterCommand command = gCommands[commandIndex];
-    const InstanceData inst = gInstances[command.instanceIndex];
+    const ClusterCommand command = LoadClusterCommand(commandIndex);
+    const InstanceData inst = LoadInstance(command.instanceIndex);
 
     const float4 worldPos = mul(float4(input.position, 1.0), inst.world);
     output.position = mul(worldPos, viewProj);
@@ -604,10 +969,10 @@ uint ps_indexed(VSOut input, uint primitiveID : SV_PrimitiveID) : SV_Target0
     if (pipelineStyle == kPipelineTVB || pipelineStyle == kPipelineEsoterica)
     {
         const uint primitiveOffset = input.drawCommandIndex * kMaxClusterTriangles + primitiveID;
-        return gTVBFilteredPrimitiveIDs[primitiveOffset] + 1u;
+        return LoadTVBFilteredPrimitiveID(primitiveOffset) + 1u;
     }
 
-    const ClusterCommand command = gCommands[input.commandIndex];
+    const ClusterCommand command = LoadClusterCommand(input.commandIndex);
     return command.primitiveBase + primitiveID + 1u;
 }
 
@@ -644,14 +1009,14 @@ void ms_clusters(
             uint commandIndex = dispatchCommandIndex;
             if (meshUseVisibleList != 0u)
             {
-                const uint visibleCount = gVisibleCount.Load(0u);
+                const uint visibleCount = LoadVisibleCountValue();
                 if (visibleCount > 0u)
                 {
                     if (dispatchCommandIndex < visibleCount)
                     {
-                        commandIndex = gVisibleCommandIndices[dispatchCommandIndex];
-                        const ClusterCommand c = gCommands[commandIndex];
-                        const ClusterTemplate cl = gClusterTemplates[c.clusterTemplateIndex];
+                        commandIndex = LoadVisibleCommandIndex(dispatchCommandIndex);
+                        const ClusterCommand c = LoadClusterCommand(commandIndex);
+                        const ClusterTemplate cl = LoadClusterTemplate(c.clusterTemplateIndex);
                         gMeshCommandIndex = commandIndex;
                         gMeshLocalVertexCount = cl.localVertexCount;
                         gMeshLocalTriCount = cl.localTriCount;
@@ -662,8 +1027,8 @@ void ms_clusters(
                 {
                     // Safety fallback: if visible list is temporarily empty, fall back to direct command indexing.
                     // This avoids a full-frame mesh-path blackout while async history is warming up.
-                    const ClusterCommand c = gCommands[commandIndex];
-                    const ClusterTemplate cl = gClusterTemplates[c.clusterTemplateIndex];
+                    const ClusterCommand c = LoadClusterCommand(commandIndex);
+                    const ClusterTemplate cl = LoadClusterTemplate(c.clusterTemplateIndex);
                     gMeshCommandIndex = commandIndex;
                     gMeshLocalVertexCount = cl.localVertexCount;
                     gMeshLocalTriCount = cl.localTriCount;
@@ -672,8 +1037,8 @@ void ms_clusters(
             }
             else
             {
-                const ClusterCommand c = gCommands[commandIndex];
-                const ClusterTemplate cl = gClusterTemplates[c.clusterTemplateIndex];
+                const ClusterCommand c = LoadClusterCommand(commandIndex);
+                const ClusterTemplate cl = LoadClusterTemplate(c.clusterTemplateIndex);
                 gMeshCommandIndex = commandIndex;
                 gMeshLocalVertexCount = cl.localVertexCount;
                 gMeshLocalTriCount = cl.localTriCount;
@@ -694,14 +1059,14 @@ void ms_clusters(
 
     if (gMeshValid != 0u)
     {
-        const ClusterCommand command = gCommands[gMeshCommandIndex];
-        const ClusterTemplate cluster = gClusterTemplates[command.clusterTemplateIndex];
-        const InstanceData inst = gInstances[command.instanceIndex];
+        const ClusterCommand command = LoadClusterCommand(gMeshCommandIndex);
+        const ClusterTemplate cluster = LoadClusterTemplate(command.clusterTemplateIndex);
+        const InstanceData inst = LoadInstance(command.instanceIndex);
 
         for (uint localVertex = groupThreadID; localVertex < gMeshLocalVertexCount; localVertex += 32u)
         {
-            const uint shapeVertex = gTemplateVertices[cluster.localVertexOffset + localVertex];
-            const float4 worldPos = mul(float4(gVertices[cluster.baseVertex + shapeVertex], 1.0), inst.world);
+            const uint shapeVertex = LoadTemplateVertex(cluster.localVertexOffset + localVertex);
+            const float4 worldPos = mul(float4(LoadVertex(cluster.baseVertex + shapeVertex), 1.0), inst.world);
             gMeshClipPositions[localVertex] = mul(worldPos, viewProj);
         }
 
@@ -709,16 +1074,16 @@ void ms_clusters(
 
         for (uint localTri = groupThreadID; localTri < gMeshLocalTriCount; localTri += 32u)
         {
-            const uint packed = gTemplatePackedTriangles[cluster.localTriOffset + localTri];
-        const uint3 tri = UnpackTri(packed);
-        const float4 clip0 = gMeshClipPositions[tri.x];
-        const float4 clip1 = gMeshClipPositions[tri.y];
-        const float4 clip2 = gMeshClipPositions[tri.z];
-        const bool culled = CullTriangleMesh(clip0, clip1, clip2);
-        if (!culled)
-        {
-            uint dstTri = 0u;
-            InterlockedAdd(gMeshVisibleTriCount, 1u, dstTri);
+            const uint packed = LoadTemplatePackedTriangle(cluster.localTriOffset + localTri);
+            const uint3 tri = UnpackTri(packed);
+            const float4 clip0 = gMeshClipPositions[tri.x];
+            const float4 clip1 = gMeshClipPositions[tri.y];
+            const float4 clip2 = gMeshClipPositions[tri.z];
+            const bool culled = CullTriangleMesh(clip0, clip1, clip2);
+            if (!culled)
+            {
+                uint dstTri = 0u;
+                InterlockedAdd(gMeshVisibleTriCount, 1u, dstTri);
                 gMeshVisibleTriIndices[dstTri] = localTri;
             }
         }
@@ -732,8 +1097,8 @@ void ms_clusters(
     if (gMeshValid == 0u)
         return;
 
-    const ClusterCommand command = gCommands[gMeshCommandIndex];
-    const ClusterTemplate cluster = gClusterTemplates[command.clusterTemplateIndex];
+    const ClusterCommand command = LoadClusterCommand(gMeshCommandIndex);
+    const ClusterTemplate cluster = LoadClusterTemplate(command.clusterTemplateIndex);
 
     for (uint localVertex = groupThreadID; localVertex < gMeshLocalVertexCount; localVertex += 32u)
     {
@@ -744,7 +1109,7 @@ void ms_clusters(
     {
         if (groupThreadID == 0u)
         {
-            const uint packed = gTemplatePackedTriangles[cluster.localTriOffset];
+            const uint packed = LoadTemplatePackedTriangle(cluster.localTriOffset);
             const uint localTri = 0u;
             tris[0u] = UnpackTri(packed);
             prims[0u].globalPrimitiveID = command.primitiveBase + localTri + 1u;
@@ -755,7 +1120,7 @@ void ms_clusters(
     for (uint visibleTri = groupThreadID; visibleTri < gMeshVisibleTriCount; visibleTri += 32u)
     {
         const uint localTri = gMeshVisibleTriIndices[visibleTri];
-        const uint packed = gTemplatePackedTriangles[cluster.localTriOffset + localTri];
+        const uint packed = LoadTemplatePackedTriangle(cluster.localTriOffset + localTri);
         tris[visibleTri] = UnpackTri(packed);
         prims[visibleTri].globalPrimitiveID = command.primitiveBase + localTri + 1u;
     }

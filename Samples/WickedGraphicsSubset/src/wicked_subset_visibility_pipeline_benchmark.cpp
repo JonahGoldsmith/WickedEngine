@@ -114,6 +114,7 @@ using wi::ResourceState;
 using wi::Shader;
 using wi::ShaderModel;
 using wi::ShaderStage;
+using wi::SubresourceType;
 using wi::SwapChain;
 using wi::SwapChainDesc;
 using wi::Texture;
@@ -139,6 +140,7 @@ static constexpr uint32_t kArgByteStride = 20u;
 static constexpr float kPi = 3.14159265358979323846f;
 static constexpr uint32_t kMaxMeshDispatchGroups = 65535u;
 static constexpr uint32_t kCullOutputSlotCount = 2u;
+static constexpr float kSceneRenderScale = 0.75f;
 
 uint32_t ComputeMipCount(uint32_t width, uint32_t height)
 {
@@ -462,8 +464,35 @@ struct SceneCB
     uint32_t hiZSourceMip = 0;
     uint32_t hiZEnabled = 0;
     uint32_t hiZValid = 0;
-    uint32_t padding[3] = {};
+    float cullPaddingPixels = 0.0f;
+    float hiZOcclusionBias = 0.0f;
+    float padding[2] = {};
 };
+
+struct SubsetBindlessCB
+{
+    int32_t vertexBufferSRV = -1;
+    int32_t instanceBufferSRV = -1;
+    int32_t commandBufferSRV = -1;
+    int32_t clusterTemplateBufferSRV = -1;
+    int32_t templateVerticesBufferSRV = -1;
+    int32_t templateTrianglesBufferSRV = -1;
+    int32_t instanceVisibleSRV = -1;
+    int32_t visibleCommandIndicesSRV = -1;
+    int32_t sourceArgsSRV = -1;
+    int32_t tvbFilteredPrimitiveIDsSRV = -1;
+    int32_t visibleCountSRV = -1;
+    int32_t instanceVisibleUAV = -1;
+    int32_t visibleCommandIndicesUAV = -1;
+    int32_t visibleCountUAV = -1;
+    int32_t visibleArgsUAV = -1;
+    int32_t tvbFilteredIndicesUAV = -1;
+    int32_t tvbArgsUAV = -1;
+    int32_t tvbFilteredPrimitiveIDsUAV = -1;
+    int32_t hashUAV = -1;
+    int32_t meshDispatchArgsUAV = -1;
+};
+static_assert(sizeof(SubsetBindlessCB) == 80, "SubsetBindlessCB ABI mismatch");
 
 struct ShapeTemplate
 {
@@ -511,6 +540,12 @@ enum class ScenarioMode : uint32_t
     HighCulling = 1,
 };
 
+enum class BindingMode : uint32_t
+{
+    Bindful = 0,
+    Bindless = 1,
+};
+
 struct ComboConfig
 {
     SuiteMode suite = SuiteMode::Portable;
@@ -539,13 +574,15 @@ struct AggregateStats
     std::vector<uint32_t> hashValues;
 };
 
-static constexpr std::array<TierPreset, 6> kTierPresets = {
+static constexpr std::array<TierPreset, 8> kTierPresets = {
     TierPreset{ "500K", 500'000ull },
     TierPreset{ "1M", 1'000'000ull },
     TierPreset{ "2M", 2'000'000ull },
     TierPreset{ "5M", 5'000'000ull },
     TierPreset{ "10M", 10'000'000ull },
     TierPreset{ "20M", 20'000'000ull },
+    TierPreset{ "100M", 100'000'000ull },
+    TierPreset{ "150M", 150'000'000ull },
 };
 
 const char* PipelineName(PipelineStyle p)
@@ -571,6 +608,11 @@ const char* SuiteName(SuiteMode s)
 const char* ScenarioName(ScenarioMode s)
 {
     return s == ScenarioMode::HighCulling ? "HighCulling" : "AllVisible";
+}
+
+const char* BindingModeName(BindingMode mode)
+{
+    return mode == BindingMode::Bindless ? "Bindless" : "Bindful";
 }
 
 const char* BackendName()
@@ -940,10 +982,11 @@ public:
         LogActiveTier();
 
         SDL_Log(
-            "[WickedVisibilityPipelineBenchmark] initialized | backend=%s | mesh=%s | async_compute=%s | instances=%u | commands=%u | auto-run=%s | camera=fly",
+            "[WickedVisibilityPipelineBenchmark] initialized | backend=%s | mesh=%s | async_compute=%s | binding=%s | instances=%u | commands=%u | auto-run=%s | camera=fly",
             BackendName(),
             supportsMeshShaders_ ? "yes" : "no",
             asyncComputeEnabled_ ? "yes" : "no",
+            BindingModeName(activeBindingMode_),
             totalInstanceCount_,
             totalCommandCount_,
             autoRun_ ? "on" : "off");
@@ -1039,22 +1082,34 @@ public:
 
         pipelineIndexed_ = {};
         pipelineMesh_ = {};
+        pipelineIndexedBindless_ = {};
+        pipelineMeshBindless_ = {};
         pipelinePresent_ = {};
         csInstanceFilter_ = {};
+        csInstanceFilterBindless_ = {};
         csClusterFilter_ = {};
+        csClusterFilterBindless_ = {};
         csCompactArgs_ = {};
         csTVBFilter_ = {};
+        csTVBFilterBindless_ = {};
         csHiZInit_ = {};
         csHiZDownsample_ = {};
         csHash_ = {};
+        csHashBindless_ = {};
         csMeshArgs_ = {};
 
         vsIndexed_ = {};
+        vsIndexedBindless_ = {};
         msCluster_ = {};
+        msClusterBindless_ = {};
         psIndexed_ = {};
+        psIndexedBindless_ = {};
         psMesh_ = {};
+        psMeshBindless_ = {};
         vsPresent_ = {};
         psPresent_ = {};
+        bindlessShadersAvailable_ = false;
+        activeBindingMode_ = BindingMode::Bindful;
 
         wi::DestroyInputLayout(indexedInputLayout_);
 
@@ -1225,7 +1280,7 @@ private:
         hiZOcclusionValid_ = false;
     }
 
-    bool CompileShader(ShaderStage stage, const char* entrypoint, Shader* shader)
+    bool CompileShader(ShaderStage stage, const char* entrypoint, Shader* shader, bool bindless = false)
     {
         wi::shadercompiler::CompilerInput input;
         input.flags = wi::shadercompiler::Flags::STRIP_REFLECTION;
@@ -1239,12 +1294,21 @@ private:
         {
             input.include_directories.push_back(WICKED_SUBSET_ENGINE_SHADER_DIR);
         }
+        if (bindless)
+        {
+            input.defines.push_back("WICKED_SUBSET_BINDLESS=1");
+        }
 
         wi::shadercompiler::CompilerOutput output;
         wi::shadercompiler::Compile(input, output);
         if (!output.IsValid())
         {
-            std::fprintf(stderr, "Shader compile failed (%s): %s\n", entrypoint, output.error_message.c_str());
+            std::fprintf(
+                stderr,
+                "Shader compile failed (%s, binding=%s): %s\n",
+                entrypoint,
+                bindless ? "bindless" : "bindful",
+                output.error_message.c_str());
             return false;
         }
 
@@ -1356,6 +1420,56 @@ private:
                 std::fprintf(stderr, "CreatePipelineState(mesh) failed\n");
                 return false;
             }
+        }
+
+        bindlessShadersAvailable_ = false;
+        bool bindlessReady = true;
+        bindlessReady &= CompileShader(ShaderStage::VS, "vs_indexed", &vsIndexedBindless_, true);
+        bindlessReady &= CompileShader(ShaderStage::PS, "ps_indexed", &psIndexedBindless_, true);
+        bindlessReady &= CompileShader(ShaderStage::CS, "cs_instance_filter", &csInstanceFilterBindless_, true);
+        bindlessReady &= CompileShader(ShaderStage::CS, "cs_cluster_filter", &csClusterFilterBindless_, true);
+        bindlessReady &= CompileShader(ShaderStage::CS, "cs_tvb_filter", &csTVBFilterBindless_, true);
+        bindlessReady &= CompileShader(ShaderStage::CS, "cs_hash_primitive_id", &csHashBindless_, true);
+        if (supportsMeshShaders_)
+        {
+            bindlessReady &= CompileShader(ShaderStage::MS, "ms_clusters", &msClusterBindless_, true);
+            bindlessReady &= CompileShader(ShaderStage::PS, "ps_mesh", &psMeshBindless_, true);
+        }
+
+        if (bindlessReady)
+        {
+            PipelineStateDesc bindlessPSO = {};
+            bindlessPSO.vs = &vsIndexedBindless_;
+            bindlessPSO.ps = &psIndexedBindless_;
+            bindlessPSO.il = &indexedInputLayout_;
+            bindlessPSO.rs = &rasterState_;
+            bindlessPSO.dss = &depthStencilState_;
+            bindlessPSO.bs = &blendState_;
+            bindlessPSO.pt = PrimitiveTopology::TRIANGLELIST;
+            bindlessReady &= device_->CreatePipelineState(&bindlessPSO, &pipelineIndexedBindless_);
+
+            if (supportsMeshShaders_)
+            {
+                PipelineStateDesc meshBindlessPSO = {};
+                meshBindlessPSO.ms = &msClusterBindless_;
+                meshBindlessPSO.ps = &psMeshBindless_;
+                meshBindlessPSO.rs = &rasterState_;
+                meshBindlessPSO.dss = &depthStencilState_;
+                meshBindlessPSO.bs = &blendState_;
+                meshBindlessPSO.pt = PrimitiveTopology::TRIANGLELIST;
+                bindlessReady &= device_->CreatePipelineState(&meshBindlessPSO, &pipelineMeshBindless_);
+            }
+        }
+
+        bindlessShadersAvailable_ = bindlessReady;
+        if (!bindlessShadersAvailable_)
+        {
+            activeBindingMode_ = BindingMode::Bindful;
+            SDL_Log("[WickedVisibilityPipelineBenchmark] bindless shader variant unavailable; using bindful mode");
+        }
+        else
+        {
+            SDL_Log("[WickedVisibilityPipelineBenchmark] bindless shader variant ready (toggle with [K])");
         }
 
         return true;
@@ -1561,7 +1675,7 @@ private:
 
         const uint32_t instanceCount = static_cast<uint32_t>(shapeSequence.size());
         const uint32_t side = static_cast<uint32_t>(std::ceil(std::cbrt(static_cast<double>(std::max(1u, instanceCount)))));
-        const float spacing = 5.2f;
+        const float spacing = 5.2f * kSceneRenderScale;
         const float half = static_cast<float>(side - 1u) * 0.5f;
         sceneExtent_ = std::max(20.0f, half * spacing);
 
@@ -1575,9 +1689,9 @@ private:
             const uint32_t y = (instanceIndex / side) % side;
             const uint32_t z = instanceIndex / (side * side);
 
-            const float jitterX = (Hash01(instanceIndex * 7u + 13u) - 0.5f) * 0.35f;
-            const float jitterY = (Hash01(instanceIndex * 13u + 5u) - 0.5f) * 0.35f;
-            const float jitterZ = (Hash01(instanceIndex * 17u + 9u) - 0.5f) * 0.35f;
+            const float jitterX = (Hash01(instanceIndex * 7u + 13u) - 0.5f) * 0.35f * kSceneRenderScale;
+            const float jitterY = (Hash01(instanceIndex * 13u + 5u) - 0.5f) * 0.35f * kSceneRenderScale;
+            const float jitterZ = (Hash01(instanceIndex * 17u + 9u) - 0.5f) * 0.35f * kSceneRenderScale;
 
             const Vec3 translation = {
                 (static_cast<float>(x) - half) * spacing + jitterX,
@@ -1585,7 +1699,7 @@ private:
                 (static_cast<float>(z) - half) * spacing + jitterZ,
             };
 
-            const float scale = 0.75f + Hash01(instanceIndex * 31u + 7u) * 0.65f;
+            const float scale = (0.75f + Hash01(instanceIndex * 31u + 7u) * 0.65f) * kSceneRenderScale;
 
             GPUInstanceData instance = {};
             instance.world = MatScaleTranslate(scale, translation);
@@ -2081,11 +2195,12 @@ private:
         ResetCullFrameOverlap();
 
         SDL_Log(
-            "[WickedVisibilityPipelineBenchmark] combo -> suite=%s | pipeline=%s | scenario=%s | tier=%s | commands=%u | instances=%u",
+            "[WickedVisibilityPipelineBenchmark] combo -> suite=%s | pipeline=%s | scenario=%s | tier=%s | binding=%s | commands=%u | instances=%u",
             SuiteName(activeSuite_),
             PipelineName(activePipeline_),
             ScenarioName(activeScenario_),
             kTierPresets[activeTier_].name,
+            BindingModeName(activeBindingMode_),
             activeCommandCount_,
             activeInstanceCount_);
     }
@@ -2358,14 +2473,38 @@ private:
             SDL_Log("[WickedVisibilityPipelineBenchmark] Hi-Z occlusion -> %s", hiZOcclusionEnabled_ ? "enabled" : "disabled");
             return;
         }
+        else if (key == SDLK_COMMA)
+        {
+            cullPaddingPixels_ = std::max(0.0f, cullPaddingPixels_ - 1.0f);
+            SDL_Log("[WickedVisibilityPipelineBenchmark] cull padding -> %.2f px", cullPaddingPixels_);
+            return;
+        }
+        else if (key == SDLK_PERIOD)
+        {
+            cullPaddingPixels_ = std::min(64.0f, cullPaddingPixels_ + 1.0f);
+            SDL_Log("[WickedVisibilityPipelineBenchmark] cull padding -> %.2f px", cullPaddingPixels_);
+            return;
+        }
+        else if (key == SDLK_K)
+        {
+            if (!bindlessShadersAvailable_)
+            {
+                SDL_Log("[WickedVisibilityPipelineBenchmark] bindless toggle unavailable (variant failed to compile)");
+                return;
+            }
+            activeBindingMode_ = activeBindingMode_ == BindingMode::Bindful ? BindingMode::Bindless : BindingMode::Bindful;
+            SDL_Log("[WickedVisibilityPipelineBenchmark] resource binding mode -> %s", BindingModeName(activeBindingMode_));
+            return;
+        }
         else if (key == SDLK_P)
         {
             SDL_Log(
-                "[WickedVisibilityPipelineBenchmark] snapshot | suite=%s pipeline=%s scenario=%s tier=%s cmd=%u inst=%u async=%s hiz=%s cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms visible=%u hash=%u",
+                "[WickedVisibilityPipelineBenchmark] snapshot | suite=%s pipeline=%s scenario=%s tier=%s binding=%s cmd=%u inst=%u async=%s hiz=%s cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms visible=%u hash=%u",
                 SuiteName(activeSuite_),
                 PipelineName(activePipeline_),
                 ScenarioName(activeScenario_),
                 kTierPresets[activeTier_].name,
+                BindingModeName(activeBindingMode_),
                 activeCommandCount_,
                 activeInstanceCount_,
                 IsAsyncCullActiveForCurrentMode() ? "on" : "off",
@@ -2469,6 +2608,8 @@ private:
         SDL_Log("  [1/2/3] pipeline Wicked/TVB/Esoterica | [M] suite Portable/Mesh");
         SDL_Log("  [Z/X] scenario AllVisible/HighCulling | [UP/DOWN] or [[/]] or [PgUp/PgDn] triangle tier");
         SDL_Log("  [J] toggle async compute cull queue | [O] toggle Hi-Z occlusion | [V] toggle validation/hash pass");
+        SDL_Log("  [,/.] decrease/increase cull padding pixels");
+        SDL_Log("  [K] toggle bindful/bindless resource mode");
         SDL_Log("  [P] print current perf snapshot | [H] print controls and path summary");
     }
 
@@ -2480,6 +2621,7 @@ private:
         SDL_Log("  Esoterica: instance+cluster (sphere+Hi-Z) cull -> TVB triangle filtering on visible clusters");
         SDL_Log("  Shared backbone: GPU instance cull, cluster cull, TVB filtering, and Hi-Z depth pyramid build");
         SDL_Log("  Queueing: async mode uses one-frame-lag ping-pong so frame N draw can overlap frame N+1 cull");
+        SDL_Log("  Resource binding: [K] toggles bindful slots vs bindless descriptor-index CB");
     }
 
     void LogActiveTier() const
@@ -2490,6 +2632,46 @@ private:
             static_cast<unsigned long long>(kTierPresets[activeTier_].targetTriangles),
             activeCommandCount_,
             activeInstanceCount_);
+    }
+
+    bool UseBindlessMode() const
+    {
+        return activeBindingMode_ == BindingMode::Bindless && bindlessShadersAvailable_;
+    }
+
+    SubsetBindlessCB BuildBindlessCB(uint32_t slot)
+    {
+        SubsetBindlessCB cb = {};
+        GPUBuffer* visibleCommandIndicesBuffer = VisibleCommandIndicesBuffer(slot);
+        GPUBuffer* visibleCountBuffer = VisibleCountBuffer(slot);
+        GPUBuffer* visibleArgsBuffer = VisibleArgsBuffer(slot);
+        GPUBuffer* tvbFilteredIndexBuffer = TVBFilteredIndexBuffer(slot);
+        GPUBuffer* tvbArgsBuffer = TVBArgsBuffer(slot);
+        GPUBuffer* tvbFilteredPrimitiveIDBuffer = TVBFilteredPrimitiveIDBuffer(slot);
+        GPUBuffer* meshDispatchArgsBuffer = MeshDispatchArgsBuffer(slot);
+
+        cb.vertexBufferSRV = device_->GetDescriptorIndex(&vertexBuffer_, SubresourceType::SRV);
+        cb.instanceBufferSRV = device_->GetDescriptorIndex(&instanceBuffer_, SubresourceType::SRV);
+        cb.commandBufferSRV = device_->GetDescriptorIndex(&commandBuffer_, SubresourceType::SRV);
+        cb.clusterTemplateBufferSRV = device_->GetDescriptorIndex(&clusterTemplateBuffer_, SubresourceType::SRV);
+        cb.templateVerticesBufferSRV = device_->GetDescriptorIndex(&templateVerticesBuffer_, SubresourceType::SRV);
+        cb.templateTrianglesBufferSRV = device_->GetDescriptorIndex(&templateTrianglesBuffer_, SubresourceType::SRV);
+        cb.instanceVisibleSRV = device_->GetDescriptorIndex(&instanceVisibleBuffer_, SubresourceType::SRV);
+        cb.visibleCommandIndicesSRV = device_->GetDescriptorIndex(visibleCommandIndicesBuffer, SubresourceType::SRV);
+        cb.sourceArgsSRV = device_->GetDescriptorIndex(&baseArgsBuffer_, SubresourceType::SRV);
+        cb.tvbFilteredPrimitiveIDsSRV = device_->GetDescriptorIndex(tvbFilteredPrimitiveIDBuffer, SubresourceType::SRV);
+        cb.visibleCountSRV = device_->GetDescriptorIndex(visibleCountBuffer, SubresourceType::SRV);
+
+        cb.instanceVisibleUAV = device_->GetDescriptorIndex(&instanceVisibleBuffer_, SubresourceType::UAV);
+        cb.visibleCommandIndicesUAV = device_->GetDescriptorIndex(visibleCommandIndicesBuffer, SubresourceType::UAV);
+        cb.visibleCountUAV = device_->GetDescriptorIndex(visibleCountBuffer, SubresourceType::UAV);
+        cb.visibleArgsUAV = device_->GetDescriptorIndex(visibleArgsBuffer, SubresourceType::UAV);
+        cb.tvbFilteredIndicesUAV = device_->GetDescriptorIndex(tvbFilteredIndexBuffer, SubresourceType::UAV);
+        cb.tvbArgsUAV = device_->GetDescriptorIndex(tvbArgsBuffer, SubresourceType::UAV);
+        cb.tvbFilteredPrimitiveIDsUAV = device_->GetDescriptorIndex(tvbFilteredPrimitiveIDBuffer, SubresourceType::UAV);
+        cb.hashUAV = device_->GetDescriptorIndex(&hashBuffer_, SubresourceType::UAV);
+        cb.meshDispatchArgsUAV = device_->GetDescriptorIndex(meshDispatchArgsBuffer, SubresourceType::UAV);
+        return cb;
     }
 
     bool RenderFrame(float dt, FrameMetrics* outMetrics)
@@ -2532,6 +2714,8 @@ private:
         sceneCB.hiZSourceMip = 0u;
         sceneCB.hiZEnabled = hiZOcclusionEnabled_ ? 1u : 0u;
         sceneCB.hiZValid = hiZOcclusionValid_ ? 1u : 0u;
+        sceneCB.cullPaddingPixels = cullPaddingPixels_;
+        sceneCB.hiZOcclusionBias = hiZOcclusionBias_;
 
         FrameMetrics metrics = {};
         const uint32_t frameIndex = device_->GetBufferIndex();
@@ -2678,6 +2862,10 @@ private:
 
     void ExecuteCullStage(const SceneCB& sceneCB, CommandList cmd, uint32_t cullSlot)
     {
+        const Shader* csInstanceFilter = UseBindlessMode() ? &csInstanceFilterBindless_ : &csInstanceFilter_;
+        const Shader* csClusterFilter = UseBindlessMode() ? &csClusterFilterBindless_ : &csClusterFilter_;
+        const Shader* csTVBFilter = UseBindlessMode() ? &csTVBFilterBindless_ : &csTVBFilter_;
+
         GPUBuffer* visibleCommandIndicesBuffer = VisibleCommandIndicesBuffer(cullSlot);
         GPUBuffer* visibleCountBuffer = VisibleCountBuffer(cullSlot);
         GPUBuffer* visibleArgsBuffer = VisibleArgsBuffer(cullSlot);
@@ -2706,7 +2894,7 @@ private:
 
         if (activePipeline_ == PipelineStyle::TVB)
         {
-            device_->BindComputeShader(&csTVBFilter_, cmd);
+            device_->BindComputeShader(csTVBFilter, cmd);
             for (uint32_t dispatchBase = 0; dispatchBase < activeCommandCount_; dispatchBase += kMaxMeshDispatchGroups)
             {
                 const uint32_t dispatchCount = std::min(kMaxMeshDispatchGroups, activeCommandCount_ - dispatchBase);
@@ -2719,13 +2907,13 @@ private:
             return;
         }
 
-        device_->BindComputeShader(&csInstanceFilter_, cmd);
+        device_->BindComputeShader(csInstanceFilter, cmd);
         const uint32_t instanceGroups = (activeInstanceCount_ + 63u) / 64u;
         device_->Dispatch(std::max(1u, instanceGroups), 1, 1, cmd);
         device_->Barrier(cmd);
         TransitionBufferState(&instanceVisibleBuffer_, &instanceVisibleBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
 
-        device_->BindComputeShader(&csClusterFilter_, cmd);
+        device_->BindComputeShader(csClusterFilter, cmd);
         const uint32_t commandGroups = (activeCommandCount_ + 63u) / 64u;
         device_->Dispatch(std::max(1u, commandGroups), 1, 1, cmd);
         device_->Barrier(cmd);
@@ -2734,7 +2922,7 @@ private:
 
         if (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable)
         {
-            device_->BindComputeShader(&csTVBFilter_, cmd);
+            device_->BindComputeShader(csTVBFilter, cmd);
             for (uint32_t dispatchBase = 0; dispatchBase < activeCommandCount_; dispatchBase += kMaxMeshDispatchGroups)
             {
                 const uint32_t dispatchCount = std::min(kMaxMeshDispatchGroups, activeCommandCount_ - dispatchBase);
@@ -2800,7 +2988,8 @@ private:
 
         if (activeSuite_ == SuiteMode::Mesh && supportsMeshShaders_ && activePipeline_ != PipelineStyle::TVB)
         {
-            device_->BindPipelineState(&pipelineMesh_, cmd);
+            const PipelineState* meshPipeline = UseBindlessMode() ? &pipelineMeshBindless_ : &pipelineMesh_;
+            device_->BindPipelineState(meshPipeline, cmd);
             BindCommonResources(cmd, drawSlot);
 
             for (uint32_t dispatchBase = 0; dispatchBase < activeCommandCount_; dispatchBase += kMaxMeshDispatchGroups)
@@ -2814,7 +3003,8 @@ private:
         }
         else
         {
-            device_->BindPipelineState(&pipelineIndexed_, cmd);
+            const PipelineState* indexedPipeline = UseBindlessMode() ? &pipelineIndexedBindless_ : &pipelineIndexed_;
+            device_->BindPipelineState(indexedPipeline, cmd);
             device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
             BindCommonResources(cmd, drawSlot);
 
@@ -2903,7 +3093,8 @@ private:
         device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
         BindCommonResources(cmd, drawSlot);
 
-        device_->BindComputeShader(&csHash_, cmd);
+        const Shader* csHash = UseBindlessMode() ? &csHashBindless_ : &csHash_;
+        device_->BindComputeShader(csHash, cmd);
 
         const uint32_t groupCountX = (swapchain_.desc.width + 7u) / 8u;
         const uint32_t groupCountY = (swapchain_.desc.height + 7u) / 8u;
@@ -2948,6 +3139,14 @@ private:
         GPUBuffer* tvbArgsBuffer = TVBArgsBuffer(slot);
         GPUBuffer* tvbFilteredPrimitiveIDBuffer = TVBFilteredPrimitiveIDBuffer(slot);
         GPUBuffer* meshDispatchArgsBuffer = MeshDispatchArgsBuffer(slot);
+
+        if (UseBindlessMode())
+        {
+            const SubsetBindlessCB bindlessCB = BuildBindlessCB(slot);
+            device_->BindDynamicConstantBuffer(bindlessCB, 1, cmd);
+            device_->BindResource(&primitiveIDTexture_, 11, cmd);
+            return;
+        }
 
         device_->BindResource(&vertexBuffer_, 0, cmd);
         device_->BindResource(&instanceBuffer_, 1, cmd);
@@ -3098,6 +3297,7 @@ private:
         if (!exists)
         {
             out << "timestamp,backend,suite,pipeline,scenario,tier,active_instances,active_commands,"
+                << "binding,"
                 << "avg_cpu_ms,avg_gpu_cull_ms,avg_gpu_draw_ms,avg_gpu_frame_ms,p95_gpu_frame_ms,median_visible_commands,hash_median\n";
         }
 
@@ -3136,6 +3336,7 @@ private:
             << kTierPresets[combo.tierIndex].name << ","
             << activeInstanceCount_ << ","
             << activeCommandCount_ << ","
+            << BindingModeName(activeBindingMode_) << ","
             << avgCPU << ","
             << avgCull << ","
             << avgDraw << ","
@@ -3164,11 +3365,12 @@ private:
         std::snprintf(
             title,
             sizeof(title),
-            "Visibility Benchmark [%s] | %s | %s | %s | tier %s (%.1fM tris) | cmd %u vis %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | async=%s hiz=%s auto=%s",
+            "Visibility Benchmark [%s] | %s | %s | %s | %s | tier %s (%.1fM tris) | cmd %u vis %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | async=%s hiz=%s auto=%s",
             BackendName(),
             SuiteName(activeSuite_),
             PipelineName(activePipeline_),
             ScenarioName(activeScenario_),
+            BindingModeName(activeBindingMode_),
             kTierPresets[activeTier_].name,
             tierMillions,
             activeCommandCount_,
@@ -3196,23 +3398,33 @@ private:
     SwapChain swapchain_ = {};
 
     Shader vsIndexed_ = {};
+    Shader vsIndexedBindless_ = {};
     Shader msCluster_ = {};
+    Shader msClusterBindless_ = {};
     Shader psIndexed_ = {};
+    Shader psIndexedBindless_ = {};
     Shader psMesh_ = {};
+    Shader psMeshBindless_ = {};
     Shader vsPresent_ = {};
     Shader psPresent_ = {};
 
     Shader csInstanceFilter_ = {};
+    Shader csInstanceFilterBindless_ = {};
     Shader csClusterFilter_ = {};
+    Shader csClusterFilterBindless_ = {};
     Shader csCompactArgs_ = {};
     Shader csTVBFilter_ = {};
+    Shader csTVBFilterBindless_ = {};
     Shader csHiZInit_ = {};
     Shader csHiZDownsample_ = {};
     Shader csHash_ = {};
+    Shader csHashBindless_ = {};
     Shader csMeshArgs_ = {};
 
     PipelineState pipelineIndexed_ = {};
+    PipelineState pipelineIndexedBindless_ = {};
     PipelineState pipelineMesh_ = {};
+    PipelineState pipelineMeshBindless_ = {};
     PipelineState pipelinePresent_ = {};
     InputLayout indexedInputLayout_ = {};
     RasterizerState rasterState_ = {};
@@ -3288,10 +3500,12 @@ private:
     std::array<uint32_t, kTierPresets.size()> tierActiveInstanceCount_ = {};
 
     bool supportsMeshShaders_ = false;
+    bool bindlessShadersAvailable_ = false;
 
     SuiteMode activeSuite_ = SuiteMode::Portable;
     PipelineStyle activePipeline_ = PipelineStyle::Wicked;
     ScenarioMode activeScenario_ = ScenarioMode::AllVisible;
+    BindingMode activeBindingMode_ = BindingMode::Bindful;
     uint32_t activeTier_ = 3;
 
     uint32_t activeCommandCount_ = 0;
@@ -3303,6 +3517,8 @@ private:
     bool hiZOcclusionEnabled_ = true;
     bool hiZOcclusionValid_ = false;
     uint32_t hiZMipCount_ = 1u;
+    float cullPaddingPixels_ = 6.0f;
+    float hiZOcclusionBias_ = 0.0025f;
     bool asyncComputeEnabled_ = true;
     bool cullHistoryValid_ = false;
     uint32_t cullReadSlot_ = 0u;
