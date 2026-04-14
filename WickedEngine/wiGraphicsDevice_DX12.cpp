@@ -59,6 +59,8 @@ namespace wi
 {
 namespace dx12_internal
 {
+	using Semaphore = GraphicsDevice_DX12::Semaphore;
+
 #ifdef PLATFORM_XBOX
 // No renderpass API on xbox yet
 #define DISABLE_RENDERPASS
@@ -136,7 +138,7 @@ namespace dx12_internal
 			return "UNKNOWN";
 		}
 	}
-	inline void DX12LogSemaphoreArray(const char* prefix, Semaphore** semaphores)
+	inline void DX12LogSemaphoreArray(const char* prefix, const Semaphore* const* semaphores)
 	{
 		if (!DX12SubmitDebugEnabled())
 			return;
@@ -1920,7 +1922,7 @@ std::mutex queue_locker;
 				DX12_ASSERT_MSG(false, "GraphicsDevice_DX12::CommandQueue::submit: null command list in queue submit list.");
 				if (debug_submit)
 				{
-					DX12_LOG("  [%zu] null command list (skipped)");
+					DX12_LOG("  [%zu] null command list (skipped)", i);
 				}
 				continue;
 			}

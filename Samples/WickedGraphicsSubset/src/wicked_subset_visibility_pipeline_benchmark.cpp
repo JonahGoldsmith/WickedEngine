@@ -3614,8 +3614,8 @@ private:
     void PrepareAsyncCullBaselineStates(CommandList cmd, uint32_t slot)
     {
         // Keep resources that async cull can touch in compute-compatible states.
-        // This avoids compute-queue transitions from graphics-only states (for example: INDEX).
-        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
+        // This avoids compute-queue transitions from graphics-only states (for example: VERTEX_BUFFER).
+        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
         TransitionBufferState(InstanceBuffer(slot), InstanceBufferState(slot), ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
         TransitionBufferState(VisibleCommandIndicesBuffer(slot), VisibleCommandIndicesBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(VisibleCountBuffer(slot), VisibleCountBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
