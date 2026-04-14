@@ -2612,11 +2612,21 @@ private:
             TransitionBufferState(tvbArgsBuffer, TVBArgsBufferState(drawSlot), ResourceState::INDIRECT_ARGUMENT, cmd);
             TransitionBufferState(tvbFilteredPrimitiveIDBuffer, TVBFilteredPrimitiveIDBufferState(drawSlot), ResourceState::SHADER_RESOURCE, cmd);
             TransitionBufferState(visibleCommandIndicesBuffer, VisibleCommandIndicesBufferState(drawSlot), ResourceState::SHADER_RESOURCE, cmd);
+            TransitionBufferState(
+                visibleCountBuffer,
+                VisibleCountBufferState(drawSlot),
+                ResourceState::SHADER_RESOURCE | ResourceState::INDIRECT_ARGUMENT,
+                cmd);
         }
         else
         {
             TransitionBufferState(&clusterIndexBuffer_, &clusterIndexBufferState_, ResourceState::INDEX_BUFFER, cmd);
             TransitionBufferState(visibleArgsBuffer, VisibleArgsBufferState(drawSlot), ResourceState::INDIRECT_ARGUMENT, cmd);
+            TransitionBufferState(
+                visibleCountBuffer,
+                VisibleCountBufferState(drawSlot),
+                ResourceState::SHADER_RESOURCE | ResourceState::INDIRECT_ARGUMENT,
+                cmd);
         }
     }
 
@@ -3386,23 +3396,39 @@ private:
                 cullSlot = cullWriteSlot_;
             }
         }
-        SubmissionToken explicitSubmitDependencies[2] = {};
+        SubmissionToken explicitSubmitDependencies[3] = {};
         uint32_t explicitSubmitDependencyCount = 0;
+        auto appendSubmitDependency = [&](const SubmissionToken& dependency) {
+            if (!dependency.IsValid() || explicitSubmitDependencyCount >= arraysize(explicitSubmitDependencies))
+                return;
+            for (uint32_t i = 0; i < explicitSubmitDependencyCount; ++i)
+            {
+                if (explicitSubmitDependencies[i].queue_mask != dependency.queue_mask)
+                    continue;
+                bool same = true;
+                for (uint32_t q = 0; q < wi::QUEUE_COUNT; ++q)
+                {
+                    if (explicitSubmitDependencies[i].values[q] != dependency.values[q])
+                    {
+                        same = false;
+                        break;
+                    }
+                }
+                if (same)
+                    return;
+            }
+            explicitSubmitDependencies[explicitSubmitDependencyCount++] = dependency;
+        };
         if (useAsyncComputeForCull && tokenSubmissionEnabled_ && cullHistoryValid_)
         {
-            const SubmissionToken drawDependency = cullCompletionTokens_[drawSlot];
-            if (drawDependency.IsValid())
-            {
-                explicitSubmitDependencies[explicitSubmitDependencyCount++] = drawDependency;
-            }
+            appendSubmitDependency(cullCompletionTokens_[drawSlot]);
+            // With a 2-slot cull ring, the next async-cull write slot was read by prior-frame draw.
+            // Waiting on previous graphics completion avoids write-after-read hazards (flicker).
+            appendSubmitDependency(lastGraphicsCompletionToken_);
         }
         if (useAsyncComputeForCull && tokenSubmissionEnabled_ && hiZOcclusionEnabled_ && hiZOcclusionValid_)
         {
-            const SubmissionToken hiZReady = lastGraphicsCompletionToken_;
-            if (hiZReady.IsValid() && explicitSubmitDependencyCount < arraysize(explicitSubmitDependencies))
-            {
-                explicitSubmitDependencies[explicitSubmitDependencyCount++] = hiZReady;
-            }
+            appendSubmitDependency(lastGraphicsCompletionToken_);
         }
 
         GPUBuffer* drawVisibleCountBuffer = VisibleCountBuffer(drawSlot);
