@@ -10048,7 +10048,6 @@ using namespace vulkan_internal;
 				constexpr VkPipelineStageFlags2 kInvalidGraphicsOnlyStages =
 					VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
 					VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
-					VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
 					VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
 					VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
 					VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
@@ -10056,7 +10055,58 @@ using namespace vulkan_internal;
 
 				if ((mask & kInvalidGraphicsOnlyStages) != 0)
 				{
-					return VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+					mask &= ~kInvalidGraphicsOnlyStages;
+
+					if (mask == VK_PIPELINE_STAGE_2_NONE)
+					{
+						return VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+					}
+				}
+			}
+
+			return mask;
+		};
+
+		auto sanitize_barrier_access_mask = [&](VkAccessFlags2 mask)
+		{
+			if (commandlist.queue == QUEUE_COMPUTE)
+			{
+				if (mask & VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT)
+				{
+					mask &= ~VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
+					mask |= VK_ACCESS_2_SHADER_READ_BIT;
+				}
+				if (mask & VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT)
+				{
+					mask &= ~VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+					mask |= VK_ACCESS_2_SHADER_WRITE_BIT;
+				}
+				if (mask & VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT)
+				{
+					mask &= ~VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+					mask |= VK_ACCESS_2_SHADER_READ_BIT;
+				}
+				if (mask & VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+				{
+					mask &= ~VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+					mask |= VK_ACCESS_2_SHADER_WRITE_BIT;
+				}
+				if (mask & VK_ACCESS_2_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR)
+				{
+					mask &= ~VK_ACCESS_2_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR;
+					mask |= VK_ACCESS_2_SHADER_READ_BIT;
+				}
+
+				if (mask & VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT)
+				{
+					mask &= ~VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+					mask |= VK_ACCESS_2_SHADER_READ_BIT;
+				}
+
+				if (mask & VK_ACCESS_2_INDEX_READ_BIT)
+				{
+					mask &= ~VK_ACCESS_2_INDEX_READ_BIT;
+					mask |= VK_ACCESS_2_SHADER_READ_BIT;
 				}
 			}
 
@@ -10122,8 +10172,8 @@ using namespace vulkan_internal;
 				barrierdesc.newLayout = _ConvertImageLayout(barrier.image.layout_after);
 				barrierdesc.srcStageMask = sanitize_barrier_stage_mask(_ConvertPipelineStage(barrier.image.layout_before));
 				barrierdesc.dstStageMask = sanitize_barrier_stage_mask(_ConvertPipelineStage(barrier.image.layout_after));
-				barrierdesc.srcAccessMask = _ParseResourceState(barrier.image.layout_before);
-				barrierdesc.dstAccessMask = _ParseResourceState(barrier.image.layout_after);
+				barrierdesc.srcAccessMask = sanitize_barrier_access_mask(_ParseResourceState(barrier.image.layout_before));
+				barrierdesc.dstAccessMask = sanitize_barrier_access_mask(_ParseResourceState(barrier.image.layout_after));
 				if (IsFormatDepthSupport(desc.format))
 				{
 					barrierdesc.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -10190,8 +10240,8 @@ using namespace vulkan_internal;
 				barrierdesc.offset = 0;
 				barrierdesc.srcStageMask = sanitize_barrier_stage_mask(_ConvertPipelineStage(barrier.buffer.state_before));
 				barrierdesc.dstStageMask = sanitize_barrier_stage_mask(_ConvertPipelineStage(barrier.buffer.state_after));
-				barrierdesc.srcAccessMask = _ParseResourceState(barrier.buffer.state_before);
-				barrierdesc.dstAccessMask = _ParseResourceState(barrier.buffer.state_after);
+				barrierdesc.srcAccessMask = sanitize_barrier_access_mask(_ParseResourceState(barrier.buffer.state_before));
+				barrierdesc.dstAccessMask = sanitize_barrier_access_mask(_ParseResourceState(barrier.buffer.state_after));
 				barrierdesc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				barrierdesc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 
