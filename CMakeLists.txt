@@ -357,6 +357,11 @@ option(WICKED_ENABLE_MIMALLOC_OVERRIDE
     "Use local mimalloc checkout to override malloc/free/new/delete for final app targets"
     ON
 )
+set(WICKED_ENABLE_MIMALLOC_OVERRIDE OFF CACHE BOOL
+    "Use local mimalloc checkout to override malloc/free/new/delete for final app targets"
+    FORCE
+)
+message(STATUS "Wicked: mimalloc override is temporarily disabled for all targets.")
 set(WICKED_MIMALLOC_SOURCE_DIR "" CACHE PATH "Path to local mimalloc source directory (must contain CMakeLists.txt and include/mimalloc.h)")
 
 if(WICKED_ENABLE_MIMALLOC_OVERRIDE)
