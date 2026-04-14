@@ -116,7 +116,12 @@ namespace wi
 		mutable std::mutex upload_locker;
 		mutable std::deque<UploadJob> inflight_uploads;
 		mutable SubmissionToken pending_implicit_uploads = {};
-		CA::MetalDrawable** pending_presents[QUEUE_COUNT] = {};
+		struct PresentEntry
+		{
+			const SwapChain* swapchain = nullptr;
+			CA::MetalDrawable* drawable = nullptr;
+		};
+		PresentEntry* pending_presents[QUEUE_COUNT] = {};
 		struct DeferredDestroyItem
 		{
 			ResourceHandle resource = {};
@@ -168,7 +173,7 @@ namespace wi
 			bool dirty_pso = false;
 			bool dirty_cs = false;
 			const Shader* active_cs = nullptr;
-			CA::MetalDrawable** presents = nullptr;
+			PresentEntry* presents = nullptr;
 			NS::SharedPtr<MTL4::RenderCommandEncoder> render_encoder;
 			NS::SharedPtr<MTL4::ComputeCommandEncoder> compute_encoder;
 			MTL::PrimitiveType primitive_type = MTL::PrimitiveTypeTriangle;

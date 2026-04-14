@@ -3544,19 +3544,32 @@ private:
         }
         device_->EndCommandList(cmdGraphics);
 
-        CommandList submitCommands[2] = {};
-        uint32_t submitCommandCount = 0;
+        SubmissionToken computeSubmitToken = {};
         if (useAsyncComputeForCull && cmdCull.internal_state != cmdGraphics.internal_state)
         {
-            submitCommands[submitCommandCount++] = cmdCull;
+            wi::QueueSubmitDesc computeSubmitDesc = {};
+            computeSubmitDesc.command_lists = &cmdCull;
+            computeSubmitDesc.command_list_count = 1;
+            computeSubmitDesc.wait_submissions = explicitSubmitDependencies;
+            computeSubmitDesc.wait_submission_count = explicitSubmitDependencyCount;
+            computeSubmitToken = device_->QueueSubmit(QUEUE_COMPUTE, computeSubmitDesc);
         }
-        submitCommands[submitCommandCount++] = cmdGraphics;
 
         wi::QueueSubmitDesc queueSubmitDesc = {};
-        queueSubmitDesc.command_lists = submitCommands;
-        queueSubmitDesc.command_list_count = submitCommandCount;
+        queueSubmitDesc.command_lists = &cmdGraphics;
+        queueSubmitDesc.command_list_count = 1;
         queueSubmitDesc.wait_submissions = explicitSubmitDependencies;
         queueSubmitDesc.wait_submission_count = explicitSubmitDependencyCount;
+        QueueSyncPoint computeWaitPoint = {};
+        if (computeSubmitToken.IsValid())
+        {
+            computeWaitPoint = computeSubmitToken.Get(QUEUE_COMPUTE);
+            if (computeWaitPoint.IsValid())
+            {
+                queueSubmitDesc.wait_points = &computeWaitPoint;
+                queueSubmitDesc.wait_point_count = 1;
+            }
+        }
 
         SubmissionToken submitToken = device_->QueueSubmit(QUEUE_GRAPHICS, queueSubmitDesc);
         if (tokenSubmissionEnabled_)

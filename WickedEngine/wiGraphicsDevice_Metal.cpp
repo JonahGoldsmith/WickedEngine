@@ -2263,8 +2263,8 @@ using namespace metal_internal;
 			{
 				for (size_t j = 0; j < arrlenu(commandlist->presents); ++j)
 				{
-					if (commandlist->presents[j] != nullptr)
-						commandlist->presents[j]->release();
+					if (commandlist->presents[j].drawable != nullptr)
+						commandlist->presents[j].drawable->release();
 				}
 				arrfree(commandlist->presents);
 			}
@@ -2299,9 +2299,9 @@ using namespace metal_internal;
 			{
 				for (size_t i = 0; i < arrlenu(pending_presents[q]); ++i)
 				{
-					if (pending_presents[q][i] != nullptr)
+					if (pending_presents[q][i].drawable != nullptr)
 					{
-						pending_presents[q][i]->release();
+						pending_presents[q][i].drawable->release();
 					}
 				}
 				arrfree(pending_presents[q]);
@@ -4468,7 +4468,9 @@ using namespace metal_internal;
 			auto& commandlist = *submit_commandlists[cmd];
 			for (size_t i = 0; i < arrlenu(commandlist.presents); ++i)
 			{
-				auto* x = commandlist.presents[i];
+				auto* x = commandlist.presents[i].drawable;
+				if (x == nullptr)
+					continue;
 				CommandQueue& queue = queues[commandlist.queue];
 				queue.queue->wait(x);
 			}
@@ -4645,10 +4647,13 @@ using namespace metal_internal;
 			auto& commandlist = *submit_commandlists[cmd];
 			for (size_t i = 0; i < arrlenu(commandlist.presents); ++i)
 			{
-				auto* x = commandlist.presents[i];
+				const PresentEntry& present = commandlist.presents[i];
+				auto* x = present.drawable;
+				if (x == nullptr)
+					continue;
 				if (defer_presents)
 				{
-					arrput(pending_presents[commandlist.queue], x);
+					arrput(pending_presents[commandlist.queue], present);
 				}
 				else
 				{
@@ -4786,15 +4791,49 @@ using namespace metal_internal;
 
 	SubmissionToken GraphicsDevice_Metal::QueueSubmit(QUEUE_TYPE type, const QueueSubmitDesc& desc)
 	{
-		(void)type;
+		if (type >= QUEUE_COUNT || queues[type].queue.get() == nullptr)
+		{
+			return {};
+		}
 		if (desc.command_lists == nullptr || desc.command_list_count == 0)
 		{
 			return {};
 		}
 
+		std::unique_ptr<CommandList[]> filtered_command_lists(new CommandList[desc.command_list_count]);
+		uint32_t filtered_command_list_count = 0;
+		for (uint32_t i = 0; i < desc.command_list_count; ++i)
+		{
+			const CommandList cmd = desc.command_lists[i];
+			if (!wiGraphicsCommandListIsValid(cmd))
+				continue;
+
+			const auto* commandlist = (const CommandList_Metal*)cmd.internal_state;
+			if (commandlist == nullptr)
+				continue;
+			if (commandlist->queue != type)
+			{
+				METAL_LOG_ERROR(
+					"[Metal][QueueSubmit] Rejected command list from queue %s in submit to queue %s",
+					GetQueueTypeName(commandlist->queue),
+					GetQueueTypeName(type)
+				);
+#ifndef NDEBUG
+				SDL_assert(false && "QueueSubmit requires command lists recorded for the same queue type");
+#endif
+				continue;
+			}
+
+			filtered_command_lists[filtered_command_list_count++] = cmd;
+		}
+		if (filtered_command_list_count == 0)
+		{
+			return {};
+		}
+
 		SubmitDesc submit = {};
-		submit.command_lists = desc.command_lists;
-		submit.command_list_count = desc.command_list_count;
+		submit.command_lists = filtered_command_lists.get();
+		submit.command_list_count = filtered_command_list_count;
 		submit.submission_dependencies = desc.wait_submissions;
 		submit.submission_dependency_count = desc.wait_submission_count;
 		submit.throttle_cpu = desc.throttle_cpu;
@@ -4812,9 +4851,7 @@ using namespace metal_internal;
 			submit.queue_dependency_count = desc.wait_point_count;
 		}
 
-		const SubmissionToken token = SubmitCommandListsInternal(submit, true);
-		process_deferred_destroy();
-		return token;
+		return SubmitCommandListsInternal(submit, true);
 	}
 
 	bool GraphicsDevice_Metal::AcquireNextImage(SwapChain* swapchain, AcquireDesc* desc)
@@ -4834,38 +4871,96 @@ using namespace metal_internal;
 
 	void GraphicsDevice_Metal::QueuePresent(QUEUE_TYPE presentQueue, const QueuePresentDesc& desc)
 	{
-		if (desc.wait_points != nullptr)
-		{
-			for (uint32_t i = 0; i < desc.wait_point_count; ++i)
-			{
-				WaitQueuePoint(desc.wait_points[i]);
-			}
-		}
-		if (desc.wait_submissions != nullptr)
-		{
-			for (uint32_t i = 0; i < desc.wait_submission_count; ++i)
-			{
-				WaitSubmission(desc.wait_submissions[i]);
-			}
-		}
-
 		if (presentQueue >= QUEUE_COUNT)
 			return;
 		CommandQueue& queue = queues[presentQueue];
 		if (queue.queue.get() == nullptr)
 			return;
 
-		for (size_t i = 0; i < arrlenu(pending_presents[presentQueue]); ++i)
+		uint64_t dependency_max[QUEUE_COUNT] = {};
+		auto merge_dependency = [&](QueueSyncPoint point) {
+			if (!point.IsValid() || point.queue >= QUEUE_COUNT)
+				return;
+			dependency_max[point.queue] = std::max(dependency_max[point.queue], point.value);
+		};
+
+		for (uint32_t i = 0; desc.wait_points != nullptr && i < desc.wait_point_count; ++i)
 		{
-			auto* drawable = pending_presents[presentQueue][i];
-			if (drawable == nullptr)
-				continue;
-			queue.queue->signalDrawable(drawable);
-			drawable->present();
-			drawable->release();
+			merge_dependency(desc.wait_points[i]);
 		}
-		arrsetlen(pending_presents[presentQueue], 0);
-		process_deferred_destroy();
+		for (uint32_t i = 0; desc.wait_submissions != nullptr && i < desc.wait_submission_count; ++i)
+		{
+			const SubmissionToken& token = desc.wait_submissions[i];
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((token.queue_mask & (1u << q)) == 0 || token.values[q] == 0)
+					continue;
+				merge_dependency(QueueSyncPoint{ (QUEUE_TYPE)q, token.values[q] });
+			}
+		}
+
+		for (uint32_t producer_queue = 0; producer_queue < QUEUE_COUNT; ++producer_queue)
+		{
+			const uint64_t value = dependency_max[producer_queue];
+			if (value == 0 || submission_token_events[producer_queue].get() == nullptr)
+				continue;
+			queue.wait(submission_token_events[producer_queue].get(), value);
+		}
+		if (pending_presents[presentQueue] == nullptr || arrlenu(pending_presents[presentQueue]) == 0)
+			return;
+
+		if (desc.swapchain != nullptr)
+		{
+			size_t last_match = std::numeric_limits<size_t>::max();
+			for (size_t i = 0; i < arrlenu(pending_presents[presentQueue]); ++i)
+			{
+				if (pending_presents[presentQueue][i].swapchain == desc.swapchain)
+				{
+					last_match = i;
+				}
+			}
+			if (last_match == std::numeric_limits<size_t>::max())
+			{
+				return;
+			}
+
+			size_t write_index = 0;
+			for (size_t i = 0; i < arrlenu(pending_presents[presentQueue]); ++i)
+			{
+				PresentEntry entry = pending_presents[presentQueue][i];
+				if (entry.drawable == nullptr)
+				{
+					continue;
+				}
+
+				if (entry.swapchain != desc.swapchain)
+				{
+					pending_presents[presentQueue][write_index++] = entry;
+					continue;
+				}
+
+				if (i == last_match)
+				{
+					queue.queue->signalDrawable(entry.drawable);
+					entry.drawable->present();
+				}
+				entry.drawable->release();
+			}
+			arrsetlen(pending_presents[presentQueue], write_index);
+		}
+		else
+		{
+			for (size_t i = 0; i < arrlenu(pending_presents[presentQueue]); ++i)
+			{
+				PresentEntry entry = pending_presents[presentQueue][i];
+				if (entry.drawable == nullptr)
+					continue;
+				queue.queue->signalDrawable(entry.drawable);
+				entry.drawable->present();
+				entry.drawable->release();
+			}
+			arrsetlen(pending_presents[presentQueue], 0);
+		}
 	}
 
 	bool GraphicsDevice_Metal::IsQueuePointComplete(QueueSyncPoint point) const
@@ -5164,7 +5259,10 @@ using namespace metal_internal;
 		internal_state->current_drawable = NS::TransferPtr(drawable->retain());
 		internal_state->current_texture = NS::TransferPtr(drawable->texture()->retain());
 		
-		arrput(commandlist.presents, internal_state->current_drawable.get()->retain());
+		PresentEntry present = {};
+		present.swapchain = swapchain;
+		present.drawable = internal_state->current_drawable.get()->retain();
+		arrput(commandlist.presents, present);
 		
 		NS::SharedPtr<MTL4::RenderPassDescriptor> descriptor = NS::TransferPtr(MTL4::RenderPassDescriptor::alloc()->init());
 		NS::SharedPtr<MTL::RenderPassColorAttachmentDescriptor> color_attachment_descriptor = NS::TransferPtr(MTL::RenderPassColorAttachmentDescriptor::alloc()->init());
