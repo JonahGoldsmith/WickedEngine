@@ -215,7 +215,20 @@ namespace wi
 				graphicsDevice->RenderPassEnd(cmd);
 			}
 
-			graphicsDevice->SubmitCommandListsEx();
+			graphicsDevice->EndCommandList(cmd);
+			wi::QueueSubmitDesc queueSubmitDesc = {};
+			queueSubmitDesc.command_lists = &cmd;
+			queueSubmitDesc.command_list_count = 1;
+			const wi::SubmissionToken submitToken = graphicsDevice->QueueSubmit(wi::QUEUE_GRAPHICS, queueSubmitDesc);
+			wi::QueuePresentDesc queuePresentDesc = {};
+			queuePresentDesc.swapchain = &swapChain;
+			wi::QueueSyncPoint presentWait = submitToken.Get(wi::QUEUE_GRAPHICS);
+			if (presentWait.IsValid())
+			{
+				queuePresentDesc.wait_points = &presentWait;
+				queuePresentDesc.wait_point_count = 1;
+			}
+			graphicsDevice->QueuePresent(wi::QUEUE_GRAPHICS, queuePresentDesc);
 			return;
 		}
 
@@ -385,7 +398,20 @@ namespace wi
 
 		wi::input::ClearForNextFrame();
 		wi::profiler::EndFrame(cmd);
-		graphicsDevice->SubmitCommandListsEx();
+		graphicsDevice->EndCommandList(cmd);
+		wi::QueueSubmitDesc queueSubmitDesc = {};
+		queueSubmitDesc.command_lists = &cmd;
+		queueSubmitDesc.command_list_count = 1;
+		const wi::SubmissionToken submitToken = graphicsDevice->QueueSubmit(wi::QUEUE_GRAPHICS, queueSubmitDesc);
+		wi::QueuePresentDesc queuePresentDesc = {};
+		queuePresentDesc.swapchain = &swapChain;
+		wi::QueueSyncPoint presentWait = submitToken.Get(wi::QUEUE_GRAPHICS);
+		if (presentWait.IsValid())
+		{
+			queuePresentDesc.wait_points = &presentWait;
+			queuePresentDesc.wait_point_count = 1;
+		}
+		graphicsDevice->QueuePresent(wi::QUEUE_GRAPHICS, queuePresentDesc);
 		wi::renderer::UpdateGPUSuballocator();
 	}
 

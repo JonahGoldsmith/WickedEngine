@@ -3538,13 +3538,29 @@ private:
 
         device_->QueryResolve(&timestampQueryHeap_, 0, kTimestampCount, &timestampReadback_[frameIndex], 0, cmdGraphics);
 
-        SubmissionToken submitToken = {};
+        if (useAsyncComputeForCull && cmdCull.internal_state != cmdGraphics.internal_state)
+        {
+            device_->EndCommandList(cmdCull);
+        }
+        device_->EndCommandList(cmdGraphics);
+
+        CommandList submitCommands[2] = {};
+        uint32_t submitCommandCount = 0;
+        if (useAsyncComputeForCull && cmdCull.internal_state != cmdGraphics.internal_state)
+        {
+            submitCommands[submitCommandCount++] = cmdCull;
+        }
+        submitCommands[submitCommandCount++] = cmdGraphics;
+
+        wi::QueueSubmitDesc queueSubmitDesc = {};
+        queueSubmitDesc.command_lists = submitCommands;
+        queueSubmitDesc.command_list_count = submitCommandCount;
+        queueSubmitDesc.wait_submissions = explicitSubmitDependencies;
+        queueSubmitDesc.wait_submission_count = explicitSubmitDependencyCount;
+
+        SubmissionToken submitToken = device_->QueueSubmit(QUEUE_GRAPHICS, queueSubmitDesc);
         if (tokenSubmissionEnabled_)
         {
-            SubmitDesc submitDesc = {};
-            submitDesc.submission_dependencies = explicitSubmitDependencies;
-            submitDesc.submission_dependency_count = explicitSubmitDependencyCount;
-            submitToken = device_->SubmitCommandListsEx(submitDesc);
             const QueueSyncPoint graphicsPoint = submitToken.Get(QUEUE_GRAPHICS);
             if (graphicsPoint.IsValid())
             {
@@ -3552,13 +3568,20 @@ private:
                 lastGraphicsCompletionToken_.Merge(graphicsPoint);
             }
         }
-        else
+
+        wi::QueuePresentDesc queuePresentDesc = {};
+        queuePresentDesc.swapchain = &swapchain_;
+        QueueSyncPoint presentWait = submitToken.Get(QUEUE_GRAPHICS);
+        if (!presentWait.IsValid())
         {
-            SubmitDesc submitDesc = {};
-            submitDesc.submission_dependencies = explicitSubmitDependencies;
-            submitDesc.submission_dependency_count = explicitSubmitDependencyCount;
-            submitToken = device_->SubmitCommandListsEx(submitDesc);
+            presentWait = submitToken.Get(QUEUE_COMPUTE);
         }
+        if (presentWait.IsValid())
+        {
+            queuePresentDesc.wait_points = &presentWait;
+            queuePresentDesc.wait_point_count = 1;
+        }
+        device_->QueuePresent(QUEUE_GRAPHICS, queuePresentDesc);
 
         frameSlot.submitToken = submitToken;
         frameSlot.submitted = submitToken.IsValid();

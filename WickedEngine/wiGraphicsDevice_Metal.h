@@ -116,6 +116,14 @@ namespace wi
 		mutable std::mutex upload_locker;
 		mutable std::deque<UploadJob> inflight_uploads;
 		mutable SubmissionToken pending_implicit_uploads = {};
+		CA::MetalDrawable** pending_presents[QUEUE_COUNT] = {};
+		struct DeferredDestroyItem
+		{
+			ResourceHandle resource = {};
+			SubmissionToken retire_after = {};
+		};
+		mutable std::mutex deferred_destroy_locker;
+		mutable std::deque<DeferredDestroyItem> deferred_destroy_items;
 		
 		NS::SharedPtr<MTL4::ArgumentTableDescriptor> argument_table_desc;
 
@@ -321,6 +329,7 @@ namespace wi
 		void precopy(CommandList cmd);
 		SubmissionToken allocate_submission_token(QUEUE_TYPE queue) const;
 		void retire_completed_uploads() const;
+		void process_deferred_destroy() const;
 		struct UploadDescInternal
 		{
 			enum class Type
@@ -338,7 +347,7 @@ namespace wi
 			uint32_t subresource_count = 0;
 		};
 		SubmissionToken consume_pending_implicit_uploads() const;
-		SubmissionToken SubmitCommandListsInternal(const SubmitDesc& desc);
+		SubmissionToken SubmitCommandListsInternal(const SubmitDesc& desc, bool defer_presents = false);
 		UploadTicket UploadAsyncInternal(const UploadDescInternal& upload, bool implicit_dependency) const;
 
 	public:
@@ -372,15 +381,21 @@ namespace wi
 		void SetName(Shader* shader, const char* name) const override;
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
+		void EndCommandList(CommandList cmd) override;
 		SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc) override;
+		SubmissionToken QueueSubmit(QUEUE_TYPE type, const QueueSubmitDesc& desc) override;
+		bool AcquireNextImage(SwapChain* swapchain, AcquireDesc* desc) override;
+		void QueuePresent(QUEUE_TYPE presentQueue, const QueuePresentDesc& desc) override;
 		bool IsQueuePointComplete(QueueSyncPoint point) const override;
 		void WaitQueuePoint(QueueSyncPoint point) const override;
 		QueueSyncPoint GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const override;
 		QueueSyncPoint GetLastCompletedQueuePoint(QUEUE_TYPE queue) const override;
+		UploadTicket EnqueueUpload(const UploadDesc& desc) override;
 		UploadTicket EnqueueBufferUpload(const BufferUploadDesc& upload) override;
 		UploadTicket EnqueueTextureUpload(const TextureUploadDesc& upload) override;
 		bool IsUploadComplete(const UploadTicket& ticket) const override;
 		void WaitUpload(const UploadTicket& ticket) const override;
+		void DestroyDeferred(ResourceHandle resource, SubmissionToken retireAfter) override;
 		bool GetQueueSubmissionStats(QueueSubmissionStats& out) const override;
 
 		void WaitForGPU() const override;

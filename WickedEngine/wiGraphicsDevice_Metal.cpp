@@ -2295,6 +2295,20 @@ using namespace metal_internal;
 		arrfree(open_commandlists);
 		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
 		{
+			if (pending_presents[q] != nullptr)
+			{
+				for (size_t i = 0; i < arrlenu(pending_presents[q]); ++i)
+				{
+					if (pending_presents[q][i] != nullptr)
+					{
+						pending_presents[q][i]->release();
+					}
+				}
+				arrfree(pending_presents[q]);
+			}
+		}
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
 			arrfree(retired_contexts[q]);
 		}
 		for (auto& queue : queues)
@@ -3992,6 +4006,38 @@ using namespace metal_internal;
 		return result;
 	}
 
+	void GraphicsDevice_Metal::process_deferred_destroy() const
+	{
+		std::scoped_lock lock(deferred_destroy_locker);
+		for (auto it = deferred_destroy_items.begin(); it != deferred_destroy_items.end();)
+		{
+			const SubmissionToken& retire_after = it->retire_after;
+			bool complete = true;
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((retire_after.queue_mask & (1u << q)) == 0)
+					continue;
+				if (submission_token_events[q].get() == nullptr || submission_token_events[q]->signaledValue() < retire_after.values[q])
+				{
+					complete = false;
+					break;
+				}
+			}
+
+			if (!complete)
+			{
+				++it;
+				continue;
+			}
+
+			if (it->resource.destroy)
+			{
+				it->resource.destroy();
+			}
+			it = deferred_destroy_items.erase(it);
+		}
+	}
+
 	UploadTicket GraphicsDevice_Metal::UploadAsyncInternal(const UploadDescInternal& upload, bool implicit_dependency) const
 	{
 		retire_completed_uploads();
@@ -4222,7 +4268,7 @@ using namespace metal_internal;
 		return ticket;
 	}
 
-	SubmissionToken GraphicsDevice_Metal::SubmitCommandListsInternal(const SubmitDesc& desc)
+	SubmissionToken GraphicsDevice_Metal::SubmitCommandListsInternal(const SubmitDesc& desc, bool defer_presents)
 	{
 		QueueSubmissionStats stats = {};
 		stats.frameIndex = FRAMECOUNT;
@@ -4600,10 +4646,17 @@ using namespace metal_internal;
 			for (size_t i = 0; i < arrlenu(commandlist.presents); ++i)
 			{
 				auto* x = commandlist.presents[i];
-				CommandQueue& queue = queues[commandlist.queue];
-				queue.queue->signalDrawable(x);
-				x->present();
-				x->release();
+				if (defer_presents)
+				{
+					arrput(pending_presents[commandlist.queue], x);
+				}
+				else
+				{
+					CommandQueue& queue = queues[commandlist.queue];
+					queue.queue->signalDrawable(x);
+					x->present();
+					x->release();
+				}
 			}
 			arrsetlen(commandlist.presents, 0);
 		}
@@ -4709,6 +4762,7 @@ using namespace metal_internal;
 
 		allocationhandler->Update();
 		retire_completed_uploads();
+		process_deferred_destroy();
 		arrfree(submit_commandlists);
 		for (uint32_t i = 0; i < QUEUE_COUNT; ++i)
 		{
@@ -4720,9 +4774,98 @@ using namespace metal_internal;
 		return tokens;
 	}
 
+	void GraphicsDevice_Metal::EndCommandList(CommandList cmd)
+	{
+		(void)cmd;
+	}
+
 	SubmissionToken GraphicsDevice_Metal::SubmitCommandListsEx(const SubmitDesc& desc)
 	{
-		return SubmitCommandListsInternal(desc);
+		return SubmitCommandListsInternal(desc, false);
+	}
+
+	SubmissionToken GraphicsDevice_Metal::QueueSubmit(QUEUE_TYPE type, const QueueSubmitDesc& desc)
+	{
+		(void)type;
+		if (desc.command_lists == nullptr || desc.command_list_count == 0)
+		{
+			return {};
+		}
+
+		SubmitDesc submit = {};
+		submit.command_lists = desc.command_lists;
+		submit.command_list_count = desc.command_list_count;
+		submit.submission_dependencies = desc.wait_submissions;
+		submit.submission_dependency_count = desc.wait_submission_count;
+		submit.throttle_cpu = desc.throttle_cpu;
+		submit.max_inflight_per_queue = desc.max_inflight_per_queue;
+
+		std::unique_ptr<QueueDependency[]> queue_dependencies;
+		if (desc.wait_points != nullptr && desc.wait_point_count > 0)
+		{
+			queue_dependencies.reset(new QueueDependency[desc.wait_point_count]);
+			for (uint32_t i = 0; i < desc.wait_point_count; ++i)
+			{
+				queue_dependencies[i].point = desc.wait_points[i];
+			}
+			submit.queue_dependencies = queue_dependencies.get();
+			submit.queue_dependency_count = desc.wait_point_count;
+		}
+
+		const SubmissionToken token = SubmitCommandListsInternal(submit, true);
+		process_deferred_destroy();
+		return token;
+	}
+
+	bool GraphicsDevice_Metal::AcquireNextImage(SwapChain* swapchain, AcquireDesc* desc)
+	{
+		if (swapchain == nullptr)
+			return false;
+		if (desc != nullptr)
+		{
+			desc->imageIndex = 0;
+			if (desc->signal_point != nullptr)
+			{
+				*desc->signal_point = GetLastSubmittedQueuePoint(desc->queue);
+			}
+		}
+		return true;
+	}
+
+	void GraphicsDevice_Metal::QueuePresent(QUEUE_TYPE presentQueue, const QueuePresentDesc& desc)
+	{
+		if (desc.wait_points != nullptr)
+		{
+			for (uint32_t i = 0; i < desc.wait_point_count; ++i)
+			{
+				WaitQueuePoint(desc.wait_points[i]);
+			}
+		}
+		if (desc.wait_submissions != nullptr)
+		{
+			for (uint32_t i = 0; i < desc.wait_submission_count; ++i)
+			{
+				WaitSubmission(desc.wait_submissions[i]);
+			}
+		}
+
+		if (presentQueue >= QUEUE_COUNT)
+			return;
+		CommandQueue& queue = queues[presentQueue];
+		if (queue.queue.get() == nullptr)
+			return;
+
+		for (size_t i = 0; i < arrlenu(pending_presents[presentQueue]); ++i)
+		{
+			auto* drawable = pending_presents[presentQueue][i];
+			if (drawable == nullptr)
+				continue;
+			queue.queue->signalDrawable(drawable);
+			drawable->present();
+			drawable->release();
+		}
+		arrsetlen(pending_presents[presentQueue], 0);
+		process_deferred_destroy();
 	}
 
 	bool GraphicsDevice_Metal::IsQueuePointComplete(QueueSyncPoint point) const
@@ -4739,6 +4882,7 @@ using namespace metal_internal;
 		if (!point.IsValid() || point.queue >= QUEUE_COUNT || submission_token_events[point.queue].get() == nullptr)
 			return;
 		WaitForSharedEventWithAssert(submission_token_events[point.queue].get(), point.value, "WaitQueuePoint");
+		process_deferred_destroy();
 	}
 
 	QueueSyncPoint GraphicsDevice_Metal::GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const
@@ -4767,6 +4911,18 @@ using namespace metal_internal;
 		std::scoped_lock lock(submission_stats_mutex);
 		out = last_submission_stats;
 		return out.commandListCount > 0 || out.dependencyEdges > 0;
+	}
+
+	UploadTicket GraphicsDevice_Metal::EnqueueUpload(const UploadDesc& desc)
+	{
+		switch (desc.kind)
+		{
+		default:
+		case UploadDesc::Kind::Buffer:
+			return EnqueueBufferUpload(desc.buffer);
+		case UploadDesc::Kind::Texture:
+			return EnqueueTextureUpload(desc.texture);
+		}
 	}
 
 	UploadTicket GraphicsDevice_Metal::EnqueueBufferUpload(const BufferUploadDesc& upload)
@@ -4816,6 +4972,27 @@ using namespace metal_internal;
 			return;
 		WaitForSharedEventWithAssert(submission_token_events[ticket.completion.queue].get(), ticket.completion.value, "WaitUpload");
 		retire_completed_uploads();
+		process_deferred_destroy();
+	}
+
+	void GraphicsDevice_Metal::DestroyDeferred(ResourceHandle resource, SubmissionToken retireAfter)
+	{
+		if (!resource.IsValid())
+			return;
+		if (!retireAfter.IsValid())
+		{
+			resource.destroy();
+			return;
+		}
+
+		DeferredDestroyItem item = {};
+		item.resource = std::move(resource);
+		item.retire_after = retireAfter;
+		{
+			std::scoped_lock lock(deferred_destroy_locker);
+			deferred_destroy_items.push_back(std::move(item));
+		}
+		process_deferred_destroy();
 	}
 
 	void GraphicsDevice_Metal::WaitForGPU() const
@@ -4842,6 +5019,7 @@ using namespace metal_internal;
 			}
 		}
 		retire_completed_uploads();
+		process_deferred_destroy();
 	}
 	void GraphicsDevice_Metal::ClearPipelineStateCache()
 	{

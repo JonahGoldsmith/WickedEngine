@@ -71,6 +71,7 @@ namespace wi
 
 		QUEUE_COUNT,
 	};
+	using QueueType = QUEUE_TYPE;
 	enum class QueueFrameSyncMode : uint8_t
 	{
 		NoFrameSync = 0,
@@ -187,6 +188,39 @@ namespace wi
 		uint32_t max_inflight_per_queue = 0;
 	};
 
+	struct QueueSubmitDesc
+	{
+		const CommandList* command_lists = nullptr;
+		uint32_t command_list_count = 0;
+
+		const QueueSyncPoint* wait_points = nullptr;
+		uint32_t wait_point_count = 0;
+
+		const SubmissionToken* wait_submissions = nullptr;
+		uint32_t wait_submission_count = 0;
+
+		bool throttle_cpu = false;
+		uint32_t max_inflight_per_queue = 0;
+	};
+
+	struct AcquireDesc
+	{
+		QUEUE_TYPE queue = QUEUE_GRAPHICS;
+		QueueSyncPoint* signal_point = nullptr;
+		uint32_t imageIndex = 0;
+	};
+
+	struct QueuePresentDesc
+	{
+		const SwapChain* swapchain = nullptr;
+
+		const QueueSyncPoint* wait_points = nullptr;
+		uint32_t wait_point_count = 0;
+
+		const SubmissionToken* wait_submissions = nullptr;
+		uint32_t wait_submission_count = 0;
+	};
+
 	struct BufferUploadDesc
 	{
 		const GPUBuffer* dst = nullptr;
@@ -204,6 +238,19 @@ namespace wi
 		bool block_until_complete = false;
 	};
 
+	struct UploadDesc
+	{
+		enum class Kind : uint8_t
+		{
+			Buffer,
+			Texture,
+		};
+
+		Kind kind = Kind::Buffer;
+		BufferUploadDesc buffer = {};
+		TextureUploadDesc texture = {};
+	};
+
 	struct UploadTicket
 	{
 		SubmissionToken token = {};
@@ -212,6 +259,17 @@ namespace wi
 		constexpr bool IsValid() const noexcept
 		{
 			return completion.IsValid();
+		}
+	};
+
+	struct ResourceHandle
+	{
+		std::function<void()> destroy = {};
+		const char* debug_name = nullptr;
+
+		bool IsValid() const noexcept
+		{
+			return (bool)destroy;
 		}
 	};
 
@@ -270,8 +328,93 @@ namespace wi
 		// Begin a new command list for GPU command recording.
 		//	This will be valid until SubmitCommandListsEx() is called.
 		virtual CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) = 0;
+		virtual void EndCommandList(CommandList cmd)
+		{
+			(void)cmd;
+		}
 		// Explicit submit path. If desc.command_list_count is zero, all currently open command lists are submitted.
 		virtual SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc) = 0;
+		virtual SubmissionToken QueueSubmit(QUEUE_TYPE type, const QueueSubmitDesc& desc)
+		{
+			(void)type;
+			SubmitDesc submit = {};
+			submit.command_lists = desc.command_lists;
+			submit.command_list_count = desc.command_list_count;
+			submit.submission_dependencies = desc.wait_submissions;
+			submit.submission_dependency_count = desc.wait_submission_count;
+			submit.throttle_cpu = desc.throttle_cpu;
+			submit.max_inflight_per_queue = desc.max_inflight_per_queue;
+
+			std::unique_ptr<QueueDependency[]> queue_dependencies;
+			if (desc.wait_points != nullptr && desc.wait_point_count > 0)
+			{
+				queue_dependencies.reset(new QueueDependency[desc.wait_point_count]);
+				for (uint32_t i = 0; i < desc.wait_point_count; ++i)
+				{
+					queue_dependencies[i].point = desc.wait_points[i];
+				}
+				submit.queue_dependencies = queue_dependencies.get();
+				submit.queue_dependency_count = desc.wait_point_count;
+			}
+
+			return SubmitCommandListsEx(submit);
+		}
+		virtual bool AcquireNextImage(SwapChain* swapchain, AcquireDesc* desc)
+		{
+			if (swapchain == nullptr)
+				return false;
+
+			if (desc != nullptr)
+			{
+				desc->imageIndex = 0;
+				if (desc->signal_point != nullptr)
+				{
+					*desc->signal_point = GetLastSubmittedQueuePoint(desc->queue);
+				}
+			}
+
+			return true;
+		}
+		virtual void QueuePresent(QUEUE_TYPE presentQueue, const QueuePresentDesc& desc)
+		{
+			(void)presentQueue;
+			(void)desc;
+			if (desc.wait_points != nullptr)
+			{
+				for (uint32_t i = 0; i < desc.wait_point_count; ++i)
+				{
+					WaitQueuePoint(desc.wait_points[i]);
+				}
+			}
+			if (desc.wait_submissions != nullptr)
+			{
+				for (uint32_t i = 0; i < desc.wait_submission_count; ++i)
+				{
+					WaitSubmission(desc.wait_submissions[i]);
+				}
+			}
+		}
+		virtual UploadTicket EnqueueUpload(const UploadDesc& desc)
+		{
+			switch (desc.kind)
+			{
+			default:
+			case UploadDesc::Kind::Buffer:
+				return EnqueueBufferUpload(desc.buffer);
+			case UploadDesc::Kind::Texture:
+				return EnqueueTextureUpload(desc.texture);
+			}
+		}
+		virtual void DestroyDeferred(ResourceHandle resource, SubmissionToken retireAfter)
+		{
+			if (!resource.IsValid())
+				return;
+			if (retireAfter.IsValid())
+			{
+				WaitSubmission(retireAfter);
+			}
+			resource.destroy();
+		}
 
 		// The CPU will wait until all submitted GPU work is finished execution
 		virtual void WaitForGPU() const = 0;
