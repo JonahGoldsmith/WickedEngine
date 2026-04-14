@@ -2596,7 +2596,7 @@ private:
             return;
         }
 
-        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
+        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
         TransitionBufferState(&drawCommandIndexBuffer_, &drawCommandIndexBufferState_, ResourceState::VERTEX_BUFFER, cmd);
 
         if (activePipeline_ == PipelineStyle::TVB)
@@ -3483,12 +3483,12 @@ private:
         if (!useAsyncComputeForCull)
         {
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
-            ExecuteCullStage(sceneCB, cmdCull, cullSlot);
+            ExecuteCullStage(sceneCB, cmdCull, cullSlot, useAsyncComputeForCull);
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
         }
         else
         {
-            ExecuteCullStage(sceneCB, cmdCull, cullSlot);
+            ExecuteCullStage(sceneCB, cmdCull, cullSlot, useAsyncComputeForCull);
             if (!cullHistoryValid_)
             {
                 // Prime first async frame so draw has valid data before one-frame-lag overlap begins.
@@ -3612,7 +3612,7 @@ private:
         return true;
     }
 
-    void ExecuteCullStage(const SceneCB& sceneCB, CommandList cmd, uint32_t cullSlot)
+    void ExecuteCullStage(const SceneCB& sceneCB, CommandList cmd, uint32_t cullSlot, bool cullOnComputeQueue)
     {
         const Shader* csInstanceFilter = UseBindlessMode() ? &csInstanceFilterBindless_ : &csInstanceFilter_;
         const Shader* csClusterFilter = UseBindlessMode() ? &csClusterFilterBindless_ : &csClusterFilter_;
@@ -3630,7 +3630,11 @@ private:
         const bool requiresTVBFiltering = (activePipeline_ == PipelineStyle::TVB) ||
                                           (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable);
 
-        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
+        TransitionBufferState(
+            &vertexBuffer_,
+            &vertexBufferState_,
+            cullOnComputeQueue ? ResourceState::SHADER_RESOURCE_COMPUTE : (ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER),
+            cmd);
         TransitionBufferState(InstanceBuffer(cullSlot), InstanceBufferState(cullSlot), ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
         TransitionBufferState(&instanceVisibleBuffer_, &instanceVisibleBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(visibleCommandIndicesBuffer, VisibleCommandIndicesBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);

@@ -1919,9 +1919,32 @@ using namespace vulkan_internal;
 		recycle_completed();
 		return device->queue_timeline_completed_fallback[point.queue].load(std::memory_order_acquire) >= point.value;
 	}
-	GraphicsDevice_Vulkan::CopyAllocator::CopyCMD GraphicsDevice_Vulkan::CopyAllocator::allocate(uint64_t staging_size)
+	GraphicsDevice_Vulkan::CopyAllocator::CopyCMD GraphicsDevice_Vulkan::CopyAllocator::allocate(uint64_t staging_size, QUEUE_TYPE queue)
 	{
 		CopyCMD cmd;
+		QUEUE_TYPE recording_queue = queue < QUEUE_COUNT ? queue : QUEUE_COPY;
+		if (device->queues[recording_queue].queue == VK_NULL_HANDLE)
+		{
+			recording_queue = device->queues[QUEUE_COPY].queue != VK_NULL_HANDLE ? QUEUE_COPY : QUEUE_GRAPHICS;
+		}
+		uint32_t recording_family = device->graphicsFamily;
+		switch (recording_queue)
+		{
+		case QUEUE_GRAPHICS:
+			recording_family = device->graphicsFamily;
+			break;
+		case QUEUE_COMPUTE:
+			recording_family = device->computeFamily;
+			break;
+		case QUEUE_COPY:
+			recording_family = device->copyFamily;
+			break;
+		case QUEUE_VIDEO_DECODE:
+			recording_family = device->videoFamily;
+			break;
+		default:
+			break;
+		}
 
 		recycle_completed();
 
@@ -1929,7 +1952,7 @@ using namespace vulkan_internal;
 		// Try to search for a staging buffer that can fit the request:
 		for (size_t i = 0; i < freelist.size(); ++i)
 		{
-			if (freelist[i].uploadbuffer.desc.size >= staging_size)
+			if (freelist[i].uploadbuffer.desc.size >= staging_size && freelist[i].recording_queue == recording_queue)
 			{
 				cmd = std::move(freelist[i]);
 				std::swap(freelist[i], freelist.back());
@@ -1945,7 +1968,7 @@ using namespace vulkan_internal;
 			VkCommandPoolCreateInfo poolInfo = {};
 			poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 			poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-			poolInfo.queueFamilyIndex = device->initFamily;
+			poolInfo.queueFamilyIndex = recording_family;
 			vulkan_check(vkCreateCommandPool(device->device, &poolInfo, nullptr, &cmd.transferCommandPool));
 
 			VkCommandBufferAllocateInfo commandBufferInfo = {};
@@ -1968,6 +1991,9 @@ using namespace vulkan_internal;
 			SDL_assert(upload_success);
 			device->SetName(&cmd.uploadbuffer, "CopyAllocator::uploadBuffer");
 		}
+		cmd.recording_queue = recording_queue;
+		cmd.submitted_queue = QUEUE_COUNT;
+		cmd.submitted_value = 0;
 
 		VkCommandBufferBeginInfo beginInfo = {};
 		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1994,6 +2020,10 @@ using namespace vulkan_internal;
 		if (device->queues[dst_queue_type].queue == VK_NULL_HANDLE)
 		{
 			dst_queue_type = device->queues[QUEUE_COPY].queue != VK_NULL_HANDLE ? QUEUE_COPY : QUEUE_GRAPHICS;
+		}
+		if (cmd.recording_queue < QUEUE_COUNT)
+		{
+			dst_queue_type = cmd.recording_queue;
 		}
 		CommandQueue& dst_queue = device->queues[dst_queue_type];
 
@@ -4706,7 +4736,7 @@ using namespace vulkan_internal;
 			}
 			else
 			{
-				cmd = copyAllocator.allocate(desc->size);
+				cmd = copyAllocator.allocate(desc->size, QUEUE_COPY);
 				mapped_data = cmd.uploadbuffer.mapped_data;
 			}
 
@@ -5111,7 +5141,7 @@ using namespace vulkan_internal;
 			}
 			else
 			{
-				cmd = copyAllocator.allocate(internal_state->allocation->GetSize());
+				cmd = copyAllocator.allocate(internal_state->allocation->GetSize(), QUEUE_COPY);
 				mapped_data = cmd.uploadbuffer.mapped_data;
 			}
 
@@ -8254,7 +8284,7 @@ using namespace vulkan_internal;
 				return ticket;
 			}
 
-			CopyAllocator::CopyCMD cmd = copyAllocator.allocate(upload.src_size);
+			CopyAllocator::CopyCMD cmd = copyAllocator.allocate(upload.src_size, upload_queue);
 			if (!cmd.IsValid())
 				return ticket;
 
@@ -8325,7 +8355,7 @@ using namespace vulkan_internal;
 			{
 				required_staging_size = (VkDeviceSize)ComputeTextureMemorySizeInBytes(upload.dst_texture->desc);
 			}
-			CopyAllocator::CopyCMD cmd = copyAllocator.allocate((uint64_t)required_staging_size);
+			CopyAllocator::CopyCMD cmd = copyAllocator.allocate((uint64_t)required_staging_size, upload_queue);
 			if (!cmd.IsValid())
 				return ticket;
 

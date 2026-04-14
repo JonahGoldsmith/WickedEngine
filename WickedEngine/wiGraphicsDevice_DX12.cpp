@@ -1834,10 +1834,39 @@ std::mutex queue_locker;
 		if (submit_cmds == nullptr || arrlenu(submit_cmds) == 0)
 			return;
 
-		queue->ExecuteCommandLists(
-			(UINT)arrlenu(submit_cmds),
-			submit_cmds
-		);
+		std::vector<ID3D12CommandList*> valid_commandlists;
+		valid_commandlists.reserve(arrlenu(submit_cmds));
+		for (size_t i = 0; i < arrlenu(submit_cmds); ++i)
+		{
+			ID3D12CommandList* command_list = submit_cmds[i];
+			if (command_list == nullptr)
+			{
+				DX12_ASSERT_MSG(false, "GraphicsDevice_DX12::CommandQueue::submit: null command list in queue submit list.");
+				continue;
+			}
+
+			const D3D12_COMMAND_LIST_TYPE command_list_type = command_list->GetType();
+			if (command_list_type != desc.Type)
+			{
+				DX12_ASSERT_MSG(
+					false,
+					"GraphicsDevice_DX12::CommandQueue::submit: queue/list type mismatch (queue=%d, command_list=%d).",
+					desc.Type,
+					command_list_type
+				);
+				continue;
+			}
+
+			valid_commandlists.push_back(command_list);
+		}
+
+		if (!valid_commandlists.empty())
+		{
+			queue->ExecuteCommandLists(
+				(UINT)valid_commandlists.size(),
+				valid_commandlists.data()
+			);
+		}
 
 		arrsetlen(submit_cmds, 0);
 	}

@@ -2023,10 +2023,13 @@ private:
 
         desc.stride = sizeof(GPUInstanceData);
         desc.size = static_cast<uint64_t>(instances_.size() * sizeof(GPUInstanceData));
-        if (!device_->CreateBuffer(&desc, instances_.data(), &instanceBuffer_))
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
-            std::fprintf(stderr, "CreateBuffer(instanceBuffer) failed\n");
-            return false;
+            if (!device_->CreateBuffer(&desc, instances_.data(), InstanceBuffer(slot)))
+            {
+                std::fprintf(stderr, "CreateBuffer(instanceBuffer[%u]) failed\n", slot);
+                return false;
+            }
         }
 
         desc.stride = sizeof(GPUClusterCommand);
@@ -2225,7 +2228,12 @@ private:
         }
 
         device_->SetName(&vertexBuffer_, "subset_visibility_benchmark_vertices");
-        device_->SetName(&instanceBuffer_, "subset_visibility_benchmark_instances");
+        for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
+        {
+            char name[128] = {};
+            std::snprintf(name, sizeof(name), "subset_visibility_benchmark_instances_slot%u", slot);
+            device_->SetName(InstanceBuffer(slot), name);
+        }
         device_->SetName(&commandBuffer_, "subset_visibility_benchmark_commands");
         device_->SetName(&clusterTemplateBuffer_, "subset_visibility_benchmark_clusters");
         device_->SetName(&clusterIndexBuffer_, "subset_visibility_benchmark_cluster_indices");
@@ -2260,7 +2268,10 @@ private:
     void DestroySceneGPUResources()
     {
         vertexBuffer_ = {};
-        instanceBuffer_ = {};
+        for (GPUBuffer& b : instanceBuffers_)
+        {
+            b = {};
+        }
         commandBuffer_ = {};
         clusterTemplateBuffer_ = {};
         templateVerticesBuffer_ = {};
@@ -2462,6 +2473,11 @@ private:
         return &tvbFilteredPrimitiveIDBuffers_[slot % kCullOutputSlotCount];
     }
 
+    GPUBuffer* InstanceBuffer(uint32_t slot)
+    {
+        return &instanceBuffers_[slot % kCullOutputSlotCount];
+    }
+
     ResourceState* VisibleArgsBufferState(uint32_t slot)
     {
         return &visibleArgsBufferStates_[slot % kCullOutputSlotCount];
@@ -2491,10 +2507,14 @@ private:
         return &tvbFilteredPrimitiveIDBufferStates_[slot % kCullOutputSlotCount];
     }
 
+    ResourceState* InstanceBufferState(uint32_t slot)
+    {
+        return &instanceBufferStates_[slot % kCullOutputSlotCount];
+    }
+
     void ResetTransientBufferStates()
     {
         vertexBufferState_ = ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER;
-        instanceBufferState_ = ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER;
         drawCommandIndexBufferState_ = ResourceState::VERTEX_BUFFER;
         clusterIndexBufferState_ = ResourceState::INDEX_BUFFER;
 
@@ -2504,6 +2524,7 @@ private:
         instanceVisibleBufferState_ = ResourceState::UNORDERED_ACCESS;
         for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
+            instanceBufferStates_[slot] = ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER;
             visibleCountBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
             meshDispatchArgsBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
             visibleCommandIndicesBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
@@ -2527,7 +2548,7 @@ private:
 
     void PrepareDrawBufferStates(CommandList cmd, uint32_t drawSlot)
     {
-        TransitionBufferState(&instanceBuffer_, &instanceBufferState_, ResourceState::SHADER_RESOURCE, cmd);
+        TransitionBufferState(InstanceBuffer(drawSlot), InstanceBufferState(drawSlot), ResourceState::SHADER_RESOURCE, cmd);
 
         GPUBuffer* visibleCommandIndicesBuffer = VisibleCommandIndicesBuffer(drawSlot);
         GPUBuffer* visibleCountBuffer = VisibleCountBuffer(drawSlot);
@@ -3130,7 +3151,7 @@ private:
         GPUBuffer* meshDispatchArgsBuffer = MeshDispatchArgsBuffer(slot);
 
         cb.vertexBufferSRV = device_->GetDescriptorIndex(&vertexBuffer_, SubresourceType::SRV);
-        cb.instanceBufferSRV = device_->GetDescriptorIndex(&instanceBuffer_, SubresourceType::SRV);
+        cb.instanceBufferSRV = device_->GetDescriptorIndex(InstanceBuffer(slot), SubresourceType::SRV);
         cb.commandBufferSRV = device_->GetDescriptorIndex(&commandBuffer_, SubresourceType::SRV);
         cb.clusterTemplateBufferSRV = device_->GetDescriptorIndex(&clusterTemplateBuffer_, SubresourceType::SRV);
         cb.templateVerticesBufferSRV = device_->GetDescriptorIndex(&templateVerticesBuffer_, SubresourceType::SRV);
@@ -3352,9 +3373,11 @@ private:
             const uint64_t instanceUploadBytes = static_cast<uint64_t>(activeInstanceCount_) * sizeof(GPUInstanceData);
             if (instanceUploadBytes > 0u)
             {
-                TransitionBufferState(&instanceBuffer_, &instanceBufferState_, ResourceState::COPY_DST, cmdCull);
-                device_->UpdateBuffer(&instanceBuffer_, ecsSnapshotScratch_.data(), cmdCull, instanceUploadBytes, 0);
-                TransitionBufferState(&instanceBuffer_, &instanceBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmdCull);
+                GPUBuffer* instanceBuffer = InstanceBuffer(cullSlot);
+                ResourceState* instanceState = InstanceBufferState(cullSlot);
+                TransitionBufferState(instanceBuffer, instanceState, ResourceState::COPY_DST, cmdCull);
+                device_->UpdateBuffer(instanceBuffer, ecsSnapshotScratch_.data(), cmdCull, instanceUploadBytes, 0);
+                TransitionBufferState(instanceBuffer, instanceState, ResourceState::SHADER_RESOURCE_COMPUTE, cmdCull);
             }
         }
 
@@ -3377,12 +3400,12 @@ private:
         if (!useAsyncComputeForCull)
         {
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
-            ExecuteCullStage(sceneCB, cmdCull, cullSlot);
+            ExecuteCullStage(sceneCB, cmdCull, cullSlot, useAsyncComputeForCull);
             device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
         }
         else
         {
-            ExecuteCullStage(sceneCB, cmdCull, cullSlot);
+            ExecuteCullStage(sceneCB, cmdCull, cullSlot, useAsyncComputeForCull);
             if (!cullHistoryValid_)
             {
                 // Prime first async frame so draw has valid data before one-frame-lag overlap begins.
@@ -3425,7 +3448,7 @@ private:
         ExecuteHashStage(sceneCB, cmdGraphics, frameIndex, drawSlot);
         device_->QueryEnd(&timestampQueryHeap_, kTimestampHashEnd, cmdGraphics);
 
-        PrepareAsyncCullBaselineStates(cmdGraphics, drawSlot);
+        PrepareAsyncCullBaselineStates(cmdGraphics, cullSlot);
         ExecutePresentStage(cmdGraphics);
 
         device_->QueryEnd(&timestampQueryHeap_, kTimestampFrameEnd, cmdGraphics);
@@ -3495,7 +3518,7 @@ private:
         return true;
     }
 
-    void ExecuteCullStage(const SceneCB& sceneCB, CommandList cmd, uint32_t cullSlot)
+    void ExecuteCullStage(const SceneCB& sceneCB, CommandList cmd, uint32_t cullSlot, bool cullOnComputeQueue)
     {
         const Shader* csInstanceFilter = UseBindlessMode() ? &csInstanceFilterBindless_ : &csInstanceFilter_;
         const Shader* csClusterFilter = UseBindlessMode() ? &csClusterFilterBindless_ : &csClusterFilter_;
@@ -3513,8 +3536,16 @@ private:
         const bool requiresTVBFiltering = (activePipeline_ == PipelineStyle::TVB) ||
                                           (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable);
 
-        TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
-        TransitionBufferState(&instanceBuffer_, &instanceBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
+        TransitionBufferState(
+            &vertexBuffer_,
+            &vertexBufferState_,
+            cullOnComputeQueue ? ResourceState::SHADER_RESOURCE_COMPUTE : (ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER),
+            cmd);
+        TransitionBufferState(
+            InstanceBuffer(cullSlot),
+            InstanceBufferState(cullSlot),
+            ResourceState::SHADER_RESOURCE_COMPUTE,
+            cmd);
         TransitionBufferState(&instanceVisibleBuffer_, &instanceVisibleBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(visibleCommandIndicesBuffer, VisibleCommandIndicesBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(visibleCountBuffer, VisibleCountBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
@@ -3585,7 +3616,7 @@ private:
         // Keep resources that async cull can touch in compute-compatible states.
         // This avoids compute-queue transitions from graphics-only states (for example: INDEX).
         TransitionBufferState(&vertexBuffer_, &vertexBufferState_, ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER, cmd);
-        TransitionBufferState(&instanceBuffer_, &instanceBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
+        TransitionBufferState(InstanceBuffer(slot), InstanceBufferState(slot), ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
         TransitionBufferState(VisibleCommandIndicesBuffer(slot), VisibleCommandIndicesBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(VisibleCountBuffer(slot), VisibleCountBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
         TransitionBufferState(MeshDispatchArgsBuffer(slot), MeshDispatchArgsBufferState(slot), ResourceState::UNORDERED_ACCESS, cmd);
@@ -3803,7 +3834,7 @@ private:
         }
 
         device_->BindResource(&vertexBuffer_, 0, cmd);
-        device_->BindResource(&instanceBuffer_, 1, cmd);
+        device_->BindResource(InstanceBuffer(slot), 1, cmd);
         device_->BindResource(&commandBuffer_, 2, cmd);
         device_->BindResource(&clusterTemplateBuffer_, 3, cmd);
         device_->BindResource(&templateVerticesBuffer_, 4, cmd);
@@ -4094,7 +4125,7 @@ private:
     Texture hiZTexture_ = {};
 
     GPUBuffer vertexBuffer_ = {};
-    GPUBuffer instanceBuffer_ = {};
+    std::array<GPUBuffer, kCullOutputSlotCount> instanceBuffers_ = {};
     GPUBuffer commandBuffer_ = {};
     GPUBuffer clusterTemplateBuffer_ = {};
     GPUBuffer templateVerticesBuffer_ = {};
@@ -4121,7 +4152,7 @@ private:
     std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> visibleCountReadback_ = {};
 
     ResourceState vertexBufferState_ = ResourceState::SHADER_RESOURCE;
-    ResourceState instanceBufferState_ = ResourceState::SHADER_RESOURCE;
+    std::array<ResourceState, kCullOutputSlotCount> instanceBufferStates_ = {};
     ResourceState drawCommandIndexBufferState_ = ResourceState::VERTEX_BUFFER;
     ResourceState clusterIndexBufferState_ = ResourceState::INDEX_BUFFER;
     ResourceState baseCountBufferState_ = ResourceState::INDIRECT_ARGUMENT;

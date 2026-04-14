@@ -413,6 +413,7 @@ namespace wi
 				VkCommandBuffer transferCommandBuffer = VK_NULL_HANDLE;
 				VkFence fence = VK_NULL_HANDLE;
 				GPUBuffer uploadbuffer;
+				QUEUE_TYPE recording_queue = QUEUE_COUNT;
 				QUEUE_TYPE submitted_queue = QUEUE_COUNT;
 				uint64_t submitted_value = 0;
 				constexpr bool IsValid() const { return transferCommandBuffer != VK_NULL_HANDLE; }
@@ -425,7 +426,7 @@ namespace wi
 			void recycle_completed();
 			bool is_point_complete(QueueSyncPoint point);
 			bool wait_point(QueueSyncPoint point);
-			CopyCMD allocate(uint64_t staging_size);
+			CopyCMD allocate(uint64_t staging_size, QUEUE_TYPE queue);
 			SubmissionToken submit(CopyCMD cmd, QUEUE_TYPE queue);
 		};
 		mutable CopyAllocator copyAllocator;
