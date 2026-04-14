@@ -316,7 +316,7 @@ if(WICKED_SUBSET_NEEDS_FLECS)
     )
 
     if(WIN32)
-        target_link_libraries(wicked_subset_flecs PUBLIC ws2_32)
+        target_link_libraries(wicked_subset_flecs PUBLIC ws2_32 dbghelp)
     endif()
 endif()
 
