@@ -954,4 +954,21 @@ if(WICKED_SUBSET_BUILD_VISIBILITY_FRAME_BUFFERED_BENCHMARK_DEMO)
     wicked_subset_copy_shadercompiler_runtime(wicked_subset_visibility_pipeline_frame_buffered_benchmark)
 endif()
 
+if(WICKED_ENABLE_MIMALLOC_OVERRIDE)
+    # add_custom_command(TARGET ...) must be invoked from the directory where
+    # each target is created, so subset executable overrides are applied here.
+    set(WICKED_MIMALLOC_FINAL_TARGETS
+        wicked_subset_cube_demo
+        wicked_subset_cube_indirect_compare_demo
+        wicked_subset_cube_indirect_compare_frame_buffered_demo
+        wicked_subset_visibility_pipeline_benchmark
+        wicked_subset_visibility_pipeline_frame_buffered_benchmark
+    )
+    foreach(_wicked_mimalloc_target IN LISTS WICKED_MIMALLOC_FINAL_TARGETS)
+        if(TARGET "${_wicked_mimalloc_target}")
+            wicked_use_mimalloc_override("${_wicked_mimalloc_target}")
+        endif()
+    endforeach()
+endif()
+
 message(STATUS "Wicked graphics subset targets: ${WICKED_SUBSET_OBJECT_TARGETS}")
