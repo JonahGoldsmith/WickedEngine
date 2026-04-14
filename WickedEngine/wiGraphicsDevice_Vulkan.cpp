@@ -10041,6 +10041,27 @@ using namespace vulkan_internal;
 	void GraphicsDevice_Vulkan::Barrier(const GPUBarrier* barriers, uint32_t numBarriers, CommandList cmd)
 	{
 		CommandList_Vulkan& commandlist = GetCommandList(cmd);
+		auto sanitize_barrier_stage_mask = [&](VkPipelineStageFlags2 mask)
+		{
+			if (commandlist.queue == QUEUE_COMPUTE)
+			{
+				constexpr VkPipelineStageFlags2 kInvalidGraphicsOnlyStages =
+					VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
+					VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT |
+					VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
+					VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+					VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+					VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
+					VK_PIPELINE_STAGE_2_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+
+				if ((mask & kInvalidGraphicsOnlyStages) != 0)
+				{
+					return VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+				}
+			}
+
+			return mask;
+		};
 
 		auto& memoryBarriers = commandlist.frame_memoryBarriers;
 		auto& imageBarriers = commandlist.frame_imageBarriers;
@@ -10099,8 +10120,8 @@ using namespace vulkan_internal;
 				barrierdesc.image = internal_state->resource;
 				barrierdesc.oldLayout = _ConvertImageLayout(barrier.image.layout_before);
 				barrierdesc.newLayout = _ConvertImageLayout(barrier.image.layout_after);
-				barrierdesc.srcStageMask = _ConvertPipelineStage(barrier.image.layout_before);
-				barrierdesc.dstStageMask = _ConvertPipelineStage(barrier.image.layout_after);
+				barrierdesc.srcStageMask = sanitize_barrier_stage_mask(_ConvertPipelineStage(barrier.image.layout_before));
+				barrierdesc.dstStageMask = sanitize_barrier_stage_mask(_ConvertPipelineStage(barrier.image.layout_after));
 				barrierdesc.srcAccessMask = _ParseResourceState(barrier.image.layout_before);
 				barrierdesc.dstAccessMask = _ParseResourceState(barrier.image.layout_after);
 				if (IsFormatDepthSupport(desc.format))
@@ -10153,7 +10174,7 @@ using namespace vulkan_internal;
 					barrierdesc.dstAccessMask = VK_ACCESS_2_VIDEO_DECODE_READ_BIT_KHR | VK_ACCESS_2_VIDEO_DECODE_WRITE_BIT_KHR;
 				}
 
-					arrput(imageBarriers, barrierdesc);
+				arrput(imageBarriers, barrierdesc);
 			}
 			break;
 			case GPUBarrier::Type::BUFFER:
@@ -10167,8 +10188,8 @@ using namespace vulkan_internal;
 				barrierdesc.buffer = internal_state->resource;
 				barrierdesc.size = desc.size;
 				barrierdesc.offset = 0;
-				barrierdesc.srcStageMask = _ConvertPipelineStage(barrier.buffer.state_before);
-				barrierdesc.dstStageMask = _ConvertPipelineStage(barrier.buffer.state_after);
+				barrierdesc.srcStageMask = sanitize_barrier_stage_mask(_ConvertPipelineStage(barrier.buffer.state_before));
+				barrierdesc.dstStageMask = sanitize_barrier_stage_mask(_ConvertPipelineStage(barrier.buffer.state_after));
 				barrierdesc.srcAccessMask = _ParseResourceState(barrier.buffer.state_before);
 				barrierdesc.dstAccessMask = _ParseResourceState(barrier.buffer.state_after);
 				barrierdesc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;

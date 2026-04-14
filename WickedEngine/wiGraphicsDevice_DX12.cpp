@@ -87,6 +87,72 @@ namespace dx12_internal
 	{
 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Error!", message.c_str(), nullptr);
 	}
+	inline bool DX12SubmitDebugEnabled()
+	{
+		static const bool enabled = []()
+		{
+			const char* env = std::getenv("WICKED_DX12_SUBMIT_DEBUG");
+			if (env == nullptr || env[0] == '\0')
+				return false;
+			return std::atoi(env) != 0 || env[0] != '\0';
+		}();
+		return enabled;
+	}
+	inline const char* DX12CommandListTypeName(D3D12_COMMAND_LIST_TYPE type)
+	{
+		switch (type)
+		{
+		case D3D12_COMMAND_LIST_TYPE_DIRECT:
+			return "DIRECT";
+		case D3D12_COMMAND_LIST_TYPE_BUNDLE:
+			return "BUNDLE";
+		case D3D12_COMMAND_LIST_TYPE_COMPUTE:
+			return "COMPUTE";
+		case D3D12_COMMAND_LIST_TYPE_COPY:
+			return "COPY";
+		case D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE:
+			return "VIDEO_DECODE";
+		case D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS:
+			return "VIDEO_PROCESS";
+		case D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE:
+			return "VIDEO_ENCODE";
+		default:
+			return "UNKNOWN";
+		}
+	}
+	inline const char* DX12QueueTypeName(QUEUE_TYPE queue)
+	{
+		switch (queue)
+		{
+		case QUEUE_GRAPHICS:
+			return "GRAPHICS";
+		case QUEUE_COMPUTE:
+			return "COMPUTE";
+		case QUEUE_COPY:
+			return "COPY";
+		case QUEUE_VIDEO_DECODE:
+			return "VIDEO_DECODE";
+		default:
+			return "UNKNOWN";
+		}
+	}
+	inline void DX12LogSemaphoreArray(const char* prefix, Semaphore** semaphores)
+	{
+		if (!DX12SubmitDebugEnabled())
+			return;
+		if (semaphores == nullptr)
+		{
+			DX12_LOG("%s <none>", prefix);
+			return;
+		}
+		for (size_t i = 0; i < arrlenu(semaphores); ++i)
+		{
+			Semaphore* semaphore = semaphores[i];
+			if (semaphore == nullptr)
+				continue;
+			DX12_LOG("%s[%zu]: fence=%p value=%llu", prefix, i, (void*)semaphore->fence.Get(), (unsigned long long)semaphore->fenceValue);
+		}
+	}
 	inline bool ConvertUTF8ToWString(const char* input, std::wstring& output)
 	{
 		output.clear();
@@ -1829,10 +1895,20 @@ std::mutex queue_locker;
 	}
 	void GraphicsDevice_DX12::CommandQueue::submit()
 	{
+		const bool debug_submit = DX12SubmitDebugEnabled();
 		if (queue == nullptr)
 			return;
 		if (submit_cmds == nullptr || arrlenu(submit_cmds) == 0)
 			return;
+
+		if (debug_submit)
+		{
+			DX12_LOG(
+				"DX12 Queue::submit start: queue=%s, raw_count=%zu",
+				DX12CommandListTypeName(desc.Type),
+				arrlenu(submit_cmds)
+			);
+		}
 
 		std::vector<ID3D12CommandList*> valid_commandlists;
 		valid_commandlists.reserve(arrlenu(submit_cmds));
@@ -1842,10 +1918,23 @@ std::mutex queue_locker;
 			if (command_list == nullptr)
 			{
 				DX12_ASSERT_MSG(false, "GraphicsDevice_DX12::CommandQueue::submit: null command list in queue submit list.");
+				if (debug_submit)
+				{
+					DX12_LOG("  [%zu] null command list (skipped)");
+				}
 				continue;
 			}
 
 			const D3D12_COMMAND_LIST_TYPE command_list_type = command_list->GetType();
+			if (debug_submit)
+			{
+				DX12_LOG(
+					"  [%zu] command_list=%p requested type=%s",
+					i,
+					command_list,
+					DX12CommandListTypeName(command_list_type)
+				);
+			}
 			if (command_list_type != desc.Type)
 			{
 				DX12_ASSERT_MSG(
@@ -1854,6 +1943,15 @@ std::mutex queue_locker;
 					desc.Type,
 					command_list_type
 				);
+				if (debug_submit)
+				{
+					DX12_LOG(
+						"  [%zu] queue/list type mismatch (queue=%s, command_list=%s), skipping",
+						i,
+						DX12CommandListTypeName(desc.Type),
+						DX12CommandListTypeName(command_list_type)
+					);
+				}
 				continue;
 			}
 
@@ -1862,10 +1960,21 @@ std::mutex queue_locker;
 
 		if (!valid_commandlists.empty())
 		{
+			if (debug_submit)
+			{
+				DX12_LOG(
+					"  executing valid_count=%zu",
+					valid_commandlists.size()
+				);
+			}
 			queue->ExecuteCommandLists(
 				(UINT)valid_commandlists.size(),
 				valid_commandlists.data()
 			);
+		}
+		else if (debug_submit)
+		{
+			DX12_LOG("  nothing to execute after validation");
 		}
 
 		arrsetlen(submit_cmds, 0);
@@ -5949,6 +6058,7 @@ std::mutex queue_locker;
 	}
 	SubmissionToken GraphicsDevice_DX12::SubmitCommandListsInternal()
 	{
+		const bool debug_submit = DX12SubmitDebugEnabled();
 #ifdef PLATFORM_XBOX
 		std::scoped_lock lock(queue_locker); // queue operations are not thread-safe on XBOX
 #endif // PLATFORM_XBOX
@@ -5982,10 +6092,36 @@ std::mutex queue_locker;
 		// Submit current frame:
 		{
 			uint32_t cmd_last = cmd_count;
+			if (debug_submit)
+			{
+				DX12_LOG("DX12: SubmitCommandListsInternal begin. cmd_last=%u", cmd_last);
+			}
 			cmd_count = 0;
 			for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 			{
 				CommandList_DX12& commandlist = *commandlists[cmd];
+				ID3D12CommandList* raw_commandlist = nullptr;
+				if (commandlist.queue < QUEUE_COUNT)
+				{
+					raw_commandlist = commandlist.commandLists[commandlist.queue].Get();
+				}
+				if (debug_submit)
+				{
+					DX12_LOG(
+						"DX12: internal close cmd=%u id=%u queue=%s list_ptr=%p",
+						cmd,
+						commandlist.id,
+						DX12QueueTypeName(commandlist.queue),
+						raw_commandlist
+					);
+					if (raw_commandlist != nullptr)
+					{
+						DX12_LOG("  raw type=%s", DX12CommandListTypeName(raw_commandlist->GetType()));
+					}
+					DX12LogSemaphoreArray("  waits", commandlist.waits);
+					DX12LogSemaphoreArray("  signals", commandlist.signals);
+				}
+
 				if (commandlist.queue == QUEUE_VIDEO_DECODE)
 				{
 					dx12_check(commandlist.GetVideoDecodeCommandList()->Close());
@@ -6003,9 +6139,17 @@ std::mutex queue_locker;
 				{
 					// If the current commandlist must resolve a dependency, then previous ones will be submitted before doing that:
 					//	This improves GPU utilization because not the whole batch of command lists will need to synchronize, but only the one that handles it
+					if (debug_submit)
+					{
+						DX12_LOG("  dependency=true -> submit prior commands");
+					}
 					queue.submit();
 				}
 
+				if (debug_submit)
+				{
+					DX12_LOG("  queue=%s append submit buffer", DX12QueueTypeName(commandlist.queue));
+				}
 				arrput(queue.submit_cmds, commandlist.GetCommandList());
 
 				if (dependency)
@@ -6014,6 +6158,10 @@ std::mutex queue_locker;
 					for (size_t i = 0; i < arrlenu(commandlist.waits); ++i)
 					{
 						auto& semaphore = *commandlist.waits[i];
+						if (debug_submit)
+						{
+							DX12_LOG("    wait[%zu] fence=%p value=%llu", i, (void*)semaphore.fence.Get(), (unsigned long long)semaphore.fenceValue);
+						}
 						// Wait for command list dependency:
 						queue.wait(semaphore);
 
@@ -6022,11 +6170,19 @@ std::mutex queue_locker;
 					}
 					dx12_internal::destroy_stb_array(commandlist.waits);
 
+					if (debug_submit)
+					{
+						DX12_LOG("  dependency barrier submitted");
+					}
 					queue.submit();
 
 					for (size_t i = 0; i < arrlenu(commandlist.signals); ++i)
 					{
 						auto& semaphore = *commandlist.signals[i];
+						if (debug_submit)
+						{
+							DX12_LOG("    signal[%zu] fence=%p value=%llu", i, (void*)semaphore.fence.Get(), (unsigned long long)semaphore.fenceValue);
+						}
 						// Signal this command list's completion:
 						queue.signal(semaphore);
 
@@ -6062,6 +6218,14 @@ std::mutex queue_locker;
 				if (queue.queue == nullptr)
 					continue;
 
+				if (debug_submit)
+				{
+					DX12_LOG(
+						"DX12: queue finish submit queue=%s has_work=%d",
+						DX12QueueTypeName((QUEUE_TYPE)q),
+						queue_has_work[q] ? 1 : 0
+					);
+				}
 				queue.submit();
 
 				dx12_check(queue.queue->Signal(frame_fence[GetBufferIndex()][q].Get(), frame_fence_value));
@@ -6148,9 +6312,55 @@ std::mutex queue_locker;
 	}
 	SubmissionToken GraphicsDevice_DX12::SubmitCommandListsEx(const SubmitDesc& desc)
 	{
+		const bool debug_submit = DX12SubmitDebugEnabled();
 		bool partial_submit = desc.command_lists != nullptr && desc.command_list_count > 0;
 		bool has_submit_batch = true;
 		std::vector<CommandList_DX12*> remaining_commandlists;
+		if (debug_submit)
+		{
+			DX12_LOG(
+				"DX12: SubmitCommandListsEx begin partial_submit=%d cmd_count=%u desc_command_list_count=%u",
+				partial_submit ? 1 : 0,
+				cmd_count,
+				desc.command_list_count
+			);
+		}
+
+		auto log_commandlist_entry = [&](const char* prefix, uint32_t open_index, const CommandList_DX12* commandlist)
+		{
+			if (!debug_submit)
+				return;
+			if (commandlist == nullptr)
+			{
+				DX12_LOG("  %s[%u] <null>", prefix, open_index);
+				return;
+			}
+
+			ID3D12CommandList* raw_commandlist = nullptr;
+			if (commandlist->queue < QUEUE_COUNT)
+			{
+				raw_commandlist = commandlist->commandLists[commandlist->queue].Get();
+			}
+			D3D12_COMMAND_LIST_TYPE d3d12_type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+			if (raw_commandlist != nullptr)
+			{
+				d3d12_type = raw_commandlist->GetType();
+			}
+
+			DX12_LOG(
+				"  %s[%u] id=%u queue=%s d3d12=%s ptr=%p raw=%p",
+				prefix,
+				open_index,
+				commandlist->id,
+				DX12QueueTypeName(commandlist->queue),
+				DX12CommandListTypeName(d3d12_type),
+				commandlist,
+				raw_commandlist
+			);
+			DX12LogSemaphoreArray("    waits", commandlist->waits);
+			DX12LogSemaphoreArray("    signals", commandlist->signals);
+		};
+
 		if (partial_submit)
 		{
 			std::scoped_lock lock(cmd_locker);
@@ -6159,18 +6369,32 @@ std::mutex queue_locker;
 			for (uint32_t i = 0; i < cmd_count; ++i)
 			{
 				open_commandlists.push_back(commandlists[i]);
+				log_commandlist_entry("open", i, commandlists[i]);
 			}
 
-			std::vector<CommandList_DX12*> submit_commandlists;
-			submit_commandlists.reserve(desc.command_list_count);
-			auto is_in_open = [&](CommandList_DX12* candidate) -> bool
+			std::vector<bool> submit_selector;
+			submit_selector.resize(open_commandlists.size(), false);
+
+			auto mark_submit_by_open_index = [&](uint32_t open_index)
 			{
-				return candidate != nullptr && std::find(open_commandlists.begin(), open_commandlists.end(), candidate) != open_commandlists.end();
+				if (open_index < submit_selector.size())
+				{
+					submit_selector[open_index] = true;
+				}
 			};
-			auto contains_submit = [&](CommandList_DX12* candidate) -> bool
+			auto is_in_open = [&](CommandList_DX12* candidate, uint32_t& open_index_out) -> bool
 			{
-				return std::find(submit_commandlists.begin(), submit_commandlists.end(), candidate) != submit_commandlists.end();
+				for (uint32_t i = 0; i < (uint32_t)open_commandlists.size(); ++i)
+				{
+					if (open_commandlists[i] == candidate)
+					{
+						open_index_out = i;
+						return true;
+					}
+				}
+				return false;
 			};
+
 			auto semaphore_equal = [](const Semaphore& a, const Semaphore& b) -> bool
 			{
 				return a.fence.Get() == b.fence.Get() && a.fenceValue == b.fenceValue;
@@ -6180,11 +6404,40 @@ std::mutex queue_locker;
 			{
 				const CommandList cmd = desc.command_lists[i];
 				if (!cmd.IsValid())
+				{
+					if (debug_submit)
+					{
+						DX12_LOG("  request[%u] invalid", i);
+					}
 					continue;
+				}
 				CommandList_DX12* commandlist = (CommandList_DX12*)cmd.internal_state;
-				if (!is_in_open(commandlist) || contains_submit(commandlist))
+				if (debug_submit)
+				{
+					DX12_LOG("  request[%u] internal=%p", i, commandlist);
+				}
+				uint32_t open_index = 0;
+				if (!is_in_open(commandlist, open_index))
+				{
+					if (debug_submit)
+					{
+						DX12_LOG("  request[%u] not in open list", i);
+					}
 					continue;
-				submit_commandlists.push_back(commandlist);
+				}
+				if (submit_selector[open_index])
+				{
+					if (debug_submit)
+					{
+						DX12_LOG("  request[%u] already selected open[%u]", i, open_index);
+					}
+					continue;
+				}
+				mark_submit_by_open_index(open_index);
+				if (debug_submit)
+				{
+					DX12_LOG("  request[%u] selected open[%u]", i, open_index);
+				}
 			}
 
 			// Dependency closure: if a selected consumer waits on a producer, include that producer too.
@@ -6192,9 +6445,11 @@ std::mutex queue_locker;
 			while (changed)
 			{
 				changed = false;
-				for (size_t ci = 0; ci < submit_commandlists.size(); ++ci)
+				for (uint32_t ci = 0; ci < (uint32_t)open_commandlists.size(); ++ci)
 				{
-					CommandList_DX12* consumer = submit_commandlists[ci];
+					if (!submit_selector[ci])
+						continue;
+					CommandList_DX12* consumer = open_commandlists[ci];
 					if (consumer == nullptr || consumer->waits == nullptr)
 						continue;
 					for (size_t wi = 0; wi < arrlenu(consumer->waits); ++wi)
@@ -6202,9 +6457,10 @@ std::mutex queue_locker;
 						Semaphore* wait_sem = consumer->waits[wi];
 						if (wait_sem == nullptr)
 							continue;
-						for (CommandList_DX12* producer : open_commandlists)
+						for (uint32_t pi = 0; pi < (uint32_t)open_commandlists.size(); ++pi)
 						{
-							if (producer == nullptr || contains_submit(producer) || producer->signals == nullptr)
+							CommandList_DX12* producer = open_commandlists[pi];
+							if (producer == nullptr || submit_selector[pi] || producer->signals == nullptr)
 								continue;
 							bool found = false;
 							for (size_t si = 0; si < arrlenu(producer->signals); ++si)
@@ -6218,7 +6474,17 @@ std::mutex queue_locker;
 							}
 							if (found)
 							{
-								submit_commandlists.push_back(producer);
+								mark_submit_by_open_index(pi);
+								if (debug_submit)
+								{
+									DX12_LOG(
+										"  dependency: selecting producer open[%u] for consumer open[%u] semaphore=%p value=%llu",
+										pi,
+										ci,
+										(void*)wait_sem->fence.Get(),
+										(unsigned long long)wait_sem->fenceValue
+									);
+								}
 								changed = true;
 								break;
 							}
@@ -6227,22 +6493,76 @@ std::mutex queue_locker;
 				}
 			}
 
-			if (submit_commandlists.empty())
+			bool has_submit_selection = false;
+			for (bool selected : submit_selector)
 			{
+				if (selected)
+				{
+					has_submit_selection = true;
+					break;
+				}
+			}
+
+			if (!has_submit_selection)
+			{
+				if (debug_submit)
+				{
+					DX12_LOG("  no commandlists selected for this submit");
+				}
 				has_submit_batch = false;
 			}
 			else
 			{
+				std::vector<CommandList_DX12*> submit_commandlists;
+				submit_commandlists.reserve(desc.command_list_count);
 				remaining_commandlists.reserve(open_commandlists.size());
-				auto in_submit = [&](CommandList_DX12* candidate) -> bool
+				if (debug_submit)
 				{
-					return std::find(submit_commandlists.begin(), submit_commandlists.end(), candidate) != submit_commandlists.end();
-				};
+					size_t select_count = 0;
+					for (uint32_t i = 0; i < (uint32_t)submit_selector.size(); ++i)
+					{
+						if (submit_selector[i])
+							++select_count;
+						DX12_LOG("  selector open[%u]=%d", i, submit_selector[i] ? 1 : 0);
+					}
+					DX12_LOG("  selected_count=%zu", select_count);
+				}
+
 				for (CommandList_DX12* commandlist : open_commandlists)
 				{
-					if (!in_submit(commandlist))
+					bool found = false;
+					for (uint32_t i = 0; i < (uint32_t)open_commandlists.size(); ++i)
+					{
+						if (open_commandlists[i] == commandlist && submit_selector[i])
+						{
+							found = true;
+							break;
+						}
+					}
+
+					if (found)
+					{
+						submit_commandlists.push_back(commandlist);
+						if (debug_submit)
+						{
+							log_commandlist_entry(
+								"submit",
+								(uint32_t)submit_commandlists.size() - 1,
+								commandlist
+							);
+						}
+					}
+					else
 					{
 						remaining_commandlists.push_back(commandlist);
+						if (debug_submit)
+						{
+							log_commandlist_entry(
+								"remain",
+								(uint32_t)remaining_commandlists.size() - 1,
+								commandlist
+							);
+						}
 					}
 				}
 
@@ -6324,11 +6644,19 @@ std::mutex queue_locker;
 					commandlists[i] = submit_commandlists[i];
 					commandlists[i]->id = i;
 				}
+				if (debug_submit)
+				{
+					DX12_LOG("  submit list final count=%u", cmd_count);
+				}
 			}
 		}
 
 		if (partial_submit && !has_submit_batch)
 		{
+			if (debug_submit)
+			{
+				DX12_LOG("DX12: partial_submit requested but no batch selected");
+			}
 			return {};
 		}
 
@@ -6348,9 +6676,24 @@ std::mutex queue_locker;
 			}
 		}
 		SubmissionToken token = SubmitCommandListsInternal();
+		if (debug_submit)
+		{
+			DX12_LOG("DX12: SubmitCommandListsInternal token mask=%u", token.queue_mask);
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((token.queue_mask & (1u << q)) != 0)
+				{
+					DX12_LOG("  token queue=%s value=%llu", DX12QueueTypeName((QUEUE_TYPE)q), (unsigned long long)token.values[q]);
+				}
+			}
+		}
 		if (partial_submit)
 		{
 			std::scoped_lock lock(cmd_locker);
+			if (debug_submit)
+			{
+				DX12_LOG("DX12: partial_submit post-flush remaining_count=%zu", remaining_commandlists.size());
+			}
 			cmd_count = (uint32_t)remaining_commandlists.size();
 			for (uint32_t i = 0; i < cmd_count; ++i)
 			{
