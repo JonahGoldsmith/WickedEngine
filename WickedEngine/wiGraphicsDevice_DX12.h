@@ -233,6 +233,7 @@ namespace wi
 		std::atomic<uint64_t> token_fence_values[QUEUE_COUNT] = {};
 		mutable std::mutex upload_token_locker;
 		mutable SubmissionToken pending_implicit_uploads = {};
+		const SwapChain** pending_presents[QUEUE_COUNT] = {};
 
 		struct DescriptorBinder
 		{
@@ -483,6 +484,9 @@ namespace wi
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
 		SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc) override;
+		SubmissionToken QueueSubmit(QUEUE_TYPE type, const QueueSubmitDesc& desc) override;
+		bool AcquireNextImage(SwapChain* swapchain, AcquireDesc* desc) override;
+		void QueuePresent(QUEUE_TYPE presentQueue, const QueuePresentDesc& desc) override;
 		bool IsQueuePointComplete(QueueSyncPoint point) const override;
 		void WaitQueuePoint(QueueSyncPoint point) const override;
 		QueueSyncPoint GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const override;

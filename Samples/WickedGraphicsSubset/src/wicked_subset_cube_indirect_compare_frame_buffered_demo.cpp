@@ -630,6 +630,8 @@ public:
             std::fprintf(stderr, "Failed to create Wicked graphics device for this platform\n");
             return false;
         }
+        device_->SetBackendFrameRolloverWaitsEnabled(false);
+        device_->ResetFrameContexts();
 
         if (!CreateSwapchain())
         {
@@ -1291,6 +1293,13 @@ private:
             return false;
         }
 
+        const uint32_t frameContext = device_->BeginFrameContext(true);
+        if (frameContext == wi::GraphicsDevice::INVALID_FRAME_CONTEXT)
+        {
+            RetireFrameSlot(slot);
+            return false;
+        }
+
         {
             std::lock_guard<std::mutex> lock(deviceSubmitMutex_);
             slot.failed = !RecordFrameCommands(slot);
@@ -1300,6 +1309,9 @@ private:
                 slot.submitToken = device_->SubmitCommandListsEx(submitDesc);
             }
         }
+
+        device_->SetFrameContextRetireToken(frameContext, slot.submitToken);
+
         if (slot.failed)
         {
             RetireFrameSlot(slot);

@@ -10,15 +10,19 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef METAL
@@ -608,6 +612,9 @@ struct FrameMetrics
     double gpuCullMs = 0.0;
     double gpuDrawMs = 0.0;
     double gpuFrameMs = 0.0;
+    double frameSlotReclaimWaitMs = 0.0;
+    double acquireNextImageMs = 0.0;
+    double gpuSubmitToCompleteMs = 0.0;
     uint32_t visibleCommands = 0;
     uint32_t hashValue = 0;
 };
@@ -996,6 +1003,17 @@ public:
             std::fprintf(stderr, "Failed to create Wicked graphics device\n");
             return false;
         }
+        // This benchmark drives frame pacing explicitly with submission tokens.
+        // Disable backend frame rollover waits so slot reuse is controlled by engine logic.
+        device_->SetBackendFrameRolloverWaitsEnabled(false);
+        device_->ResetFrameContexts();
+
+        if (!controllerWorkersInitialized_)
+        {
+            cullControllerWorker_.Start();
+            drawControllerWorker_.Start();
+            controllerWorkersInitialized_ = true;
+        }
 
         supportsMeshShaders_ = device_->CheckCapability(wi::MESH_SHADER);
 
@@ -1054,6 +1072,11 @@ public:
         runEndTick_ = prevTick;
         runFrameCount_ = 0;
         runCpuMsAccum_ = 0.0;
+        runFrameSlotReclaimWaitMsAccum_ = 0.0;
+        runAcquireNextImageMsAccum_ = 0.0;
+        latestSubmitToCompleteMs_ = 0.0;
+        completedSubmitToCompleteMsAccum_ = 0.0;
+        completedSubmitToCompleteSamples_ = 0;
 
         while (running)
         {
@@ -1155,6 +1178,14 @@ public:
 
         const double avgCpuMs = runCpuMsAccum_ / static_cast<double>(runFrameCount_);
         const double avgFpsCpu = avgCpuMs > 0.0 ? (1000.0 / avgCpuMs) : 0.0;
+        const double avgFrameSlotReclaimWaitMs =
+            runFrameSlotReclaimWaitMsAccum_ / static_cast<double>(runFrameCount_);
+        const double avgAcquireNextImageMs =
+            runAcquireNextImageMsAccum_ / static_cast<double>(runFrameCount_);
+        const double avgSubmitToCompleteMs = completedSubmitToCompleteSamples_ > 0
+                                                 ? (completedSubmitToCompleteMsAccum_ /
+                                                    static_cast<double>(completedSubmitToCompleteSamples_))
+                                                 : 0.0;
 
         double wallSeconds = 0.0;
         if (runPerfFrequency_ > 0 && runEndTick_ >= runStartTick_)
@@ -1164,11 +1195,14 @@ public:
         const double avgFpsWall = wallSeconds > 0.0 ? (static_cast<double>(runFrameCount_) / wallSeconds) : avgFpsCpu;
 
         SDL_Log(
-            "[WickedVisibilityPipelineFrameBufferedBenchmark] average framerate | frames=%llu | avg_fps=%.2f | avg_cpu_fps=%.2f | avg_cpu_ms=%.3f | runtime=%.2fs",
+            "[WickedVisibilityPipelineFrameBufferedBenchmark] average framerate | frames=%llu | avg_fps=%.2f | avg_cpu_fps=%.2f | avg_cpu_ms=%.3f | avg_reclaim_wait_ms=%.3f | avg_acquire_ms=%.3f | avg_submit_to_complete_ms=%.3f | runtime=%.2fs",
             static_cast<unsigned long long>(runFrameCount_),
             avgFpsWall,
             avgFpsCpu,
             avgCpuMs,
+            avgFrameSlotReclaimWaitMs,
+            avgAcquireNextImageMs,
+            avgSubmitToCompleteMs,
             wallSeconds);
     }
 
@@ -1188,6 +1222,17 @@ public:
         }
 
         LogAverageFramerateSummary();
+        SDL_Log(
+            "[WickedVisibilityPipelineFrameBufferedBenchmark] ending metrics | cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms reclaim=%.3fms acquire=%.3fms submit_to_complete=%.3fms visible=%u hash=%u",
+            latestMetrics_.cpuMs,
+            latestMetrics_.gpuCullMs,
+            latestMetrics_.gpuDrawMs,
+            latestMetrics_.gpuFrameMs,
+            latestMetrics_.frameSlotReclaimWaitMs,
+            latestMetrics_.acquireNextImageMs,
+            latestMetrics_.gpuSubmitToCompleteMs,
+            latestMetrics_.visibleCommands,
+            latestMetrics_.hashValue);
 
         taggedAllocator_.Reset();
 
@@ -1229,6 +1274,12 @@ public:
 
         swapchain_ = {};
         device_.reset();
+        if (controllerWorkersInitialized_)
+        {
+            cullControllerWorker_.Stop();
+            drawControllerWorker_.Stop();
+            controllerWorkersInitialized_ = false;
+        }
 
 #if defined(__APPLE__) && WICKED_SUBSET_USE_METAL
         if (metalView_ != nullptr)
@@ -1288,12 +1339,120 @@ private:
         return values[values.size() / 2];
     }
 
+    enum class FramePhase : uint32_t
+    {
+        Cull = 0,
+        GraphicsDraw = 1,
+        GraphicsPost = 2,
+        Count,
+    };
+
+    static constexpr uint32_t kMaxPhaseCommandLists = 4u;
+
+    struct FramePhaseState
+    {
+        std::array<CommandList, kMaxPhaseCommandLists> commandLists = {};
+        uint32_t commandListCount = 0;
+        SubmissionToken submitToken = {};
+    };
+
     struct FrameSlot
     {
         bool submitted = false;
         uint64_t frameId = 0;
         uint64_t submitTag = 0;
-        SubmissionToken submitToken = {};
+        uint64_t submitCpuTick = 0;
+        SubmissionToken frameCompletionToken = {};
+        std::array<FramePhaseState, static_cast<uint32_t>(FramePhase::Count)> phases = {};
+    };
+
+    static constexpr uint32_t FramePhaseIndex(FramePhase phase)
+    {
+        return static_cast<uint32_t>(phase);
+    }
+
+    static void AppendPhaseCommand(FramePhaseState& phase, CommandList cmd)
+    {
+        if (!wiGraphicsCommandListIsValid(cmd))
+            return;
+        if (phase.commandListCount >= phase.commandLists.size())
+            return;
+        phase.commandLists[phase.commandListCount++] = cmd;
+    }
+
+    class PersistentControllerWorker
+    {
+    public:
+        void Start()
+        {
+            stopRequested_ = false;
+            worker_ = std::thread([this]() { ThreadMain(); });
+        }
+
+        void Stop()
+        {
+            {
+                std::scoped_lock lock(mutex_);
+                stopRequested_ = true;
+                hasTask_ = false;
+            }
+            cv_.notify_all();
+            if (worker_.joinable())
+            {
+                worker_.join();
+            }
+        }
+
+        void Submit(std::function<void()> task)
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait(lock, [this]() { return !hasTask_ && !busy_; });
+            task_ = std::move(task);
+            hasTask_ = true;
+            cv_.notify_all();
+        }
+
+        void WaitIdle()
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait(lock, [this]() { return !hasTask_ && !busy_; });
+        }
+
+    private:
+        void ThreadMain()
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            for (;;)
+            {
+                cv_.wait(lock, [this]() { return hasTask_ || stopRequested_; });
+                if (stopRequested_)
+                {
+                    break;
+                }
+
+                std::function<void()> task = std::move(task_);
+                hasTask_ = false;
+                busy_ = true;
+                lock.unlock();
+
+                if (task)
+                {
+                    task();
+                }
+
+                lock.lock();
+                busy_ = false;
+                cv_.notify_all();
+            }
+        }
+
+        std::thread worker_;
+        std::mutex mutex_;
+        std::condition_variable cv_;
+        std::function<void()> task_;
+        bool hasTask_ = false;
+        bool busy_ = false;
+        bool stopRequested_ = false;
     };
 
     static constexpr uint32_t kFrameSlotCount = 16;
@@ -2534,13 +2693,47 @@ private:
     {
         return &tvbFilteredPrimitiveIDBufferStates_[slot % kCullOutputSlotCount];
     }
+    ResourceState* InstanceBufferStateCompute(uint32_t slot)
+    {
+        return &instanceBufferStatesCompute_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* VisibleArgsBufferStateCompute(uint32_t slot)
+    {
+        return &visibleArgsBufferStatesCompute_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* TVBArgsBufferStateCompute(uint32_t slot)
+    {
+        return &tvbArgsBufferStatesCompute_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* VisibleCountBufferStateCompute(uint32_t slot)
+    {
+        return &visibleCountBufferStatesCompute_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* MeshDispatchArgsBufferStateCompute(uint32_t slot)
+    {
+        return &meshDispatchArgsBufferStatesCompute_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* VisibleCommandIndicesBufferStateCompute(uint32_t slot)
+    {
+        return &visibleCommandIndicesBufferStatesCompute_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* TVBFilteredIndexBufferStateCompute(uint32_t slot)
+    {
+        return &tvbFilteredIndexBufferStatesCompute_[slot % kCullOutputSlotCount];
+    }
+    ResourceState* TVBFilteredPrimitiveIDBufferStateCompute(uint32_t slot)
+    {
+        return &tvbFilteredPrimitiveIDBufferStatesCompute_[slot % kCullOutputSlotCount];
+    }
 
     void ResetTransientBufferStates()
     {
         vertexBufferState_ = ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER;
+        vertexBufferStateCompute_ = ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER;
         for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
             instanceBufferStates_[slot] = ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER;
+            instanceBufferStatesCompute_[slot] = ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER;
         }
         drawCommandIndexBufferState_ = ResourceState::VERTEX_BUFFER;
         clusterIndexBufferState_ = ResourceState::INDEX_BUFFER;
@@ -2549,15 +2742,23 @@ private:
         hashBufferState_ = ResourceState::UNORDERED_ACCESS;
 
         instanceVisibleBufferState_ = ResourceState::UNORDERED_ACCESS;
+        instanceVisibleBufferStateCompute_ = ResourceState::UNORDERED_ACCESS;
         for (uint32_t slot = 0; slot < kCullOutputSlotCount; ++slot)
         {
             visibleCountBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            visibleCountBufferStatesCompute_[slot] = ResourceState::UNORDERED_ACCESS;
             meshDispatchArgsBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            meshDispatchArgsBufferStatesCompute_[slot] = ResourceState::UNORDERED_ACCESS;
             visibleCommandIndicesBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            visibleCommandIndicesBufferStatesCompute_[slot] = ResourceState::UNORDERED_ACCESS;
             visibleArgsBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            visibleArgsBufferStatesCompute_[slot] = ResourceState::UNORDERED_ACCESS;
             tvbFilteredIndexBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            tvbFilteredIndexBufferStatesCompute_[slot] = ResourceState::UNORDERED_ACCESS;
             tvbArgsBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            tvbArgsBufferStatesCompute_[slot] = ResourceState::UNORDERED_ACCESS;
             tvbFilteredPrimitiveIDBufferStates_[slot] = ResourceState::UNORDERED_ACCESS;
+            tvbFilteredPrimitiveIDBufferStatesCompute_[slot] = ResourceState::UNORDERED_ACCESS;
         }
         ResetCullFrameOverlap();
     }
@@ -3010,7 +3211,7 @@ private:
         else if (key == SDLK_P)
         {
             SDL_Log(
-                "[WickedVisibilityPipelineFrameBufferedBenchmark] snapshot | suite=%s pipeline=%s scenario=%s tier=%s binding=%s cmd=%u inst=%u async=%s tokens=%s hiz=%s flecs_motion=%s parity=%s cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms visible=%u hash=%u",
+                "[WickedVisibilityPipelineFrameBufferedBenchmark] snapshot | suite=%s pipeline=%s scenario=%s tier=%s binding=%s cmd=%u inst=%u async=%s tokens=%s hiz=%s flecs_motion=%s parity=%s cpu=%.3fms cull=%.3fms draw=%.3fms frame=%.3fms reclaim=%.3fms acquire=%.3fms submit_to_complete=%.3fms visible=%u hash=%u",
                 SuiteName(activeSuite_),
                 PipelineName(activePipeline_),
                 ScenarioName(activeScenario_),
@@ -3027,6 +3228,9 @@ private:
                 latestMetrics_.gpuCullMs,
                 latestMetrics_.gpuDrawMs,
                 latestMetrics_.gpuFrameMs,
+                latestMetrics_.frameSlotReclaimWaitMs,
+                latestMetrics_.acquireNextImageMs,
+                latestMetrics_.gpuSubmitToCompleteMs,
                 latestMetrics_.visibleCommands,
                 latestMetrics_.hashValue);
             return;
@@ -3270,6 +3474,20 @@ private:
         slot = {};
     }
 
+    void RecordSubmitToCompletionSample(const FrameSlot& slot, uint64_t completionTick)
+    {
+        if (slot.submitCpuTick == 0 || completionTick < slot.submitCpuTick || runPerfFrequency_ == 0)
+        {
+            return;
+        }
+
+        const double submitToCompleteMs = 1000.0 * static_cast<double>(completionTick - slot.submitCpuTick) /
+                                          static_cast<double>(runPerfFrequency_);
+        latestSubmitToCompleteMs_ = submitToCompleteMs;
+        completedSubmitToCompleteMsAccum_ += submitToCompleteMs;
+        ++completedSubmitToCompleteSamples_;
+    }
+
     void ReapCompletedFrameSlots(bool wait_for_all)
     {
         if (device_ == nullptr)
@@ -3280,19 +3498,24 @@ private:
             if (!slot.submitted)
                 continue;
 
-            if (wait_for_all || device_->IsSubmissionComplete(slot.submitToken))
+            if (wait_for_all || device_->IsSubmissionComplete(slot.frameCompletionToken))
             {
                 if (wait_for_all)
                 {
-                    device_->WaitSubmission(slot.submitToken);
+                    device_->WaitSubmission(slot.frameCompletionToken);
                 }
+                RecordSubmitToCompletionSample(slot, SDL_GetPerformanceCounter());
                 RetireFrameSlot(slot);
             }
         }
     }
 
-    FrameSlot& AcquireFrameSlot()
+    FrameSlot& AcquireFrameSlot(double* outWaitMs)
     {
+        if (outWaitMs != nullptr)
+        {
+            *outWaitMs = 0.0;
+        }
         ReapCompletedFrameSlots(false);
         for (;;)
         {
@@ -3302,9 +3525,21 @@ private:
             {
                 slot.frameId = nextFrameId_++;
                 slot.submitTag = wicked_subset::MakeFrameTag(slot.frameId, wicked_subset::FrameAllocTag::GPUUntilFence);
+                slot.frameCompletionToken = {};
+                for (FramePhaseState& phase : slot.phases)
+                {
+                    phase = {};
+                }
                 return slot;
             }
-            device_->WaitSubmission(slot.submitToken);
+            const uint64_t waitBegin = SDL_GetPerformanceCounter();
+            device_->WaitSubmission(slot.frameCompletionToken);
+            const uint64_t waitEnd = SDL_GetPerformanceCounter();
+            if (outWaitMs != nullptr && runPerfFrequency_ > 0 && waitEnd >= waitBegin)
+            {
+                *outWaitMs += 1000.0 * static_cast<double>(waitEnd - waitBegin) / static_cast<double>(runPerfFrequency_);
+            }
+            RecordSubmitToCompletionSample(slot, waitEnd);
             RetireFrameSlot(slot);
         }
     }
@@ -3335,7 +3570,10 @@ private:
         }
 
         tokenSubmissionEnabled_ = true;
-        FrameSlot& frameSlot = AcquireFrameSlot();
+        const uint32_t frameContext = device_->BeginFrameContext(true);
+        SDL_assert(frameContext != wi::GraphicsDevice::INVALID_FRAME_CONTEXT);
+        double frameSlotReclaimWaitMs = 0.0;
+        FrameSlot& frameSlot = AcquireFrameSlot(&frameSlotReclaimWaitMs);
 
         const uint64_t perfFreq = SDL_GetPerformanceFrequency();
         const uint64_t cpuBegin = SDL_GetPerformanceCounter();
@@ -3377,6 +3615,8 @@ private:
         FrameMetrics metrics = {};
         const uint32_t frameIndex = device_->GetBufferIndex();
         ReadTimingAndCounters(frameIndex, &metrics);
+        metrics.frameSlotReclaimWaitMs = frameSlotReclaimWaitMs;
+        metrics.gpuSubmitToCompleteMs = latestSubmitToCompleteMs_;
 
         const bool useAsyncComputeForCull = IsAsyncCullActiveForCurrentMode();
         uint32_t drawSlot = 0u;
@@ -3434,147 +3674,272 @@ private:
         GPUBuffer* drawVisibleCountBuffer = VisibleCountBuffer(drawSlot);
         ResourceState* drawVisibleCountState = VisibleCountBufferState(drawSlot);
         GPUBuffer* cullVisibleCountBuffer = VisibleCountBuffer(cullSlot);
-        ResourceState* cullVisibleCountState = VisibleCountBufferState(cullSlot);
+        ResourceState* cullVisibleCountState = useAsyncComputeForCull ? VisibleCountBufferStateCompute(cullSlot) : VisibleCountBufferState(cullSlot);
 
-        CommandList cmdCull = {};
-        if (useAsyncComputeForCull)
+        wi::AcquireDesc acquireDesc = {};
+        acquireDesc.queue = QUEUE_GRAPHICS;
+        const uint64_t acquireBegin = SDL_GetPerformanceCounter();
+        const bool acquired = device_->AcquireNextImage(&swapchain_, &acquireDesc);
+        const uint64_t acquireEnd = SDL_GetPerformanceCounter();
+        metrics.acquireNextImageMs = perfFreq > 0
+                                         ? (1000.0 * static_cast<double>(acquireEnd - acquireBegin) /
+                                            static_cast<double>(perfFreq))
+                                         : 0.0;
+        if (!acquired)
         {
-            cmdCull = device_->BeginCommandList(QUEUE_COMPUTE);
-        }
-        CommandList cmdGraphics = device_->BeginCommandList(QUEUE_GRAPHICS);
-        if (useAsyncComputeForCull)
-        {
-            // keep compute cull on its own queue
-        }
-        else
-        {
-            cmdCull = cmdGraphics;
+            return false;
         }
 
-        if (ecsMotionEnabled_ && BuildECSInstanceSnapshot(activeInstanceCount_))
+        FramePhaseState& cullPhase = frameSlot.phases[FramePhaseIndex(FramePhase::Cull)];
+        FramePhaseState& drawPhase = frameSlot.phases[FramePhaseIndex(FramePhase::GraphicsDraw)];
+        FramePhaseState& postPhase = frameSlot.phases[FramePhaseIndex(FramePhase::GraphicsPost)];
+        cullPhase = {};
+        drawPhase = {};
+        postPhase = {};
+
+        const bool snapshotBuilt = ecsMotionEnabled_ && BuildECSInstanceSnapshot(activeInstanceCount_);
+        const uint64_t instanceUploadBytes = snapshotBuilt ? (static_cast<uint64_t>(activeInstanceCount_) * sizeof(GPUInstanceData)) : 0u;
+        const bool uploadInstances = instanceUploadBytes > 0u;
+
+        // Phase graph (Forge-style controller flow):
+        //   async path:   Cull(Compute) + Draw(Graphics) in parallel -> Post(Graphics, waits Draw and optional Cull) -> Present
+        //   sync path:    Draw(Graphics includes cull) -> Post(Graphics) -> Present
+        // Frame ring stores per-phase command lists/tokens explicitly.
+        struct PhaseRecordWork
         {
-            const uint64_t instanceUploadBytes = static_cast<uint64_t>(activeInstanceCount_) * sizeof(GPUInstanceData);
-            if (instanceUploadBytes > 0u)
+            WickedVisibilityPipelineFrameBufferedBenchmark* self = nullptr;
+            const SceneCB* sceneCB = nullptr;
+            uint32_t frameIndex = 0;
+            uint32_t drawSlot = 0;
+            uint32_t cullSlot = 0;
+            bool useAsyncComputeForCull = false;
+            bool uploadInstances = false;
+            uint64_t instanceUploadBytes = 0;
+            GPUBuffer* drawVisibleCountBuffer = nullptr;
+            ResourceState* drawVisibleCountState = nullptr;
+            GPUBuffer* cullVisibleCountBuffer = nullptr;
+            ResourceState* cullVisibleCountState = nullptr;
+            FramePhaseState* cullPhase = nullptr;
+            FramePhaseState* drawPhase = nullptr;
+            FramePhaseState* postPhase = nullptr;
+        } phaseWork = {
+            this,
+            &sceneCB,
+            frameIndex,
+            drawSlot,
+            cullSlot,
+            useAsyncComputeForCull,
+            uploadInstances,
+            instanceUploadBytes,
+            drawVisibleCountBuffer,
+            drawVisibleCountState,
+            cullVisibleCountBuffer,
+            cullVisibleCountState,
+            &cullPhase,
+            &drawPhase,
+            &postPhase,
+        };
+
+        auto recordCullController = [](PhaseRecordWork* work) {
+            if (work == nullptr || !work->useAsyncComputeForCull)
+                return;
+            auto* self = work->self;
+            CommandList cmdCull = self->device_->BeginCommandList(QUEUE_COMPUTE);
+            if (work->uploadInstances)
             {
-                GPUBuffer* cullInstanceBuffer = InstanceBuffer(cullSlot);
-                ResourceState* cullInstanceState = InstanceBufferState(cullSlot);
-                TransitionBufferState(cullInstanceBuffer, cullInstanceState, ResourceState::COPY_DST, cmdCull);
-                device_->UpdateBuffer(cullInstanceBuffer, ecsSnapshotScratch_.data(), cmdCull, instanceUploadBytes, 0);
-                TransitionBufferState(cullInstanceBuffer, cullInstanceState, ResourceState::SHADER_RESOURCE_COMPUTE, cmdCull);
+                GPUBuffer* cullInstanceBuffer = self->InstanceBuffer(work->cullSlot);
+                ResourceState* cullInstanceState = self->InstanceBufferStateCompute(work->cullSlot);
+                self->TransitionBufferState(cullInstanceBuffer, cullInstanceState, ResourceState::COPY_DST, cmdCull);
+                self->device_->UpdateBuffer(cullInstanceBuffer, self->ecsSnapshotScratch_.data(), cmdCull, work->instanceUploadBytes, 0);
+                self->TransitionBufferState(cullInstanceBuffer, cullInstanceState, ResourceState::SHADER_RESOURCE_COMPUTE, cmdCull);
             }
-        }
+            self->TransitionBufferState(work->cullVisibleCountBuffer, work->cullVisibleCountState, ResourceState::UNORDERED_ACCESS, cmdCull);
+            self->device_->ClearUAV(work->cullVisibleCountBuffer, 0u, cmdCull);
+            self->ExecuteCullStage(*work->sceneCB, cmdCull, work->cullSlot, true);
+            self->device_->EndCommandList(cmdCull);
+            AppendPhaseCommand(*work->cullPhase, cmdCull);
+        };
 
-        if (countsDirty_)
-        {
-            TransitionBufferState(&baseCountBuffer_, &baseCountBufferState_, ResourceState::COPY_DST, cmdGraphics);
-            device_->UpdateBuffer(&baseCountBuffer_, &activeCommandCount_, cmdGraphics, sizeof(activeCommandCount_), 0);
-            TransitionBufferState(&baseCountBuffer_, &baseCountBufferState_, ResourceState::INDIRECT_ARGUMENT, cmdGraphics);
-            countsDirty_ = false;
-        }
+        auto recordDrawController = [](PhaseRecordWork* work) {
+            if (work == nullptr)
+                return;
+            auto* self = work->self;
+            CommandList cmdGraphics = self->device_->BeginCommandList(QUEUE_GRAPHICS);
 
-        TransitionBufferState(cullVisibleCountBuffer, cullVisibleCountState, ResourceState::UNORDERED_ACCESS, cmdCull);
-        device_->ClearUAV(cullVisibleCountBuffer, 0u, cmdCull);
-        TransitionBufferState(&hashBuffer_, &hashBufferState_, ResourceState::UNORDERED_ACCESS, cmdGraphics);
-        device_->ClearUAV(&hashBuffer_, 0u, cmdGraphics);
-
-        device_->QueryReset(&timestampQueryHeap_, 0, kTimestampCount, cmdGraphics);
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampFrameStart, cmdGraphics);
-
-        if (!useAsyncComputeForCull)
-        {
-            device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
-            ExecuteCullStage(sceneCB, cmdCull, cullSlot, useAsyncComputeForCull);
-            device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
-        }
-        else
-        {
-            ExecuteCullStage(sceneCB, cmdCull, cullSlot, useAsyncComputeForCull);
-            if (!cullHistoryValid_)
+            if (!work->useAsyncComputeForCull)
             {
-                // Prime first async frame so draw has valid data before one-frame-lag overlap begins.
-                device_->WaitCommandList(cmdGraphics, cmdCull);
+                if (work->uploadInstances)
+                {
+                    GPUBuffer* cullInstanceBuffer = self->InstanceBuffer(work->cullSlot);
+                    ResourceState* cullInstanceState = self->InstanceBufferState(work->cullSlot);
+                    self->TransitionBufferState(cullInstanceBuffer, cullInstanceState, ResourceState::COPY_DST, cmdGraphics);
+                    self->device_->UpdateBuffer(cullInstanceBuffer, self->ecsSnapshotScratch_.data(), cmdGraphics, work->instanceUploadBytes, 0);
+                    self->TransitionBufferState(cullInstanceBuffer, cullInstanceState, ResourceState::SHADER_RESOURCE_COMPUTE, cmdGraphics);
+                }
             }
 
-            // Cull timestamps are graphics-queue-local in this benchmark path.
-            // Keep them valid and deterministic when cull executes on async compute.
-            device_->QueryEnd(&timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
-            device_->QueryEnd(&timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
-        }
-        if (activePipeline_ != PipelineStyle::TVB)
+            if (self->countsDirty_)
+            {
+                self->TransitionBufferState(&self->baseCountBuffer_, &self->baseCountBufferState_, ResourceState::COPY_DST, cmdGraphics);
+                self->device_->UpdateBuffer(&self->baseCountBuffer_, &self->activeCommandCount_, cmdGraphics, sizeof(self->activeCommandCount_), 0);
+                self->TransitionBufferState(&self->baseCountBuffer_, &self->baseCountBufferState_, ResourceState::INDIRECT_ARGUMENT, cmdGraphics);
+                self->countsDirty_ = false;
+            }
+
+            if (!work->useAsyncComputeForCull)
+            {
+                self->TransitionBufferState(work->cullVisibleCountBuffer, work->cullVisibleCountState, ResourceState::UNORDERED_ACCESS, cmdGraphics);
+                self->device_->ClearUAV(work->cullVisibleCountBuffer, 0u, cmdGraphics);
+            }
+
+            self->TransitionBufferState(&self->hashBuffer_, &self->hashBufferState_, ResourceState::UNORDERED_ACCESS, cmdGraphics);
+            self->device_->ClearUAV(&self->hashBuffer_, 0u, cmdGraphics);
+
+            self->device_->QueryReset(&self->timestampQueryHeap_, 0, kTimestampCount, cmdGraphics);
+            self->device_->QueryEnd(&self->timestampQueryHeap_, kTimestampFrameStart, cmdGraphics);
+
+            if (!work->useAsyncComputeForCull)
+            {
+                self->device_->QueryEnd(&self->timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
+                self->ExecuteCullStage(*work->sceneCB, cmdGraphics, work->cullSlot, false);
+                self->device_->QueryEnd(&self->timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
+            }
+            else
+            {
+                self->device_->QueryEnd(&self->timestampQueryHeap_, kTimestampCullStart, cmdGraphics);
+                self->device_->QueryEnd(&self->timestampQueryHeap_, kTimestampCullEnd, cmdGraphics);
+            }
+
+            if (self->activePipeline_ != PipelineStyle::TVB)
+            {
+                self->TransitionBufferState(
+                    work->drawVisibleCountBuffer,
+                    work->drawVisibleCountState,
+                    ResourceState::COPY_SRC,
+                    cmdGraphics);
+                self->device_->CopyBuffer(&self->visibleCountReadback_[work->frameIndex], 0, work->drawVisibleCountBuffer, 0, sizeof(uint32_t), cmdGraphics);
+            }
+            else
+            {
+                self->visibleCountReady_[work->frameIndex] = false;
+            }
+
+            self->device_->QueryEnd(&self->timestampQueryHeap_, kTimestampDrawStart, cmdGraphics);
+            self->PrepareDrawBufferStates(cmdGraphics, work->drawSlot);
+            self->ExecuteDrawStage(*work->sceneCB, cmdGraphics, work->drawSlot);
+            self->device_->QueryEnd(&self->timestampQueryHeap_, kTimestampDrawEnd, cmdGraphics);
+            self->device_->EndCommandList(cmdGraphics);
+            AppendPhaseCommand(*work->drawPhase, cmdGraphics);
+        };
+
+        auto recordPostController = [](PhaseRecordWork* work) {
+            if (work == nullptr)
+                return;
+            auto* self = work->self;
+            CommandList cmdPost = self->device_->BeginCommandList(QUEUE_GRAPHICS);
+            self->ExecuteHiZBuildStage(*work->sceneCB, cmdPost);
+            self->device_->QueryEnd(&self->timestampQueryHeap_, kTimestampHashStart, cmdPost);
+            self->ExecuteHashStage(*work->sceneCB, cmdPost, work->frameIndex, work->drawSlot);
+            self->device_->QueryEnd(&self->timestampQueryHeap_, kTimestampHashEnd, cmdPost);
+            self->PrepareAsyncCullBaselineStates(cmdPost, work->drawSlot);
+            self->ExecutePresentStage(cmdPost);
+            self->device_->QueryEnd(&self->timestampQueryHeap_, kTimestampFrameEnd, cmdPost);
+            self->device_->QueryResolve(&self->timestampQueryHeap_, 0, kTimestampCount, &self->timestampReadback_[work->frameIndex], 0, cmdPost);
+            self->device_->EndCommandList(cmdPost);
+            AppendPhaseCommand(*work->postPhase, cmdPost);
+        };
+
+        const bool allowParallelControllers = useAsyncComputeForCull && cullHistoryValid_;
+        if (allowParallelControllers && controllerWorkersInitialized_)
         {
-            TransitionBufferState(
-                drawVisibleCountBuffer,
-                drawVisibleCountState,
-                ResourceState::COPY_SRC,
-                cmdGraphics);
-            device_->CopyBuffer(&visibleCountReadback_[frameIndex], 0, drawVisibleCountBuffer, 0, sizeof(uint32_t), cmdGraphics);
+            cullControllerWorker_.Submit([work = &phaseWork, recordCullController]() {
+                recordCullController(work);
+            });
+            drawControllerWorker_.Submit([work = &phaseWork, recordDrawController]() {
+                recordDrawController(work);
+            });
+            cullControllerWorker_.WaitIdle();
+            drawControllerWorker_.WaitIdle();
         }
         else
         {
-            visibleCountReady_[frameIndex] = false;
+            recordCullController(&phaseWork);
+            recordDrawController(&phaseWork);
         }
 
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawStart, cmdGraphics);
-        PrepareDrawBufferStates(cmdGraphics, drawSlot);
-        ExecuteDrawStage(sceneCB, cmdGraphics, drawSlot);
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampDrawEnd, cmdGraphics);
+        recordPostController(&phaseWork);
 
-        if (useAsyncComputeForCull && tokenSubmissionEnabled_ && hiZOcclusionEnabled_)
-        {
-            // Hi-Z build writes the same texture async cull reads. Keep draw/cull overlap,
-            // but wait before rebuilding Hi-Z to avoid read/write races.
-            device_->WaitCommandList(cmdGraphics, cmdCull);
-        }
-        ExecuteHiZBuildStage(sceneCB, cmdGraphics);
-
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampHashStart, cmdGraphics);
-        ExecuteHashStage(sceneCB, cmdGraphics, frameIndex, drawSlot);
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampHashEnd, cmdGraphics);
-
-        PrepareAsyncCullBaselineStates(cmdGraphics, drawSlot);
-        ExecutePresentStage(cmdGraphics);
-
-        device_->QueryEnd(&timestampQueryHeap_, kTimestampFrameEnd, cmdGraphics);
-
-        device_->QueryResolve(&timestampQueryHeap_, 0, kTimestampCount, &timestampReadback_[frameIndex], 0, cmdGraphics);
-
-        if (useAsyncComputeForCull && cmdCull.internal_state != cmdGraphics.internal_state)
-        {
-            device_->EndCommandList(cmdCull);
-        }
-        device_->EndCommandList(cmdGraphics);
-
-        SubmissionToken computeSubmitToken = {};
-        if (useAsyncComputeForCull && cmdCull.internal_state != cmdGraphics.internal_state)
+        if (cullPhase.commandListCount > 0)
         {
             wi::QueueSubmitDesc computeSubmitDesc = {};
-            computeSubmitDesc.command_lists = &cmdCull;
-            computeSubmitDesc.command_list_count = 1;
+            computeSubmitDesc.command_lists = cullPhase.commandLists.data();
+            computeSubmitDesc.command_list_count = cullPhase.commandListCount;
             computeSubmitDesc.wait_submissions = explicitSubmitDependencies;
             computeSubmitDesc.wait_submission_count = explicitSubmitDependencyCount;
-            computeSubmitToken = device_->QueueSubmit(QUEUE_COMPUTE, computeSubmitDesc);
+            cullPhase.submitToken = device_->QueueSubmit(QUEUE_COMPUTE, computeSubmitDesc);
         }
 
-        wi::QueueSubmitDesc queueSubmitDesc = {};
-        queueSubmitDesc.command_lists = &cmdGraphics;
-        queueSubmitDesc.command_list_count = 1;
-        queueSubmitDesc.wait_submissions = explicitSubmitDependencies;
-        queueSubmitDesc.wait_submission_count = explicitSubmitDependencyCount;
-        QueueSyncPoint computeWaitPoint = {};
-        if (computeSubmitToken.IsValid())
+        if (drawPhase.commandListCount > 0)
         {
-            computeWaitPoint = computeSubmitToken.Get(QUEUE_COMPUTE);
-            if (computeWaitPoint.IsValid())
+            wi::QueueSubmitDesc drawSubmitDesc = {};
+            drawSubmitDesc.command_lists = drawPhase.commandLists.data();
+            drawSubmitDesc.command_list_count = drawPhase.commandListCount;
+            drawSubmitDesc.wait_submissions = explicitSubmitDependencies;
+            drawSubmitDesc.wait_submission_count = explicitSubmitDependencyCount;
+
+            QueueSyncPoint drawWaitPoint = {};
+            if (useAsyncComputeForCull && !cullHistoryValid_)
             {
-                queueSubmitDesc.wait_points = &computeWaitPoint;
-                queueSubmitDesc.wait_point_count = 1;
+                drawWaitPoint = cullPhase.submitToken.Get(QUEUE_COMPUTE);
+                if (drawWaitPoint.IsValid())
+                {
+                    drawSubmitDesc.wait_points = &drawWaitPoint;
+                    drawSubmitDesc.wait_point_count = 1;
+                }
             }
+
+            drawPhase.submitToken = device_->QueueSubmit(QUEUE_GRAPHICS, drawSubmitDesc);
         }
 
-        SubmissionToken submitToken = device_->QueueSubmit(QUEUE_GRAPHICS, queueSubmitDesc);
+        if (postPhase.commandListCount > 0)
+        {
+            wi::QueueSubmitDesc postSubmitDesc = {};
+            postSubmitDesc.command_lists = postPhase.commandLists.data();
+            postSubmitDesc.command_list_count = postPhase.commandListCount;
+
+            SubmissionToken postDependencies[1] = {};
+            uint32_t postDependencyCount = 0;
+            if (drawPhase.submitToken.IsValid())
+            {
+                postDependencies[postDependencyCount++] = drawPhase.submitToken;
+            }
+            if (postDependencyCount > 0)
+            {
+                postSubmitDesc.wait_submissions = postDependencies;
+                postSubmitDesc.wait_submission_count = postDependencyCount;
+            }
+
+            QueueSyncPoint postWaitPoint = {};
+            if (useAsyncComputeForCull && hiZOcclusionEnabled_)
+            {
+                postWaitPoint = cullPhase.submitToken.Get(QUEUE_COMPUTE);
+                if (postWaitPoint.IsValid())
+                {
+                    postSubmitDesc.wait_points = &postWaitPoint;
+                    postSubmitDesc.wait_point_count = 1;
+                }
+            }
+
+            postPhase.submitToken = device_->QueueSubmit(QUEUE_GRAPHICS, postSubmitDesc);
+        }
+
         if (tokenSubmissionEnabled_)
         {
-            const QueueSyncPoint graphicsPoint = submitToken.Get(QUEUE_GRAPHICS);
+            QueueSyncPoint graphicsPoint = postPhase.submitToken.Get(QUEUE_GRAPHICS);
+            if (!graphicsPoint.IsValid())
+            {
+                graphicsPoint = drawPhase.submitToken.Get(QUEUE_GRAPHICS);
+            }
             if (graphicsPoint.IsValid())
             {
                 lastGraphicsCompletionToken_ = {};
@@ -3584,10 +3949,14 @@ private:
 
         wi::QueuePresentDesc queuePresentDesc = {};
         queuePresentDesc.swapchain = &swapchain_;
-        QueueSyncPoint presentWait = submitToken.Get(QUEUE_GRAPHICS);
+        QueueSyncPoint presentWait = postPhase.submitToken.Get(QUEUE_GRAPHICS);
         if (!presentWait.IsValid())
         {
-            presentWait = submitToken.Get(QUEUE_COMPUTE);
+            presentWait = drawPhase.submitToken.Get(QUEUE_GRAPHICS);
+        }
+        if (!presentWait.IsValid())
+        {
+            presentWait = cullPhase.submitToken.Get(QUEUE_COMPUTE);
         }
         if (presentWait.IsValid())
         {
@@ -3596,8 +3965,15 @@ private:
         }
         device_->QueuePresent(QUEUE_GRAPHICS, queuePresentDesc);
 
-        frameSlot.submitToken = submitToken;
-        frameSlot.submitted = submitToken.IsValid();
+        SubmissionToken frameCompletionToken = {};
+        frameCompletionToken.Merge(cullPhase.submitToken);
+        frameCompletionToken.Merge(drawPhase.submitToken);
+        frameCompletionToken.Merge(postPhase.submitToken);
+
+        frameSlot.frameCompletionToken = frameCompletionToken;
+        frameSlot.submitted = frameCompletionToken.IsValid();
+        frameSlot.submitCpuTick = frameSlot.submitted ? SDL_GetPerformanceCounter() : 0;
+        device_->SetFrameContextRetireToken(frameContext, frameCompletionToken);
         if (frameSlot.submitted)
         {
             (void)taggedAllocator_.Allocate<uint8_t>(frameSlot.submitTag, 1, 0);
@@ -3611,14 +3987,7 @@ private:
         {
             if (tokenSubmissionEnabled_)
             {
-                SubmissionToken cullToken = {};
-                QueueSyncPoint cullPoint = submitToken.Get(QUEUE_COMPUTE);
-                if (!cullPoint.IsValid())
-                {
-                    cullPoint = submitToken.Get(QUEUE_GRAPHICS);
-                }
-                cullToken.Merge(cullPoint);
-                cullCompletionTokens_[cullSlot] = cullToken;
+                cullCompletionTokens_[cullSlot] = cullPhase.submitToken;
             }
             cullHistoryValid_ = true;
             cullReadSlot_ = cullSlot;
@@ -3638,6 +4007,8 @@ private:
 
         const uint64_t cpuEnd = SDL_GetPerformanceCounter();
         metrics.cpuMs = perfFreq > 0 ? (1000.0 * static_cast<double>(cpuEnd - cpuBegin) / static_cast<double>(perfFreq)) : 0.0;
+        runFrameSlotReclaimWaitMsAccum_ += metrics.frameSlotReclaimWaitMs;
+        runAcquireNextImageMsAccum_ += metrics.acquireNextImageMs;
         latestMetrics_ = metrics;
 
         if (outMetrics != nullptr)
@@ -3662,26 +4033,36 @@ private:
         GPUBuffer* tvbFilteredIndexBuffer = TVBFilteredIndexBuffer(cullSlot);
         GPUBuffer* tvbArgsBuffer = TVBArgsBuffer(cullSlot);
         GPUBuffer* tvbFilteredPrimitiveIDBuffer = TVBFilteredPrimitiveIDBuffer(cullSlot);
+        ResourceState* vertexState = cullOnComputeQueue ? &vertexBufferStateCompute_ : &vertexBufferState_;
+        ResourceState* instanceState = cullOnComputeQueue ? InstanceBufferStateCompute(cullSlot) : InstanceBufferState(cullSlot);
+        ResourceState* instanceVisibleState = cullOnComputeQueue ? &instanceVisibleBufferStateCompute_ : &instanceVisibleBufferState_;
+        ResourceState* visibleCommandIndicesState = cullOnComputeQueue ? VisibleCommandIndicesBufferStateCompute(cullSlot) : VisibleCommandIndicesBufferState(cullSlot);
+        ResourceState* visibleCountState = cullOnComputeQueue ? VisibleCountBufferStateCompute(cullSlot) : VisibleCountBufferState(cullSlot);
+        ResourceState* visibleArgsState = cullOnComputeQueue ? VisibleArgsBufferStateCompute(cullSlot) : VisibleArgsBufferState(cullSlot);
+        ResourceState* tvbFilteredIndexState = cullOnComputeQueue ? TVBFilteredIndexBufferStateCompute(cullSlot) : TVBFilteredIndexBufferState(cullSlot);
+        ResourceState* tvbArgsState = cullOnComputeQueue ? TVBArgsBufferStateCompute(cullSlot) : TVBArgsBufferState(cullSlot);
+        ResourceState* tvbFilteredPrimitiveIDState = cullOnComputeQueue ? TVBFilteredPrimitiveIDBufferStateCompute(cullSlot) : TVBFilteredPrimitiveIDBufferState(cullSlot);
+        ResourceState* meshDispatchArgsState = cullOnComputeQueue ? MeshDispatchArgsBufferStateCompute(cullSlot) : MeshDispatchArgsBufferState(cullSlot);
 
         const bool requiresTVBFiltering = (activePipeline_ == PipelineStyle::TVB) ||
                                           (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable);
 
         TransitionBufferState(
             &vertexBuffer_,
-            &vertexBufferState_,
+            vertexState,
             cullOnComputeQueue ? ResourceState::SHADER_RESOURCE_COMPUTE : (ResourceState::SHADER_RESOURCE | ResourceState::VERTEX_BUFFER),
             cmd);
-        TransitionBufferState(InstanceBuffer(cullSlot), InstanceBufferState(cullSlot), ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
-        TransitionBufferState(&instanceVisibleBuffer_, &instanceVisibleBufferState_, ResourceState::UNORDERED_ACCESS, cmd);
-        TransitionBufferState(visibleCommandIndicesBuffer, VisibleCommandIndicesBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
-        TransitionBufferState(visibleCountBuffer, VisibleCountBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
-        TransitionBufferState(visibleArgsBuffer, VisibleArgsBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(InstanceBuffer(cullSlot), instanceState, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
+        TransitionBufferState(&instanceVisibleBuffer_, instanceVisibleState, ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(visibleCommandIndicesBuffer, visibleCommandIndicesState, ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(visibleCountBuffer, visibleCountState, ResourceState::UNORDERED_ACCESS, cmd);
+        TransitionBufferState(visibleArgsBuffer, visibleArgsState, ResourceState::UNORDERED_ACCESS, cmd);
         if (requiresTVBFiltering)
         {
-            TransitionBufferState(tvbFilteredIndexBuffer, TVBFilteredIndexBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
-            TransitionBufferState(tvbArgsBuffer, TVBArgsBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
-            TransitionBufferState(tvbFilteredPrimitiveIDBuffer, TVBFilteredPrimitiveIDBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
-            TransitionBufferState(meshDispatchArgsBuffer, MeshDispatchArgsBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
+            TransitionBufferState(tvbFilteredIndexBuffer, tvbFilteredIndexState, ResourceState::UNORDERED_ACCESS, cmd);
+            TransitionBufferState(tvbArgsBuffer, tvbArgsState, ResourceState::UNORDERED_ACCESS, cmd);
+            TransitionBufferState(tvbFilteredPrimitiveIDBuffer, tvbFilteredPrimitiveIDState, ResourceState::UNORDERED_ACCESS, cmd);
+            TransitionBufferState(meshDispatchArgsBuffer, meshDispatchArgsState, ResourceState::UNORDERED_ACCESS, cmd);
         }
 
         device_->BindDynamicConstantBuffer(sceneCB, 0, cmd);
@@ -3707,14 +4088,14 @@ private:
         const uint32_t instanceGroups = (activeInstanceCount_ + 63u) / 64u;
         device_->Dispatch(std::max(1u, instanceGroups), 1, 1, cmd);
         device_->Barrier(cmd);
-        TransitionBufferState(&instanceVisibleBuffer_, &instanceVisibleBufferState_, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
+        TransitionBufferState(&instanceVisibleBuffer_, instanceVisibleState, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
 
         device_->BindComputeShader(csClusterFilter, cmd);
         const uint32_t commandGroups = (activeCommandCount_ + 63u) / 64u;
         device_->Dispatch(std::max(1u, commandGroups), 1, 1, cmd);
         device_->Barrier(cmd);
-        TransitionBufferState(visibleCommandIndicesBuffer, VisibleCommandIndicesBufferState(cullSlot), ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
-        TransitionBufferState(visibleCountBuffer, VisibleCountBufferState(cullSlot), ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
+        TransitionBufferState(visibleCommandIndicesBuffer, visibleCommandIndicesState, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
+        TransitionBufferState(visibleCountBuffer, visibleCountState, ResourceState::SHADER_RESOURCE_COMPUTE, cmd);
 
         if (activePipeline_ == PipelineStyle::Esoterica && activeSuite_ == SuiteMode::Portable)
         {
@@ -3726,13 +4107,13 @@ private:
             device_->Dispatch(1, 1, 1, cmd);
             device_->Barrier(cmd);
 
-            TransitionBufferState(meshDispatchArgsBuffer, MeshDispatchArgsBufferState(cullSlot), ResourceState::INDIRECT_ARGUMENT, cmd);
+            TransitionBufferState(meshDispatchArgsBuffer, meshDispatchArgsState, ResourceState::INDIRECT_ARGUMENT, cmd);
 
             device_->BindComputeShader(csTVBFilter, cmd);
             device_->BindDynamicConstantBuffer(tvbCB, 0, cmd);
             device_->DispatchIndirect(meshDispatchArgsBuffer, 0, cmd);
 
-            TransitionBufferState(meshDispatchArgsBuffer, MeshDispatchArgsBufferState(cullSlot), ResourceState::UNORDERED_ACCESS, cmd);
+            TransitionBufferState(meshDispatchArgsBuffer, meshDispatchArgsState, ResourceState::UNORDERED_ACCESS, cmd);
             device_->Barrier(cmd);
         }
     }
@@ -4178,7 +4559,7 @@ private:
         std::snprintf(
             title,
             sizeof(title),
-            "Visibility Benchmark FB [%s] | %s | %s | %s | %s | tier %s (%.1fM tris) | cmd %u vis %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | inflight %u/%u | async=%s tokens=%s hiz=%s flecs=%s parity=%s auto=%s",
+            "Visibility Benchmark FB [%s] | %s | %s | %s | %s | tier %s (%.1fM tris) | cmd %u vis %u inst %u | FPS %.1f | CPU %.2fms | GPU cull %.2fms draw %.2fms frame %.2fms | reclaim %.2fms acquire %.2fms submit->done %.2fms | inflight %u/%u | async=%s tokens=%s hiz=%s flecs=%s parity=%s auto=%s",
             BackendName(),
             SuiteName(activeSuite_),
             PipelineName(activePipeline_),
@@ -4194,6 +4575,9 @@ private:
             metrics.gpuCullMs,
             metrics.gpuDrawMs,
             metrics.gpuFrameMs,
+            metrics.frameSlotReclaimWaitMs,
+            metrics.acquireNextImageMs,
+            metrics.gpuSubmitToCompleteMs,
             inFlightSlots,
             kFrameSlotCount,
             IsAsyncCullActiveForCurrentMode() ? "on" : "off",
@@ -4295,6 +4679,16 @@ private:
     std::array<ResourceState, kCullOutputSlotCount> tvbFilteredIndexBufferStates_ = {};
     std::array<ResourceState, kCullOutputSlotCount> tvbArgsBufferStates_ = {};
     std::array<ResourceState, kCullOutputSlotCount> tvbFilteredPrimitiveIDBufferStates_ = {};
+    ResourceState vertexBufferStateCompute_ = ResourceState::SHADER_RESOURCE;
+    std::array<ResourceState, kCullOutputSlotCount> instanceBufferStatesCompute_ = {};
+    ResourceState instanceVisibleBufferStateCompute_ = ResourceState::UNORDERED_ACCESS;
+    std::array<ResourceState, kCullOutputSlotCount> visibleCountBufferStatesCompute_ = {};
+    std::array<ResourceState, kCullOutputSlotCount> meshDispatchArgsBufferStatesCompute_ = {};
+    std::array<ResourceState, kCullOutputSlotCount> visibleCommandIndicesBufferStatesCompute_ = {};
+    std::array<ResourceState, kCullOutputSlotCount> visibleArgsBufferStatesCompute_ = {};
+    std::array<ResourceState, kCullOutputSlotCount> tvbFilteredIndexBufferStatesCompute_ = {};
+    std::array<ResourceState, kCullOutputSlotCount> tvbArgsBufferStatesCompute_ = {};
+    std::array<ResourceState, kCullOutputSlotCount> tvbFilteredPrimitiveIDBufferStatesCompute_ = {};
 
     GPUQueryHeap timestampQueryHeap_ = {};
     std::array<GPUBuffer, wi::GraphicsDevice::GetBufferCount()> timestampReadback_ = {};
@@ -4345,6 +4739,9 @@ private:
     bool tokenSubmissionEnabled_ = true;
     bool bindlessDescriptorFailureLogged_ = false;
     bool ecsMotionEnabled_ = true;
+    bool controllerWorkersInitialized_ = false;
+    PersistentControllerWorker cullControllerWorker_;
+    PersistentControllerWorker drawControllerWorker_;
     wicked_subset::FrameTaggedHeapAllocator taggedAllocator_;
     std::array<FrameSlot, kFrameSlotCount> frameSlots_ = {};
     uint32_t frameSlotCursor_ = 0;
@@ -4381,6 +4778,11 @@ private:
     uint64_t runEndTick_ = 0;
     uint64_t runFrameCount_ = 0;
     double runCpuMsAccum_ = 0.0;
+    double runFrameSlotReclaimWaitMsAccum_ = 0.0;
+    double runAcquireNextImageMsAccum_ = 0.0;
+    double latestSubmitToCompleteMs_ = 0.0;
+    double completedSubmitToCompleteMsAccum_ = 0.0;
+    uint64_t completedSubmitToCompleteSamples_ = 0;
 
     bool csvHeaderWritten_ = false;
     std::filesystem::path csvPath_;

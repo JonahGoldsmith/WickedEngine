@@ -1232,6 +1232,7 @@ namespace vulkan_internal
 		uint32_t swapChainAcquireSemaphoreIndex = 0;
 		std::deque<VkSemaphore> swapchainAcquireSemaphores;
 		std::deque<VkSemaphore> swapchainReleaseSemaphores;
+		bool explicit_acquire_pending = false;
 
 		ColorSpace colorSpace = ColorSpace::SRGB;
 		SwapChainDesc desc;
@@ -1529,6 +1530,7 @@ namespace vulkan_internal
 
 		internal_state->swapChainAcquireSemaphoreIndex = 0;
 		internal_state->swapChainImageIndex = 0;
+		internal_state->explicit_acquire_pending = false;
 
 		if (internal_state->swapchainAcquireSemaphores.empty())
 		{
@@ -1707,7 +1709,8 @@ using namespace vulkan_internal;
 		VkFence fence,
 		bool include_frame_sync,
 		uint64_t timeline_signal_value,
-		uint64_t* out_timeline_signal_value
+		uint64_t* out_timeline_signal_value,
+		bool process_presents
 	)
 	{
 		if (out_timeline_signal_value != nullptr)
@@ -1781,7 +1784,7 @@ using namespace vulkan_internal;
 		}
 
 		// Swapchain presents:
-		if (arrlenu(swapchains) > 0)
+		if (process_presents && arrlenu(swapchains) > 0)
 		{
 			VkPresentInfoKHR presentInfo = {};
 			presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -1816,6 +1819,10 @@ using namespace vulkan_internal;
 			swapchains = nullptr;
 			swapchainImageIndices = nullptr;
 			swapchainWaitSemaphores = nullptr;
+		}
+		else if (process_presents)
+		{
+			swapchain_updates.clear();
 		}
 
 		return did_submit;
@@ -7565,7 +7572,7 @@ using namespace vulkan_internal;
 		}
 	}
 
-	SubmissionToken GraphicsDevice_Vulkan::SubmitCommandListsInternal()
+	SubmissionToken GraphicsDevice_Vulkan::SubmitCommandListsInternal(bool defer_presents)
 	{
 		const bool timeline_supported = SupportsSubmissionTokens();
 		const bool token_mode_requested = true;
@@ -7645,7 +7652,7 @@ using namespace vulkan_internal;
 					queue.signal(sema);
 					queues[q].wait(sema);
 				}
-				queue.submit(this, VK_NULL_HANDLE, !token_mode_requested);
+				queue.submit(this, VK_NULL_HANDLE, !token_mode_requested, 0, nullptr, !defer_presents);
 				arrfree(init_transitions);
 				init_transitions = nullptr;
 			}
@@ -7691,7 +7698,7 @@ using namespace vulkan_internal;
 				{
 					// If the current commandlist must resolve a dependency, then previous ones will be submitted before doing that:
 					//	This improves GPU utilization because not the whole batch of command lists will need to synchronize, but only the one that handles it
-					queue.submit(this, VK_NULL_HANDLE, !token_mode_requested);
+					queue.submit(this, VK_NULL_HANDLE, !token_mode_requested, 0, nullptr, !defer_presents);
 				}
 
 				VkCommandBufferSubmitInfo cbSubmitInfo = {};
@@ -7700,7 +7707,6 @@ using namespace vulkan_internal;
 				arrput(queue.submit_cmds, cbSubmitInfo);
 				queue_has_work[commandlist.queue] = true;
 
-				queue.swapchain_updates = commandlist.prev_swapchains;
 				for (auto& swapchain : commandlist.prev_swapchains)
 				{
 					auto internal_state = to_internal(&swapchain);
@@ -7719,6 +7725,7 @@ using namespace vulkan_internal;
 					signalSemaphore.value = 0; // not a timeline semaphore
 					arrput(queue.submit_signalSemaphoreInfos, signalSemaphore);
 
+					queue.swapchain_updates.push_back(swapchain);
 					arrput(queue.swapchains, internal_state->swapChain);
 					arrput(queue.swapchainImageIndices, internal_state->swapChainImageIndex);
 					arrput(queue.swapchainWaitSemaphores, signalSemaphore.semaphore);
@@ -7743,7 +7750,7 @@ using namespace vulkan_internal;
 					}
 					commandlist.signals.clear();
 
-					queue.submit(this, VK_NULL_HANDLE, !token_mode_requested);
+					queue.submit(this, VK_NULL_HANDLE, !token_mode_requested, 0, nullptr, !defer_presents);
 				}
 
 				for (auto& x : commandlist.pipelines_worker)
@@ -7778,7 +7785,7 @@ using namespace vulkan_internal;
 						out_timeline_signal_value = &timeline_signal_value;
 					}
 
-					const bool submitted = queues[q].submit(this, frame_fence[submit_index][q], !token_mode_requested, 0, out_timeline_signal_value);
+					const bool submitted = queues[q].submit(this, frame_fence[submit_index][q], !token_mode_requested, 0, out_timeline_signal_value, !defer_presents);
 					frame_queue_active[submit_index][q] = submitted;
 
 					if (!submitted || !queue_has_work[q])
@@ -7810,8 +7817,8 @@ using namespace vulkan_internal;
 		// From here, we begin a new frame, this affects GetBufferIndex()!
 		FRAMECOUNT++;
 
-		// Initiate stalling CPU when GPU is not yet finished with next frame:
-		if (FRAMECOUNT >= BUFFERCOUNT)
+		// Optional legacy frame rollover wait. Engine-owned buffering can disable this path.
+		if (IsBackendFrameRolloverWaitsEnabled() && FRAMECOUNT >= BUFFERCOUNT)
 		{
 			const uint32_t bufferindex = GetBufferIndex();
 			VkFence waitFences[QUEUE_COUNT] = {};
@@ -7888,7 +7895,7 @@ using namespace vulkan_internal;
 		return tokens;
 	}
 
-	SubmissionToken GraphicsDevice_Vulkan::SubmitCommandListsEx(const SubmitDesc& desc)
+	SubmissionToken GraphicsDevice_Vulkan::SubmitCommandListsWithDesc(const SubmitDesc& desc, bool defer_presents)
 	{
 		bool partial_submit = desc.command_lists != nullptr && desc.command_list_count > 0;
 		bool has_submit_batch = true;
@@ -8085,7 +8092,7 @@ using namespace vulkan_internal;
 				}
 			}
 		}
-		SubmissionToken token = SubmitCommandListsInternal();
+		SubmissionToken token = SubmitCommandListsInternal(defer_presents);
 		if (partial_submit)
 		{
 			cmd_locker.lock();
@@ -8111,6 +8118,357 @@ using namespace vulkan_internal;
 			}
 		}
 		return token;
+	}
+
+	SubmissionToken GraphicsDevice_Vulkan::SubmitCommandListsEx(const SubmitDesc& desc)
+	{
+		return SubmitCommandListsWithDesc(desc, false);
+	}
+
+	SubmissionToken GraphicsDevice_Vulkan::QueueSubmit(QUEUE_TYPE type, const QueueSubmitDesc& desc)
+	{
+		if (type >= QUEUE_COUNT || queues[type].queue == VK_NULL_HANDLE)
+		{
+			return {};
+		}
+		if (desc.command_lists == nullptr || desc.command_list_count == 0)
+		{
+			return {};
+		}
+
+		std::vector<CommandList_Vulkan*> open_commandlists;
+		std::vector<CommandList_Vulkan*> filtered_commandlists_internal;
+		std::unique_ptr<CommandList[]> filtered_command_lists(new CommandList[desc.command_list_count]);
+		uint32_t filtered_command_list_count = 0;
+
+		{
+			std::scoped_lock lock(cmd_locker);
+			open_commandlists.reserve(cmd_count);
+			for (uint32_t i = 0; i < cmd_count; ++i)
+			{
+				open_commandlists.push_back(commandlists[i]);
+			}
+
+			auto is_open_commandlist = [&](const CommandList_Vulkan* candidate) -> bool
+			{
+				return std::find(open_commandlists.begin(), open_commandlists.end(), candidate) != open_commandlists.end();
+			};
+
+			for (uint32_t i = 0; i < desc.command_list_count; ++i)
+			{
+				const CommandList cmd = desc.command_lists[i];
+				if (!wiGraphicsCommandListIsValid(cmd))
+					continue;
+
+				CommandList_Vulkan* commandlist = (CommandList_Vulkan*)cmd.internal_state;
+				if (commandlist == nullptr || !is_open_commandlist(commandlist))
+					continue;
+				if (commandlist->queue != type)
+				{
+					VULKAN_LOG_ERROR(
+						"[Vulkan][QueueSubmit] Rejected command list from queue %s in submit to queue %s",
+						GetQueueTypeName(commandlist->queue),
+						GetQueueTypeName(type)
+					);
+#ifndef NDEBUG
+					SDL_assert(false && "QueueSubmit requires command lists recorded for the same queue type");
+#endif
+					continue;
+				}
+				if (std::find(filtered_commandlists_internal.begin(), filtered_commandlists_internal.end(), commandlist) != filtered_commandlists_internal.end())
+					continue;
+
+				filtered_command_lists[filtered_command_list_count++] = cmd;
+				filtered_commandlists_internal.push_back(commandlist);
+			}
+		}
+		if (filtered_command_list_count == 0)
+		{
+			return {};
+		}
+
+		for (const CommandList_Vulkan* consumer : filtered_commandlists_internal)
+		{
+			if (consumer == nullptr)
+				continue;
+			for (VkSemaphore wait_sem : consumer->waits)
+			{
+				if (wait_sem == VK_NULL_HANDLE)
+					continue;
+				for (const CommandList_Vulkan* producer : open_commandlists)
+				{
+					if (producer == nullptr || producer->signals.empty())
+						continue;
+					for (VkSemaphore signal_sem : producer->signals)
+					{
+						if (signal_sem != wait_sem)
+							continue;
+						if (producer->queue != type)
+						{
+							VULKAN_LOG_ERROR(
+								"[Vulkan][QueueSubmit] Rejected cross-queue command list dependency: consumer queue=%s producer queue=%s",
+								GetQueueTypeName(type),
+								GetQueueTypeName(producer->queue)
+							);
+#ifndef NDEBUG
+							SDL_assert(false && "QueueSubmit command list dependencies must stay within the submitted queue type");
+#endif
+							return {};
+						}
+						break;
+					}
+				}
+			}
+		}
+
+		SubmitDesc submit = {};
+		submit.command_lists = filtered_command_lists.get();
+		submit.command_list_count = filtered_command_list_count;
+		submit.submission_dependencies = desc.wait_submissions;
+		submit.submission_dependency_count = desc.wait_submission_count;
+		submit.throttle_cpu = desc.throttle_cpu;
+		submit.max_inflight_per_queue = desc.max_inflight_per_queue;
+
+		std::unique_ptr<QueueDependency[]> queue_dependencies;
+		if (desc.wait_points != nullptr && desc.wait_point_count > 0)
+		{
+			queue_dependencies.reset(new QueueDependency[desc.wait_point_count]);
+			for (uint32_t i = 0; i < desc.wait_point_count; ++i)
+			{
+				queue_dependencies[i].point = desc.wait_points[i];
+			}
+			submit.queue_dependencies = queue_dependencies.get();
+			submit.queue_dependency_count = desc.wait_point_count;
+		}
+
+		return SubmitCommandListsWithDesc(submit, true);
+	}
+
+	bool GraphicsDevice_Vulkan::AcquireNextImage(SwapChain* swapchain, AcquireDesc* desc)
+	{
+		if (!wiGraphicsSwapChainIsValid(swapchain))
+		{
+			return false;
+		}
+
+		auto internal_state = to_internal(swapchain);
+		if (internal_state == nullptr || internal_state->swapChain == VK_NULL_HANDLE || internal_state->swapchainAcquireSemaphores.empty())
+		{
+			return false;
+		}
+
+		VkResult res = VK_SUCCESS;
+		uint32_t image_index = 0;
+		internal_state->locker.lock();
+		if (internal_state->explicit_acquire_pending)
+		{
+			image_index = internal_state->swapChainImageIndex;
+			internal_state->locker.unlock();
+		}
+		else
+		{
+			internal_state->swapChainAcquireSemaphoreIndex = (internal_state->swapChainAcquireSemaphoreIndex + 1) % internal_state->swapchainAcquireSemaphores.size();
+			do
+			{
+				res = vkAcquireNextImageKHR(
+					device,
+					internal_state->swapChain,
+					timeout_value,
+					internal_state->swapchainAcquireSemaphores[internal_state->swapChainAcquireSemaphoreIndex],
+					VK_NULL_HANDLE,
+					&internal_state->swapChainImageIndex
+				);
+				if (res == VK_TIMEOUT)
+				{
+					VULKAN_LOG_ERROR("vkAcquireNextImageKHR resulted in VK_TIMEOUT, retrying");
+					std::this_thread::yield();
+				}
+			} while (res == VK_TIMEOUT);
+			if (res == VK_SUCCESS)
+			{
+				internal_state->explicit_acquire_pending = true;
+				image_index = internal_state->swapChainImageIndex;
+			}
+			internal_state->locker.unlock();
+		}
+
+		if (res != VK_SUCCESS)
+		{
+			if (res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR)
+			{
+				{
+					std::scoped_lock lock(allocationhandler->destroylocker);
+					for (auto& x : internal_state->swapchainAcquireSemaphores)
+					{
+						allocationhandler->Retire(allocationhandler->destroyer_semaphores, x);
+					}
+				}
+				internal_state->swapchainAcquireSemaphores.clear();
+				if (CreateSwapChainInternal(internal_state, physicalDevice, device, allocationhandler))
+				{
+					return AcquireNextImage(swapchain, desc);
+				}
+			}
+			SDL_assert(0);
+			return false;
+		}
+
+		if (desc != nullptr)
+		{
+			desc->imageIndex = image_index;
+			if (desc->signal_point != nullptr)
+			{
+				*desc->signal_point = GetLastSubmittedQueuePoint(desc->queue);
+			}
+		}
+
+		return true;
+	}
+
+	void GraphicsDevice_Vulkan::QueuePresent(QUEUE_TYPE presentQueue, const QueuePresentDesc& desc)
+	{
+		if (presentQueue >= QUEUE_COUNT)
+			return;
+
+		CommandQueue& queue = queues[presentQueue];
+		if (queue.queue == VK_NULL_HANDLE)
+			return;
+
+		VkSwapchainKHR* original_swapchains = queue.swapchains;
+		uint32_t* original_image_indices = queue.swapchainImageIndices;
+		VkSemaphore* original_wait_semaphores = queue.swapchainWaitSemaphores;
+		std::deque<SwapChain> original_updates = std::move(queue.swapchain_updates);
+		queue.swapchains = nullptr;
+		queue.swapchainImageIndices = nullptr;
+		queue.swapchainWaitSemaphores = nullptr;
+		queue.swapchain_updates.clear();
+
+		VkSwapchainKHR* present_swapchains = nullptr;
+		uint32_t* present_image_indices = nullptr;
+		VkSemaphore* present_wait_semaphores = nullptr;
+		std::deque<SwapChain> present_updates;
+
+		VkSwapchainKHR* remaining_swapchains = nullptr;
+		uint32_t* remaining_image_indices = nullptr;
+		VkSemaphore* remaining_wait_semaphores = nullptr;
+		std::deque<SwapChain> remaining_updates;
+
+		const auto* target_swapchain = desc.swapchain != nullptr ? to_internal(desc.swapchain) : nullptr;
+		size_t last_match = std::numeric_limits<size_t>::max();
+		const size_t pending_count = (size_t)arrlenu(original_swapchains);
+		if (target_swapchain != nullptr)
+		{
+			for (size_t i = 0; i < pending_count; ++i)
+			{
+				if (original_swapchains[i] == target_swapchain->swapChain)
+				{
+					last_match = i;
+				}
+			}
+		}
+
+		for (size_t i = 0; i < pending_count; ++i)
+		{
+			const bool is_target = target_swapchain == nullptr || original_swapchains[i] == target_swapchain->swapChain;
+			const bool select_for_present =
+				target_swapchain == nullptr ? is_target : (is_target && i == last_match);
+			const bool keep_for_later =
+				target_swapchain != nullptr && !is_target;
+
+			if (!select_for_present && !keep_for_later)
+				continue;
+
+			std::deque<SwapChain>& dst_updates = select_for_present ? present_updates : remaining_updates;
+			VkSwapchainKHR*& dst_swapchains = select_for_present ? present_swapchains : remaining_swapchains;
+			uint32_t*& dst_indices = select_for_present ? present_image_indices : remaining_image_indices;
+			VkSemaphore*& dst_wait_semaphores = select_for_present ? present_wait_semaphores : remaining_wait_semaphores;
+
+			if (i < original_updates.size())
+			{
+				dst_updates.push_back(original_updates[i]);
+			}
+			arrput(dst_swapchains, original_swapchains[i]);
+			arrput(dst_indices, original_image_indices[i]);
+			arrput(dst_wait_semaphores, original_wait_semaphores[i]);
+		}
+
+		arrfree(original_swapchains);
+		arrfree(original_image_indices);
+		arrfree(original_wait_semaphores);
+
+		if (arrlenu(present_swapchains) == 0)
+		{
+			queue.swapchains = remaining_swapchains;
+			queue.swapchainImageIndices = remaining_image_indices;
+			queue.swapchainWaitSemaphores = remaining_wait_semaphores;
+			queue.swapchain_updates = std::move(remaining_updates);
+			return;
+		}
+
+		queue.swapchains = present_swapchains;
+		queue.swapchainImageIndices = present_image_indices;
+		queue.swapchainWaitSemaphores = present_wait_semaphores;
+		queue.swapchain_updates = std::move(present_updates);
+
+		uint64_t dependency_max[QUEUE_COUNT] = {};
+		auto merge_dependency = [&](QueueSyncPoint point) {
+			if (!point.IsValid() || point.queue >= QUEUE_COUNT)
+				return;
+			dependency_max[point.queue] = std::max(dependency_max[point.queue], point.value);
+		};
+
+		for (uint32_t i = 0; desc.wait_points != nullptr && i < desc.wait_point_count; ++i)
+		{
+			merge_dependency(desc.wait_points[i]);
+		}
+		for (uint32_t i = 0; desc.wait_submissions != nullptr && i < desc.wait_submission_count; ++i)
+		{
+			const SubmissionToken& token = desc.wait_submissions[i];
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((token.queue_mask & (1u << q)) == 0 || token.values[q] == 0)
+					continue;
+				merge_dependency(QueueSyncPoint{ (QUEUE_TYPE)q, token.values[q] });
+			}
+		}
+
+		bool bridge_submit_required = false;
+		for (uint32_t producer_queue = 0; producer_queue < QUEUE_COUNT; ++producer_queue)
+		{
+			const uint64_t value = dependency_max[producer_queue];
+			if (value == 0)
+				continue;
+			QueueSyncPoint point = QueueSyncPoint{ (QUEUE_TYPE)producer_queue, value };
+			if (SupportsSubmissionTokens() && queues[producer_queue].timeline_semaphore != VK_NULL_HANDLE)
+			{
+				queue.wait(queues[producer_queue].timeline_semaphore, value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+				bridge_submit_required = true;
+			}
+			else
+			{
+				WaitQueuePoint(point);
+			}
+		}
+
+		VkSemaphore bridge_wait_semaphore = VK_NULL_HANDLE;
+		if (bridge_submit_required)
+		{
+			bridge_wait_semaphore = new_semaphore();
+			queue.signal(bridge_wait_semaphore, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+			arrput(queue.swapchainWaitSemaphores, bridge_wait_semaphore);
+		}
+
+		queue.submit(this, VK_NULL_HANDLE, false, 0, nullptr, true);
+
+		if (bridge_wait_semaphore != VK_NULL_HANDLE)
+		{
+			free_semaphore(bridge_wait_semaphore);
+		}
+
+		queue.swapchains = remaining_swapchains;
+		queue.swapchainImageIndices = remaining_image_indices;
+		queue.swapchainWaitSemaphores = remaining_wait_semaphores;
+		queue.swapchain_updates = std::move(remaining_updates);
 	}
 
 	bool GraphicsDevice_Vulkan::IsQueuePointComplete(QueueSyncPoint point) const
@@ -8827,27 +9185,36 @@ using namespace vulkan_internal;
 		arrsetlen(commandlist.renderpass_barriers_end, 0);
 		auto internal_state = to_internal(swapchain);
 
+		VkResult res = VK_SUCCESS;
+		bool acquired_here = false;
 		internal_state->locker.lock();
-		internal_state->swapChainAcquireSemaphoreIndex = (internal_state->swapChainAcquireSemaphoreIndex + 1) % internal_state->swapchainAcquireSemaphores.size();
-		VkResult res;
-		do {
-			res = vkAcquireNextImageKHR(
-				device,
-				internal_state->swapChain,
-				timeout_value,
-				internal_state->swapchainAcquireSemaphores[internal_state->swapChainAcquireSemaphoreIndex],
-				VK_NULL_HANDLE,
-				&internal_state->swapChainImageIndex
-			);
-			if (res == VK_TIMEOUT)
-			{
-				VULKAN_LOG_ERROR("vkAcquireNextImageKHR resulted in VK_TIMEOUT, retrying");
-				std::this_thread::yield();
-			}
-		} while (res == VK_TIMEOUT);
+		if (internal_state->explicit_acquire_pending)
+		{
+			internal_state->explicit_acquire_pending = false;
+		}
+		else
+		{
+			acquired_here = true;
+			internal_state->swapChainAcquireSemaphoreIndex = (internal_state->swapChainAcquireSemaphoreIndex + 1) % internal_state->swapchainAcquireSemaphores.size();
+			do {
+				res = vkAcquireNextImageKHR(
+					device,
+					internal_state->swapChain,
+					timeout_value,
+					internal_state->swapchainAcquireSemaphores[internal_state->swapChainAcquireSemaphoreIndex],
+					VK_NULL_HANDLE,
+					&internal_state->swapChainImageIndex
+				);
+				if (res == VK_TIMEOUT)
+				{
+					VULKAN_LOG_ERROR("vkAcquireNextImageKHR resulted in VK_TIMEOUT, retrying");
+					std::this_thread::yield();
+				}
+			} while (res == VK_TIMEOUT);
+		}
 		internal_state->locker.unlock();
 
-		if (res != VK_SUCCESS)
+		if (acquired_here && res != VK_SUCCESS)
 		{
 			// Handle outdated error in acquire:
 			if (res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR)

@@ -394,7 +394,8 @@ namespace wi
 					VkFence fence,
 					bool include_frame_sync = true,
 					uint64_t timeline_signal_value = 0,
-					uint64_t* out_timeline_signal_value = nullptr
+					uint64_t* out_timeline_signal_value = nullptr,
+					bool process_presents = true
 				);
 
 			} queues[QUEUE_COUNT];
@@ -719,7 +720,8 @@ namespace wi
 			uint32_t subresource_count = 0;
 			ResourceState texture_final_layout = ResourceState::SHADER_RESOURCE;
 		};
-		SubmissionToken SubmitCommandListsInternal();
+		SubmissionToken SubmitCommandListsInternal(bool defer_presents = false);
+		SubmissionToken SubmitCommandListsWithDesc(const SubmitDesc& desc, bool defer_presents);
 		bool SupportsSubmissionTokens() const;
 		void WarnMissingTimelineSemaphore(const char* caller) const;
 		UploadTicket UploadAsyncInternal(const UploadDescInternal& upload) const;
@@ -759,6 +761,9 @@ namespace wi
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
 		SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc) override;
+		SubmissionToken QueueSubmit(QUEUE_TYPE type, const QueueSubmitDesc& desc) override;
+		bool AcquireNextImage(SwapChain* swapchain, AcquireDesc* desc) override;
+		void QueuePresent(QUEUE_TYPE presentQueue, const QueuePresentDesc& desc) override;
 		bool IsQueuePointComplete(QueueSyncPoint point) const override;
 		void WaitQueuePoint(QueueSyncPoint point) const override;
 		QueueSyncPoint GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const override;

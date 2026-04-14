@@ -3451,6 +3451,10 @@ std::mutex queue_locker;
 		dx12_internal::destroy_stb_array(semaphore_pool);
 		dx12_internal::destroy_stb_array(video_decode_profile_list);
 		dx12_internal::destroy_stb_array(commandlists);
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			dx12_internal::destroy_stb_array(pending_presents[q]);
+		}
 
 #ifdef PLATFORM_WINDOWS_DESKTOP
 		std::ignore = UnregisterWait(deviceRemovedWaitHandle);
@@ -6294,18 +6298,21 @@ std::mutex queue_locker;
 		// From here, we begin a new frame, this affects GetBufferIndex()!
 		FRAMECOUNT++;
 
-		// Initiate stalling CPU when GPU is not yet finished with next frame:
-		const uint32_t bufferindex = GetBufferIndex();
-		for (int queue = 0; queue < QUEUE_COUNT; ++queue)
+		if (IsBackendFrameRolloverWaitsEnabled())
 		{
-			if (queues[queue].queue == nullptr)
-				continue;
-			ID3D12Fence* fence = frame_fence[bufferindex][queue].Get();
-			if (fence->GetCompletedValue() < frame_fence_values[GetBufferIndex()])
+			// Initiate stalling CPU when GPU is not yet finished with next frame:
+			const uint32_t bufferindex = GetBufferIndex();
+			for (int queue = 0; queue < QUEUE_COUNT; ++queue)
 			{
-				// nullptr event handle will simply wait immediately:
-				//	https://docs.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12fence-seteventoncompletion#remarks
-				dx12_check(fence->SetEventOnCompletion(frame_fence_values[GetBufferIndex()], nullptr));
+				if (queues[queue].queue == nullptr)
+					continue;
+				ID3D12Fence* fence = frame_fence[bufferindex][queue].Get();
+				if (fence->GetCompletedValue() < frame_fence_values[GetBufferIndex()])
+				{
+					// nullptr event handle will simply wait immediately:
+					//	https://docs.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12fence-seteventoncompletion#remarks
+					dx12_check(fence->SetEventOnCompletion(frame_fence_values[GetBufferIndex()], nullptr));
+				}
 			}
 		}
 
@@ -6717,6 +6724,379 @@ std::mutex queue_locker;
 			}
 		}
 		return token;
+	}
+
+	SubmissionToken GraphicsDevice_DX12::QueueSubmit(QUEUE_TYPE type, const QueueSubmitDesc& desc)
+	{
+		if (type >= QUEUE_COUNT || queues[type].queue == nullptr)
+		{
+			return {};
+		}
+		if (desc.command_lists == nullptr || desc.command_list_count == 0)
+		{
+			return {};
+		}
+
+		std::vector<CommandList_DX12*> open_commandlists;
+		std::vector<CommandList> filtered_command_lists;
+		std::vector<CommandList_DX12*> filtered_commandlists_internal;
+		filtered_command_lists.reserve(desc.command_list_count);
+		filtered_commandlists_internal.reserve(desc.command_list_count);
+
+		{
+			std::scoped_lock lock(cmd_locker);
+			open_commandlists.reserve(cmd_count);
+			for (uint32_t i = 0; i < cmd_count; ++i)
+			{
+				open_commandlists.push_back(commandlists[i]);
+			}
+
+			auto is_open_commandlist = [&](CommandList_DX12* candidate) -> bool
+			{
+				return std::find(open_commandlists.begin(), open_commandlists.end(), candidate) != open_commandlists.end();
+			};
+
+			for (uint32_t i = 0; i < desc.command_list_count; ++i)
+			{
+				const CommandList cmd = desc.command_lists[i];
+				if (!wiGraphicsCommandListIsValid(cmd))
+					continue;
+
+				CommandList_DX12* commandlist = (CommandList_DX12*)cmd.internal_state;
+				if (commandlist == nullptr || !is_open_commandlist(commandlist))
+					continue;
+				if (commandlist->queue != type)
+				{
+					DX12_LOG_ERROR(
+						"[DX12][QueueSubmit] Rejected command list from queue %s in submit to queue %s",
+						DX12QueueTypeName(commandlist->queue),
+						DX12QueueTypeName(type)
+					);
+#ifndef NDEBUG
+					SDL_assert(false && "QueueSubmit requires command lists recorded for the same queue type");
+#endif // NDEBUG
+					continue;
+				}
+				if (std::find(filtered_commandlists_internal.begin(), filtered_commandlists_internal.end(), commandlist) != filtered_commandlists_internal.end())
+					continue;
+
+				filtered_command_lists.push_back(cmd);
+				filtered_commandlists_internal.push_back(commandlist);
+			}
+		}
+
+		if (filtered_command_lists.empty())
+		{
+			return {};
+		}
+
+		auto semaphore_equal = [](const Semaphore& a, const Semaphore& b) -> bool
+		{
+			return a.fence.Get() == b.fence.Get() && a.fenceValue == b.fenceValue;
+		};
+
+		for (CommandList_DX12* consumer : filtered_commandlists_internal)
+		{
+			if (consumer == nullptr || consumer->waits == nullptr)
+				continue;
+
+			for (size_t wi = 0; wi < arrlenu(consumer->waits); ++wi)
+			{
+				Semaphore* wait_sem = consumer->waits[wi];
+				if (wait_sem == nullptr)
+					continue;
+
+				for (CommandList_DX12* producer : open_commandlists)
+				{
+					if (producer == nullptr || producer->signals == nullptr)
+						continue;
+					for (size_t si = 0; si < arrlenu(producer->signals); ++si)
+					{
+						Semaphore* signal_sem = producer->signals[si];
+						if (signal_sem == nullptr || !semaphore_equal(*signal_sem, *wait_sem))
+							continue;
+						if (producer->queue != type)
+						{
+							DX12_LOG_ERROR(
+								"[DX12][QueueSubmit] Rejected cross-queue command list dependency: consumer queue=%s producer queue=%s",
+								DX12QueueTypeName(type),
+								DX12QueueTypeName(producer->queue)
+							);
+#ifndef NDEBUG
+							SDL_assert(false && "QueueSubmit command list dependencies must stay within the submitted queue type");
+#endif // NDEBUG
+							return {};
+						}
+						break;
+					}
+				}
+			}
+		}
+
+		uint64_t dependency_max[QUEUE_COUNT] = {};
+		auto merge_dependency = [&](QueueSyncPoint point) {
+			if (!point.IsValid() || point.queue >= QUEUE_COUNT)
+				return;
+#ifndef NDEBUG
+			const uint64_t submitted = token_fence_values[point.queue].load(std::memory_order_relaxed);
+			if (point.value > submitted)
+			{
+				DX12_LOG_ERROR(
+					"[DX12][QueueSubmit] Ignoring dependency on future queue point: queue=%s value=%llu submitted=%llu",
+					DX12QueueTypeName(point.queue),
+					(unsigned long long)point.value,
+					(unsigned long long)submitted
+				);
+				SDL_assert(false && "QueueSubmit received dependency on a future queue point");
+				return;
+			}
+#endif // NDEBUG
+			dependency_max[point.queue] = std::max(dependency_max[point.queue], point.value);
+		};
+
+		for (uint32_t i = 0; desc.wait_points != nullptr && i < desc.wait_point_count; ++i)
+		{
+			merge_dependency(desc.wait_points[i]);
+		}
+		for (uint32_t i = 0; desc.wait_submissions != nullptr && i < desc.wait_submission_count; ++i)
+		{
+			const SubmissionToken& token = desc.wait_submissions[i];
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((token.queue_mask & (1u << q)) == 0 || token.values[q] == 0)
+					continue;
+				merge_dependency(QueueSyncPoint{ (QUEUE_TYPE)q, token.values[q] });
+			}
+		}
+
+#ifdef PLATFORM_XBOX
+		{
+			std::scoped_lock lock(queue_locker); // queue operations are not thread-safe on XBOX
+#endif // PLATFORM_XBOX
+			for (uint32_t producer_queue = 0; producer_queue < QUEUE_COUNT; ++producer_queue)
+			{
+				const uint64_t value = dependency_max[producer_queue];
+				if (value == 0 || token_fence[producer_queue] == nullptr)
+					continue;
+				dx12_check(queues[type].queue->Wait(token_fence[producer_queue].Get(), value));
+			}
+#ifdef PLATFORM_XBOX
+		}
+#endif // PLATFORM_XBOX
+
+		struct DeferredPresentBatch
+		{
+			CommandList_DX12* commandlist = nullptr;
+			std::vector<const SwapChain*> swapchains;
+		};
+		std::vector<DeferredPresentBatch> deferred_presents;
+		deferred_presents.reserve(filtered_commandlists_internal.size());
+		for (CommandList_DX12* commandlist : filtered_commandlists_internal)
+		{
+			if (commandlist == nullptr || commandlist->swapchains == nullptr || arrlenu(commandlist->swapchains) == 0)
+				continue;
+
+			DeferredPresentBatch batch = {};
+			batch.commandlist = commandlist;
+			batch.swapchains.reserve(arrlenu(commandlist->swapchains));
+			for (size_t i = 0; i < arrlenu(commandlist->swapchains); ++i)
+			{
+				const SwapChain* swapchain = commandlist->swapchains[i];
+				if (swapchain != nullptr)
+				{
+					batch.swapchains.push_back(swapchain);
+				}
+			}
+			arrsetlen(commandlist->swapchains, 0);
+			deferred_presents.push_back(std::move(batch));
+		}
+
+		SubmitDesc submit = {};
+		submit.command_lists = filtered_command_lists.data();
+		submit.command_list_count = (uint32_t)filtered_command_lists.size();
+		submit.throttle_cpu = desc.throttle_cpu;
+		submit.max_inflight_per_queue = desc.max_inflight_per_queue;
+		const SubmissionToken token = SubmitCommandListsEx(submit);
+		if (token.IsValid())
+		{
+			for (const DeferredPresentBatch& batch : deferred_presents)
+			{
+				for (const SwapChain* swapchain : batch.swapchains)
+				{
+					arrput(pending_presents[type], swapchain);
+				}
+			}
+		}
+		else
+		{
+			for (const DeferredPresentBatch& batch : deferred_presents)
+			{
+				if (batch.commandlist == nullptr)
+					continue;
+				for (const SwapChain* swapchain : batch.swapchains)
+				{
+					arrput(batch.commandlist->swapchains, swapchain);
+				}
+			}
+		}
+		return token;
+	}
+
+	bool GraphicsDevice_DX12::AcquireNextImage(SwapChain* swapchain, AcquireDesc* desc)
+	{
+		if (swapchain == nullptr)
+			return false;
+
+		if (desc != nullptr)
+		{
+			auto internal_state = to_internal(swapchain);
+			desc->imageIndex = internal_state != nullptr ? internal_state->GetBufferIndex() : 0;
+			if (desc->signal_point != nullptr)
+			{
+				*desc->signal_point = GetLastSubmittedQueuePoint(desc->queue);
+			}
+		}
+
+		return true;
+	}
+
+	void GraphicsDevice_DX12::QueuePresent(QUEUE_TYPE presentQueue, const QueuePresentDesc& desc)
+	{
+		if (presentQueue >= QUEUE_COUNT)
+			return;
+		CommandQueue& queue = queues[presentQueue];
+		if (queue.queue == nullptr)
+			return;
+
+		uint64_t dependency_max[QUEUE_COUNT] = {};
+		auto merge_dependency = [&](QueueSyncPoint point) {
+			if (!point.IsValid() || point.queue >= QUEUE_COUNT)
+				return;
+#ifndef NDEBUG
+			const uint64_t submitted = token_fence_values[point.queue].load(std::memory_order_relaxed);
+			if (point.value > submitted)
+			{
+				DX12_LOG_ERROR(
+					"[DX12][QueuePresent] Ignoring dependency on future queue point: queue=%s value=%llu submitted=%llu",
+					DX12QueueTypeName(point.queue),
+					(unsigned long long)point.value,
+					(unsigned long long)submitted
+				);
+				SDL_assert(false && "QueuePresent received dependency on a future queue point");
+				return;
+			}
+#endif // NDEBUG
+			dependency_max[point.queue] = std::max(dependency_max[point.queue], point.value);
+		};
+
+		for (uint32_t i = 0; desc.wait_points != nullptr && i < desc.wait_point_count; ++i)
+		{
+			merge_dependency(desc.wait_points[i]);
+		}
+		for (uint32_t i = 0; desc.wait_submissions != nullptr && i < desc.wait_submission_count; ++i)
+		{
+			const SubmissionToken& token = desc.wait_submissions[i];
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((token.queue_mask & (1u << q)) == 0 || token.values[q] == 0)
+					continue;
+				merge_dependency(QueueSyncPoint{ (QUEUE_TYPE)q, token.values[q] });
+			}
+		}
+
+		auto present_swapchain = [&](const SwapChain* swapchain) {
+			if (swapchain == nullptr)
+				return;
+			auto swapchain_internal = to_internal(swapchain);
+			if (swapchain_internal == nullptr)
+				return;
+
+#ifdef PLATFORM_XBOX
+			if (arrlenu(swapchain_internal->textures) == 0)
+				return;
+			wi::xbox::Present(
+				device.Get(),
+				queue.queue.Get(),
+				(*swapchain_internal->textures[swapchain_internal->bufferIndex])->resource.Get(),
+				swapchain->desc.vsync
+			);
+			swapchain_internal->bufferIndex = (swapchain_internal->bufferIndex + 1) % (uint32_t)arrlenu(swapchain_internal->textures);
+#else
+			if (swapchain_internal->swapChain == nullptr)
+				return;
+			UINT presentFlags = 0;
+			if (!swapchain->desc.vsync && !swapchain->desc.fullscreen)
+			{
+				presentFlags = DXGI_PRESENT_ALLOW_TEARING;
+			}
+
+			HRESULT hr = dx12_check(swapchain_internal->swapChain->Present(swapchain->desc.vsync, presentFlags));
+			if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+			{
+				DX12_LOG_ERROR(
+					"Device Lost on Present: %s",
+					dx12_internal::HrToString((hr == DXGI_ERROR_DEVICE_REMOVED) ? device->GetDeviceRemovedReason() : hr)
+				);
+				OnDeviceRemoved();
+			}
+#endif // PLATFORM_XBOX
+		};
+
+#ifdef PLATFORM_XBOX
+		std::scoped_lock lock(queue_locker); // queue operations are not thread-safe on XBOX
+#endif // PLATFORM_XBOX
+		for (uint32_t producer_queue = 0; producer_queue < QUEUE_COUNT; ++producer_queue)
+		{
+			const uint64_t value = dependency_max[producer_queue];
+			if (value == 0 || token_fence[producer_queue] == nullptr)
+				continue;
+			dx12_check(queue.queue->Wait(token_fence[producer_queue].Get(), value));
+		}
+
+		if (pending_presents[presentQueue] == nullptr || arrlenu(pending_presents[presentQueue]) == 0)
+			return;
+
+		if (desc.swapchain != nullptr)
+		{
+			size_t last_match = std::numeric_limits<size_t>::max();
+			for (size_t i = 0; i < arrlenu(pending_presents[presentQueue]); ++i)
+			{
+				if (pending_presents[presentQueue][i] == desc.swapchain)
+				{
+					last_match = i;
+				}
+			}
+			if (last_match == std::numeric_limits<size_t>::max())
+				return;
+
+			size_t write_index = 0;
+			for (size_t i = 0; i < arrlenu(pending_presents[presentQueue]); ++i)
+			{
+				const SwapChain* swapchain = pending_presents[presentQueue][i];
+				if (swapchain == nullptr)
+					continue;
+
+				if (swapchain != desc.swapchain)
+				{
+					pending_presents[presentQueue][write_index++] = swapchain;
+					continue;
+				}
+
+				if (i == last_match)
+				{
+					present_swapchain(swapchain);
+				}
+			}
+			arrsetlen(pending_presents[presentQueue], write_index);
+		}
+		else
+		{
+			for (size_t i = 0; i < arrlenu(pending_presents[presentQueue]); ++i)
+			{
+				present_swapchain(pending_presents[presentQueue][i]);
+			}
+			arrsetlen(pending_presents[presentQueue], 0);
+		}
 	}
 
 	bool GraphicsDevice_DX12::IsQueuePointComplete(QueueSyncPoint point) const

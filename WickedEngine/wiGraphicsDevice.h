@@ -278,6 +278,9 @@ namespace wi
 	protected:
 		static constexpr uint32_t BUFFERCOUNT = WI_ENGINECONFIG_GRAPHICSDEVICE_BUFFERCOUNT;
 		uint64_t FRAMECOUNT = 0;
+		SubmissionToken frame_context_retire_tokens[BUFFERCOUNT] = {};
+		uint32_t frame_context_cursor = 0;
+		bool backend_frame_rollover_waits_enabled = true;
 		size_t SHADER_IDENTIFIER_SIZE = 0;
 		size_t TOPLEVEL_ACCELERATION_STRUCTURE_INSTANCE_SIZE = 0;
 		uint64_t TIMESTAMP_FREQUENCY = 0;
@@ -551,6 +554,70 @@ namespace wi
 		static constexpr uint32_t GetBufferCount() { return BUFFERCOUNT; }
 		// Returns the current buffer index, which is in range [0, GetBufferCount() - 1]
 		constexpr uint32_t GetBufferIndex() const { return GetFrameCount() % GetBufferCount(); }
+		static constexpr uint32_t INVALID_FRAME_CONTEXT = ~0u;
+		void SetBackendFrameRolloverWaitsEnabled(bool enabled) noexcept
+		{
+			backend_frame_rollover_waits_enabled = enabled;
+		}
+		constexpr bool IsBackendFrameRolloverWaitsEnabled() const noexcept
+		{
+			return backend_frame_rollover_waits_enabled;
+		}
+		void ResetFrameContexts() noexcept
+		{
+			frame_context_cursor = 0;
+			for (SubmissionToken& token : frame_context_retire_tokens)
+			{
+				token = {};
+			}
+		}
+		uint32_t BeginFrameContext(bool wait_if_busy = true)
+		{
+			const uint32_t context = frame_context_cursor;
+			if (context >= BUFFERCOUNT)
+				return INVALID_FRAME_CONTEXT;
+
+			SubmissionToken& retire_token = frame_context_retire_tokens[context];
+			if (retire_token.IsValid() && !IsSubmissionComplete(retire_token))
+			{
+				if (!wait_if_busy)
+					return INVALID_FRAME_CONTEXT;
+				WaitSubmission(retire_token);
+			}
+
+			retire_token = {};
+			frame_context_cursor = (frame_context_cursor + 1u) % BUFFERCOUNT;
+			return context;
+		}
+		bool IsFrameContextReady(uint32_t context) const
+		{
+			if (context >= BUFFERCOUNT)
+				return false;
+			const SubmissionToken& retire_token = frame_context_retire_tokens[context];
+			return !retire_token.IsValid() || IsSubmissionComplete(retire_token);
+		}
+		void WaitFrameContext(uint32_t context) const
+		{
+			if (context >= BUFFERCOUNT)
+				return;
+			const SubmissionToken& retire_token = frame_context_retire_tokens[context];
+			if (retire_token.IsValid())
+			{
+				WaitSubmission(retire_token);
+			}
+		}
+		void SetFrameContextRetireToken(uint32_t context, const SubmissionToken& token)
+		{
+			if (context >= BUFFERCOUNT)
+				return;
+			frame_context_retire_tokens[context] = token;
+		}
+		const SubmissionToken& GetFrameContextRetireToken(uint32_t context) const
+		{
+			if (context >= BUFFERCOUNT)
+				context = 0;
+			return frame_context_retire_tokens[context];
+		}
 
 		// Returns whether the graphics debug layer is enabled. It can be enabled when creating the device.
 		constexpr bool IsDebugDevice() const { return validationMode != ValidationMode::Disabled; }
