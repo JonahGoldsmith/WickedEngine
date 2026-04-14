@@ -81,6 +81,13 @@ option(WICKED_SUBSET_BUILD_VISIBILITY_BENCHMARK_DEMO "Build visibility pipeline 
 option(WICKED_SUBSET_BUILD_INDIRECT_COMPARE_FRAME_BUFFERED_DEMO "Build frame-buffered indirect compare demo using Wicked graphics subset" ON)
 option(WICKED_SUBSET_BUILD_VISIBILITY_FRAME_BUFFERED_BENCHMARK_DEMO "Build frame-buffered visibility benchmark demo using Wicked graphics subset" ON)
 
+set(WICKED_SUBSET_NEEDS_FLECS OFF)
+if(WICKED_SUBSET_BUILD_INDIRECT_COMPARE_FRAME_BUFFERED_DEMO OR
+   WICKED_SUBSET_BUILD_VISIBILITY_BENCHMARK_DEMO OR
+   WICKED_SUBSET_BUILD_VISIBILITY_FRAME_BUFFERED_BENCHMARK_DEMO)
+    set(WICKED_SUBSET_NEEDS_FLECS ON)
+endif()
+
 if(WICKED_ENGINECONFIG_SUBSET_BACKEND EQUAL WICKED_SUBSET_BACKEND_VULKAN)
     set(WICKED_SUBSET_ENABLE_VULKAN ON CACHE BOOL "Compile wiGraphicsDevice_Vulkan.cpp in subset mode" FORCE)
     set(WICKED_SUBSET_ENABLE_DX12 OFF CACHE BOOL "Compile wiGraphicsDevice_DX12.cpp in subset mode" FORCE)
@@ -98,6 +105,9 @@ endif()
 set(WICKED_SUBSET_SDL_SOURCE_DIR "" CACHE PATH "Path to local SDL3 source directory (must contain CMakeLists.txt)")
 set(WICKED_SUBSET_MMGR_ROOT_DIR "${WICKED_ROOT_DIR}/forge-mmgr/FluidStudios/MemoryManager")
 set(WICKED_SUBSET_MMGR_GLOBALS_CPP "${WICKED_SUBSET_MMGR_ROOT_DIR}/mmgr_new_delete.cpp")
+set(WICKED_SUBSET_FLECS_DIR "${WICKED_ROOT_DIR}/flecs-master/distr")
+set(WICKED_SUBSET_FLECS_SOURCE "${WICKED_SUBSET_FLECS_DIR}/flecs.c")
+set(WICKED_SUBSET_FLECS_HEADER "${WICKED_SUBSET_FLECS_DIR}/flecs.h")
 
 set(WICKED_SUBSET_OBJECT_TARGETS)
 set(WICKED_SUBSET_MMGR_SETTINGS_TARGET "")
@@ -283,6 +293,31 @@ if(WICKED_SUBSET_NEEDS_SDL3)
 endif()
 if(WICKED_SUBSET_NEEDS_SDL3)
     message(STATUS "Wicked subset: SDL3 target available -> SDL3::SDL3")
+endif()
+
+if(WICKED_SUBSET_NEEDS_FLECS)
+    if(NOT EXISTS "${WICKED_SUBSET_FLECS_SOURCE}")
+        message(FATAL_ERROR "Flecs source file is missing: ${WICKED_SUBSET_FLECS_SOURCE}")
+    endif()
+    if(NOT EXISTS "${WICKED_SUBSET_FLECS_HEADER}")
+        message(FATAL_ERROR "Flecs header file is missing: ${WICKED_SUBSET_FLECS_HEADER}")
+    endif()
+
+    add_library(wicked_subset_flecs STATIC
+        "${WICKED_SUBSET_FLECS_SOURCE}"
+        "${WICKED_SUBSET_FLECS_HEADER}"
+    )
+    set_target_properties(wicked_subset_flecs PROPERTIES
+        C_STANDARD 99
+        C_STANDARD_REQUIRED ON
+    )
+    target_include_directories(wicked_subset_flecs PUBLIC
+        "${WICKED_SUBSET_FLECS_DIR}"
+    )
+
+    if(WIN32)
+        target_link_libraries(wicked_subset_flecs PUBLIC ws2_32)
+    endif()
 endif()
 
 if(WICKED_SUBSET_ENABLE_SHADERCOMPILER)
@@ -597,8 +632,6 @@ if(WICKED_SUBSET_BUILD_INDIRECT_COMPARE_FRAME_BUFFERED_DEMO)
         "${WICKED_SUBSET_SHADER_DIR}/wicked_subset_cube_indirect_compare_demo.hlsl"
         "${WICKED_SUBSET_SHADER_DIR}/wicked_subset_shader_compat.hlsli"
         "${WICKED_SUBSET_SRC_DIR}/wicked_subset_frame_buffering.h"
-        "${WICKED_ROOT_DIR}/flecs-master/distr/flecs.c"
-        "${WICKED_ROOT_DIR}/flecs-master/distr/flecs.h"
     )
 
     if(APPLE)
@@ -627,11 +660,11 @@ if(WICKED_SUBSET_BUILD_INDIRECT_COMPARE_FRAME_BUFFERED_DEMO)
         "${WICKED_SUBSET_SHADER_DIR}"
         "${WICKED_SUBSET_ENGINE_ROOT}"
         "${WICKED_SUBSET_ENGINE_ROOT}/Utility/metal"
-        "${WICKED_ROOT_DIR}/flecs-master/distr"
     )
 
     target_link_libraries(wicked_subset_cube_indirect_compare_frame_buffered_demo PRIVATE
         wicked_subset_shadercompiler_obj
+        wicked_subset_flecs
     )
 
     wicked_subset_link_mmgr_runtime_object(wicked_subset_cube_indirect_compare_frame_buffered_demo)
@@ -709,8 +742,6 @@ if(WICKED_SUBSET_BUILD_VISIBILITY_BENCHMARK_DEMO)
         "${WICKED_SUBSET_SRC_DIR}/wicked_shadercompiler_support_stubs.cpp"
         "${WICKED_SUBSET_SHADER_DIR}/wicked_subset_visibility_pipeline_benchmark.hlsl"
         "${WICKED_SUBSET_SHADER_DIR}/wicked_subset_shader_compat.hlsli"
-        "${WICKED_ROOT_DIR}/flecs-master/distr/flecs.c"
-        "${WICKED_ROOT_DIR}/flecs-master/distr/flecs.h"
     )
 
     if(APPLE)
@@ -740,11 +771,14 @@ if(WICKED_SUBSET_BUILD_VISIBILITY_BENCHMARK_DEMO)
         "${WICKED_SUBSET_SHADER_DIR}"
         "${WICKED_SUBSET_ENGINE_ROOT}"
         "${WICKED_SUBSET_ENGINE_ROOT}/Utility/metal"
-        "${WICKED_ROOT_DIR}/flecs-master/distr"
     )
 
     target_sources(wicked_subset_visibility_pipeline_benchmark PRIVATE
         $<TARGET_OBJECTS:wicked_subset_shadercompiler_obj>
+    )
+
+    target_link_libraries(wicked_subset_visibility_pipeline_benchmark PRIVATE
+        wicked_subset_flecs
     )
 
     wicked_subset_link_mmgr_runtime_object(wicked_subset_visibility_pipeline_benchmark)
@@ -818,8 +852,6 @@ if(WICKED_SUBSET_BUILD_VISIBILITY_FRAME_BUFFERED_BENCHMARK_DEMO)
         "${WICKED_SUBSET_SHADER_DIR}/wicked_subset_visibility_pipeline_benchmark.hlsl"
         "${WICKED_SUBSET_SHADER_DIR}/wicked_subset_shader_compat.hlsli"
         "${WICKED_SUBSET_SRC_DIR}/wicked_subset_frame_buffering.h"
-        "${WICKED_ROOT_DIR}/flecs-master/distr/flecs.c"
-        "${WICKED_ROOT_DIR}/flecs-master/distr/flecs.h"
     )
 
     if(APPLE)
@@ -849,11 +881,14 @@ if(WICKED_SUBSET_BUILD_VISIBILITY_FRAME_BUFFERED_BENCHMARK_DEMO)
         "${WICKED_SUBSET_SHADER_DIR}"
         "${WICKED_SUBSET_ENGINE_ROOT}"
         "${WICKED_SUBSET_ENGINE_ROOT}/Utility/metal"
-        "${WICKED_ROOT_DIR}/flecs-master/distr"
     )
 
     target_sources(wicked_subset_visibility_pipeline_frame_buffered_benchmark PRIVATE
         $<TARGET_OBJECTS:wicked_subset_shadercompiler_obj>
+    )
+
+    target_link_libraries(wicked_subset_visibility_pipeline_frame_buffered_benchmark PRIVATE
+        wicked_subset_flecs
     )
 
     wicked_subset_link_mmgr_runtime_object(wicked_subset_visibility_pipeline_frame_buffered_benchmark)
