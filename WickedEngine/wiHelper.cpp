@@ -263,7 +263,7 @@ namespace wi::helper
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
 
-		device->SubmitCommandLists();
+		device->SubmitCommandListsEx();
 		device->WaitForGPU();
 
 		texturedata.clear();
@@ -1048,7 +1048,7 @@ namespace wi::helper
 			device->CopyResource(&staging, &buffer, cmd);
 			device->Barrier(wiGraphicsCreateGPUBarrierMemory(), cmd);
 
-			device->SubmitCommandLists();
+			device->SubmitCommandListsEx();
 			device->WaitForGPU();
 
 			data.reserve(staging.mapped_size);

@@ -5,6 +5,7 @@
 
 #include <cassert>
 #include <cstring>
+#include <cstdlib>
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -13,15 +14,16 @@ namespace wi
 {
 	// CommandList can be used to record graphics commands from a CPU thread
 	//	Use GraphicsDevice::BeginCommandList() to start a command list
-	//	Use GraphicsDevice::SubmitCommandLists() to give all started command lists to the GPU for execution
+	//	Use GraphicsDevice::SubmitCommandListsEx() to submit recorded command lists for GPU execution
 	//	CommandList recording is not thread safe
 	struct CommandList
 	{
 		void* internal_state = nullptr;
+		constexpr bool IsValid() const noexcept { return internal_state != nullptr; }
 	};
 	inline bool wiGraphicsCommandListIsValid(CommandList command_list)
 	{
-		return command_list.internal_state != nullptr;
+		return command_list.IsValid();
 	}
 
 	// Descriptor binding counts:
@@ -69,46 +71,148 @@ namespace wi
 
 		QUEUE_COUNT,
 	};
+	enum class QueueFrameSyncMode : uint8_t
+	{
+		NoFrameSync = 0,
+		FullFrameSync = 1,
+	};
+	inline constexpr const char* GetQueueTypeName(QUEUE_TYPE queue)
+	{
+		switch (queue)
+		{
+		default:
+		case QUEUE_GRAPHICS:
+			return "graphics";
+		case QUEUE_COMPUTE:
+			return "compute";
+		case QUEUE_COPY:
+			return "copy";
+		case QUEUE_VIDEO_DECODE:
+			return "video";
+		}
+	}
+
+	struct QueueSubmissionStats
+	{
+		struct QueueStats
+		{
+			uint32_t commandLists = 0;
+			uint32_t packetsSubmitted = 0;
+			uint32_t dependencyWaits = 0;
+			uint32_t dependencySignals = 0;
+			uint32_t fullSyncWaitsInjected = 0;
+			uint32_t cpuFenceWaits = 0;
+		};
+		QueueStats queues[QUEUE_COUNT] = {};
+		uint32_t commandListCount = 0;
+		uint32_t dependencyEdges = 0;
+		uint32_t crossQueueDependencyEdges = 0;
+		uint32_t dependencyValidationChecks = 0;
+		uint32_t dependencyValidationFailures = 0;
+		uint32_t barrierValidationChecks = 0;
+		uint32_t barrierValidationFailures = 0;
+		double submitCPUms = 0.0;
+		double cpuFrameFenceWaitMs = 0.0;
+		uint64_t frameIndex = 0;
+		QueueFrameSyncMode frameSyncMode = QueueFrameSyncMode::NoFrameSync;
+		bool fullFrameSyncActive = false;
+	};
+
+	struct QueueSyncPoint
+	{
+		QUEUE_TYPE queue = QUEUE_COUNT;
+		uint64_t value = 0;
+
+		constexpr bool IsValid() const noexcept
+		{
+			return queue < QUEUE_COUNT && value != 0;
+		}
+	};
 
 	struct SubmissionToken
 	{
-		QUEUE_TYPE queue = QUEUE_GRAPHICS;
-		uint64_t value = 0;
-	};
+		uint32_t queue_mask = 0;
+		uint64_t values[QUEUE_COUNT] = {};
 
-	struct SubmissionTokenSet
-	{
-		uint32_t validMask = 0;
-		SubmissionToken perQueue[QUEUE_COUNT] = {};
-	};
-
-	struct UploadDesc
-	{
-		enum class Type
+		constexpr bool IsValid() const noexcept
 		{
-			BUFFER,
-			TEXTURE,
-		};
+			return queue_mask != 0;
+		}
 
-		Type type = Type::BUFFER;
-		QUEUE_TYPE queue = QUEUE_COPY;
-		const void* src_data = nullptr;
-		uint64_t src_size = 0;
+		constexpr QueueSyncPoint Get(QUEUE_TYPE queue) const noexcept
+		{
+			return (queue_mask & (1u << queue)) ? QueueSyncPoint{ queue, values[queue] } : QueueSyncPoint{};
+		}
 
-		// BUFFER upload:
-		const GPUBuffer* dst_buffer = nullptr;
+		void Merge(QueueSyncPoint point) noexcept
+		{
+			if (!point.IsValid())
+				return;
+
+			queue_mask |= (1u << point.queue);
+			values[point.queue] = std::max(values[point.queue], point.value);
+		}
+
+		void Merge(const SubmissionToken& other) noexcept
+		{
+			if (!other.IsValid())
+				return;
+
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((other.queue_mask & (1u << q)) == 0)
+					continue;
+				Merge(QueueSyncPoint{ (QUEUE_TYPE)q, other.values[q] });
+			}
+		}
+	};
+
+	struct QueueDependency
+	{
+		QueueSyncPoint point;
+	};
+
+	struct SubmitDesc
+	{
+		const CommandList* command_lists = nullptr;
+		uint32_t command_list_count = 0;
+
+		const QueueDependency* queue_dependencies = nullptr;
+		uint32_t queue_dependency_count = 0;
+
+		const SubmissionToken* submission_dependencies = nullptr;
+		uint32_t submission_dependency_count = 0;
+
+		bool throttle_cpu = false;
+		uint32_t max_inflight_per_queue = 0;
+	};
+
+	struct BufferUploadDesc
+	{
+		const GPUBuffer* dst = nullptr;
 		uint64_t dst_offset = 0;
+		const void* data = nullptr;
+		uint64_t size = 0;
+		bool block_until_complete = false;
+	};
 
-		// TEXTURE upload:
-		const Texture* dst_texture = nullptr;
+	struct TextureUploadDesc
+	{
+		const Texture* dst = nullptr;
 		const SubresourceData* subresources = nullptr;
 		uint32_t subresource_count = 0;
-		ResourceState texture_final_layout = ResourceState::SHADER_RESOURCE;
+		bool block_until_complete = false;
 	};
 
 	struct UploadTicket
 	{
-		SubmissionToken done = {};
+		SubmissionToken token = {};
+		QueueSyncPoint completion = {};
+
+		constexpr bool IsValid() const noexcept
+		{
+			return completion.IsValid();
+		}
 	};
 
 	class GraphicsDevice
@@ -127,6 +231,7 @@ namespace wi
 		std::string adapterName;
 		std::string driverDescription;
 		ValidationMode validationMode = ValidationMode::Disabled;
+		QueueFrameSyncMode queueFrameSyncMode = QueueFrameSyncMode::NoFrameSync;
 		AdapterType adapterType = AdapterType::Other;
 
 	public:
@@ -163,82 +268,127 @@ namespace wi
 		virtual void SetName(Shader* shader, const char* name) const {}
 
 		// Begin a new command list for GPU command recording.
-		//	This will be valid until SubmitCommandLists() is called.
+		//	This will be valid until SubmitCommandListsEx() is called.
 		virtual CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) = 0;
-		// Submit all command list that were used with BeginCommandList before this call.
-		//	This will make every command list to be in "available" state and restarts them
-		virtual void SubmitCommandLists() = 0;
-
-		// Submit command lists and return per-queue completion tokens for this submit.
-		//	Queues that had no submitted work will have their corresponding valid bit unset.
-		virtual SubmissionTokenSet SubmitCommandListsExAll()
-		{
-			SubmitCommandLists();
-			return {};
-		}
-		// Submit command lists and return a convenience completion token.
-		//	This prefers graphics queue token if available.
-		virtual SubmissionToken SubmitCommandListsEx()
-		{
-			SubmissionTokenSet tokens = SubmitCommandListsExAll();
-			if (tokens.validMask & (1u << QUEUE_GRAPHICS))
-			{
-				return tokens.perQueue[QUEUE_GRAPHICS];
-			}
-			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
-			{
-				if (tokens.validMask & (1u << q))
-				{
-					return tokens.perQueue[q];
-				}
-			}
-			return {};
-		}
-		// Insert a queue-level GPU wait.
-		virtual void WaitForToken(QUEUE_TYPE queue, SubmissionToken token)
-		{
-			(void)queue;
-			if (token.value == 0 || IsTokenComplete(token))
-				return;
-			WaitForGPU();
-		}
-		// Convenience helper for waiting on multiple tokens.
-		virtual void WaitForTokens(QUEUE_TYPE queue, const SubmissionTokenSet& tokens, uint32_t srcMask = ~0u)
-		{
-			const uint32_t mask = tokens.validMask & srcMask;
-			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
-			{
-				if (mask & (1u << q))
-				{
-					WaitForToken(queue, tokens.perQueue[q]);
-				}
-			}
-		}
-		// CPU-side completion poll for a token.
-		virtual bool IsTokenComplete(SubmissionToken token) const
-		{
-			return token.value == 0;
-		}
-
-		// Submit upload work without blocking the CPU.
-		virtual UploadTicket UploadAsync(const UploadDesc& upload)
-		{
-			(void)upload;
-			return {};
-		}
-		virtual bool IsUploadComplete(UploadTicket ticket) const
-		{
-			return IsTokenComplete(ticket.done);
-		}
-		virtual void WaitUpload(UploadTicket ticket)
-		{
-			if (ticket.done.value == 0)
-				return;
-			WaitForToken(ticket.done.queue, ticket.done);
-		}
+		// Explicit submit path. If desc.command_list_count is zero, all currently open command lists are submitted.
+		virtual SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc) = 0;
 
 		// The CPU will wait until all submitted GPU work is finished execution
 		virtual void WaitForGPU() const = 0;
+
+		virtual bool IsQueuePointComplete(QueueSyncPoint point) const
+		{
+			if (!point.IsValid())
+				return true;
+
+			const QueueSyncPoint completed = GetLastCompletedQueuePoint(point.queue);
+			return completed.IsValid() && completed.value >= point.value;
+		}
+		virtual void WaitQueuePoint(QueueSyncPoint point) const
+		{
+			if (!point.IsValid())
+				return;
+			WaitForGPU();
+		}
+
+		virtual bool IsSubmissionComplete(const SubmissionToken& token) const
+		{
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((token.queue_mask & (1u << q)) == 0)
+					continue;
+				if (!IsQueuePointComplete(QueueSyncPoint{ (QUEUE_TYPE)q, token.values[q] }))
+					return false;
+			}
+			return true;
+		}
+		virtual void WaitSubmission(const SubmissionToken& token) const
+		{
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((token.queue_mask & (1u << q)) == 0)
+					continue;
+				WaitQueuePoint(QueueSyncPoint{ (QUEUE_TYPE)q, token.values[q] });
+			}
+		}
+
+		virtual QueueSyncPoint GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const
+		{
+			(void)queue;
+			return {};
+		}
+		virtual QueueSyncPoint GetLastCompletedQueuePoint(QUEUE_TYPE queue) const
+		{
+			(void)queue;
+			return {};
+		}
+
+		virtual UploadTicket EnqueueBufferUpload(const BufferUploadDesc& desc)
+		{
+			UploadTicket ticket = {};
+			if (desc.dst == nullptr || desc.data == nullptr || desc.size == 0)
+				return ticket;
+
+			CommandList cmd = BeginCommandList(QUEUE_COPY);
+			GPUBarrier to_copy = wiGraphicsCreateGPUBarrierBuffer(desc.dst, ResourceState::SHADER_RESOURCE, ResourceState::COPY_DST);
+			Barrier(&to_copy, 1, cmd);
+			UpdateBuffer(desc.dst, desc.data, cmd, desc.size, desc.dst_offset);
+
+			SubmitDesc submit = {};
+			submit.command_lists = &cmd;
+			submit.command_list_count = 1;
+			if (std::getenv("FW_UPLOAD_SAFETY_THROTTLE") != nullptr)
+			{
+				submit.throttle_cpu = true;
+				submit.max_inflight_per_queue = 1;
+			}
+			ticket.token = SubmitCommandListsEx(submit);
+
+			QueueSyncPoint completion = ticket.token.Get(QUEUE_COPY);
+			if (!completion.IsValid())
+			{
+				for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+				{
+					if ((ticket.token.queue_mask & (1u << q)) == 0)
+						continue;
+					completion = QueueSyncPoint{ (QUEUE_TYPE)q, ticket.token.values[q] };
+					break;
+				}
+			}
+			ticket.completion = completion;
+
+			const bool force_blocking = std::getenv("FW_UPLOAD_BLOCKING") != nullptr;
+			if ((desc.block_until_complete || force_blocking) && ticket.IsValid())
+			{
+				WaitUpload(ticket);
+			}
+
+			return ticket;
+		}
+		virtual UploadTicket EnqueueTextureUpload(const TextureUploadDesc& desc)
+		{
+			(void)desc;
+			return {};
+		}
+
+		virtual bool IsUploadComplete(const UploadTicket& ticket) const
+		{
+			return IsQueuePointComplete(ticket.completion);
+		}
+		virtual void WaitUpload(const UploadTicket& ticket) const
+		{
+			WaitQueuePoint(ticket.completion);
+		}
+		virtual QueueSyncPoint GetUploadSyncPoint(const UploadTicket& ticket) const
+		{
+			return ticket.completion;
+		}
+
+		inline SubmissionToken SubmitCommandListsEx()
+		{
+			SubmitDesc desc = {};
+			return SubmitCommandListsEx(desc);
+		}
 
 		// The current PipelineState cache will be cleared. It is useful to clear this when reloading shaders, to avoid accumulating unused pipeline states
 		virtual void ClearPipelineStateCache() = 0;
@@ -248,7 +398,7 @@ namespace wi
 		virtual size_t GetActivePipelineCount() const = 0;
 
 		// Returns the number of elapsed frames (submits)
-		//	It is incremented when calling SubmitCommandLists()
+		//	It is incremented when calling SubmitCommandListsEx()
 		constexpr uint64_t GetFrameCount() const { return FRAMECOUNT; }
 
 		// Check whether the graphics device supports a feature or not
@@ -261,6 +411,8 @@ namespace wi
 
 		// Returns whether the graphics debug layer is enabled. It can be enabled when creating the device.
 		constexpr bool IsDebugDevice() const { return validationMode != ValidationMode::Disabled; }
+		constexpr QueueFrameSyncMode GetQueueFrameSyncMode() const { return queueFrameSyncMode; }
+		constexpr bool IsFullFrameSyncEnabled() const { return queueFrameSyncMode == QueueFrameSyncMode::FullFrameSync; }
 
 		// Get GPU-specific metrics:
 		constexpr size_t GetShaderIdentifierSize() const { return SHADER_IDENTIFIER_SIZE; }
@@ -306,12 +458,17 @@ namespace wi
 
 		// Returns an identifier string for the graphics device subclass
 		virtual const char* GetTag() const { return ""; }
+		virtual bool GetQueueSubmissionStats(QueueSubmissionStats& out) const
+		{
+			(void)out;
+			return false;
+		}
 
 		/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 		// Command List functions are below:
 		//	- These are used to record rendering commands to a CommandList
 		//	- To get a CommandList that can be recorded into, call BeginCommandList()
-		//	- These commands are not immediately executed, but they begin executing on the GPU after calling SubmitCommandLists()
+		//	- These commands are not immediately executed, but they begin executing on the GPU after calling SubmitCommandListsEx()
 		//	- These are not thread safe, only a single thread should use a single CommandList at one time
 
 		// Tell the command list to wait for an other command list which was started before it

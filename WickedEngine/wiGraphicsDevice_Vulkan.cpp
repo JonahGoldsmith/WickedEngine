@@ -42,6 +42,7 @@
 #include <iostream>
 #include <algorithm>
 #include <limits>
+#include <vector>
 
 #if defined(WICKED_MMGR_ENABLED)
 // MMGR include must come after standard/project includes to avoid macro collisions in system headers.
@@ -926,17 +927,16 @@ namespace vulkan_internal
 
 		void destroy_subresources()
 		{
-			uint64_t framecount = allocationhandler->framecount;
 			if (srv.IsValid())
 			{
 				if (srv.buffer_view != VK_NULL_HANDLE)
 				{
-					allocationhandler->destroyer_bufferviews.push_back(std::make_pair(srv.buffer_view, framecount));
-					allocationhandler->destroyer_bindlessUniformTexelBuffers.push_back(std::make_pair(srv.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bufferviews, srv.buffer_view);
+					allocationhandler->Retire(allocationhandler->destroyer_bindlessUniformTexelBuffers, srv.index);
 				}
 				else
 				{
-					allocationhandler->destroyer_bindlessStorageBuffers.push_back(std::make_pair(srv.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bindlessStorageBuffers, srv.index);
 				}
 				srv = {};
 			}
@@ -944,12 +944,12 @@ namespace vulkan_internal
 			{
 				if (uav.buffer_view != VK_NULL_HANDLE)
 				{
-					allocationhandler->destroyer_bufferviews.push_back(std::make_pair(uav.buffer_view, framecount));
-					allocationhandler->destroyer_bindlessStorageTexelBuffers.push_back(std::make_pair(uav.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bufferviews, uav.buffer_view);
+					allocationhandler->Retire(allocationhandler->destroyer_bindlessStorageTexelBuffers, uav.index);
 				}
 				else
 				{
-					allocationhandler->destroyer_bindlessStorageBuffers.push_back(std::make_pair(uav.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bindlessStorageBuffers, uav.index);
 				}
 				uav = {};
 			}
@@ -957,12 +957,12 @@ namespace vulkan_internal
 			{
 				if (x.buffer_view != VK_NULL_HANDLE)
 				{
-					allocationhandler->destroyer_bufferviews.push_back(std::make_pair(x.buffer_view, framecount));
-					allocationhandler->destroyer_bindlessUniformTexelBuffers.push_back(std::make_pair(x.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bufferviews, x.buffer_view);
+					allocationhandler->Retire(allocationhandler->destroyer_bindlessUniformTexelBuffers, x.index);
 				}
 				else
 				{
-					allocationhandler->destroyer_bindlessStorageBuffers.push_back(std::make_pair(x.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bindlessStorageBuffers, x.index);
 				}
 			}
 			subresources_srv.clear();
@@ -970,12 +970,12 @@ namespace vulkan_internal
 			{
 				if (x.buffer_view != VK_NULL_HANDLE)
 				{
-					allocationhandler->destroyer_bufferviews.push_back(std::make_pair(x.buffer_view, framecount));
-					allocationhandler->destroyer_bindlessStorageTexelBuffers.push_back(std::make_pair(x.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bufferviews, x.buffer_view);
+					allocationhandler->Retire(allocationhandler->destroyer_bindlessStorageTexelBuffers, x.index);
 				}
 				else
 				{
-					allocationhandler->destroyer_bindlessStorageBuffers.push_back(std::make_pair(x.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bindlessStorageBuffers, x.index);
 				}
 			}
 			subresources_uav.clear();
@@ -986,14 +986,13 @@ namespace vulkan_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
 			if (resource)
 			{
-				allocationhandler->destroyer_buffers.push_back(std::make_pair(std::make_pair(resource, allocation), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_buffers, std::make_pair(resource, allocation));
 			}
 			else if(allocation)
 			{
-				allocationhandler->destroyer_allocations.push_back(std::make_pair(allocation, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_allocations, allocation);
 			}
 			destroy_subresources();
 			allocationhandler->destroylocker.unlock();
@@ -1037,49 +1036,48 @@ namespace vulkan_internal
 
 		void destroy_subresources()
 		{
-			uint64_t framecount = allocationhandler->framecount;
 			if (srv.IsValid())
 			{
-				allocationhandler->destroyer_imageviews.push_back(std::make_pair(srv.image_view, framecount));
-				allocationhandler->destroyer_bindlessSampledImages.push_back(std::make_pair(srv.index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_imageviews, srv.image_view);
+				allocationhandler->Retire(allocationhandler->destroyer_bindlessSampledImages, srv.index);
 				srv = {};
 			}
 			if (uav.IsValid())
 			{
-				allocationhandler->destroyer_imageviews.push_back(std::make_pair(uav.image_view, framecount));
-				allocationhandler->destroyer_bindlessStorageImages.push_back(std::make_pair(uav.index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_imageviews, uav.image_view);
+				allocationhandler->Retire(allocationhandler->destroyer_bindlessStorageImages, uav.index);
 				uav = {};
 			}
 			if (rtv.IsValid())
 			{
-				allocationhandler->destroyer_imageviews.push_back(std::make_pair(rtv.image_view, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_imageviews, rtv.image_view);
 				rtv = {};
 			}
 			if (dsv.IsValid())
 			{
-				allocationhandler->destroyer_imageviews.push_back(std::make_pair(dsv.image_view, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_imageviews, dsv.image_view);
 				dsv = {};
 			}
 			for (auto x : subresources_srv)
 			{
-				allocationhandler->destroyer_imageviews.push_back(std::make_pair(x.image_view, framecount));
-				allocationhandler->destroyer_bindlessSampledImages.push_back(std::make_pair(x.index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_imageviews, x.image_view);
+				allocationhandler->Retire(allocationhandler->destroyer_bindlessSampledImages, x.index);
 			}
 			subresources_srv.clear();
 			for (auto x : subresources_uav)
 			{
-				allocationhandler->destroyer_imageviews.push_back(std::make_pair(x.image_view, framecount));
-				allocationhandler->destroyer_bindlessStorageImages.push_back(std::make_pair(x.index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_imageviews, x.image_view);
+				allocationhandler->Retire(allocationhandler->destroyer_bindlessStorageImages, x.index);
 			}
 			subresources_uav.clear();
 			for (auto x : subresources_rtv)
 			{
-				allocationhandler->destroyer_imageviews.push_back(std::make_pair(x.image_view, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_imageviews, x.image_view);
 			}
 			subresources_rtv.clear();
 			for (auto x : subresources_dsv)
 			{
-				allocationhandler->destroyer_imageviews.push_back(std::make_pair(x.image_view, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_imageviews, x.image_view);
 			}
 			subresources_dsv.clear();
 		}
@@ -1089,22 +1087,21 @@ namespace vulkan_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
 			if (resource)
 			{
-				allocationhandler->destroyer_images.push_back(std::make_pair(std::make_pair(resource, allocation), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_images, std::make_pair(resource, allocation));
 			}
 			else if (staging_resource)
 			{
-				allocationhandler->destroyer_buffers.push_back(std::make_pair(std::make_pair(staging_resource, allocation), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_buffers, std::make_pair(staging_resource, allocation));
 			}
 			else if (allocation)
 			{
-				allocationhandler->destroyer_allocations.push_back(std::make_pair(allocation, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_allocations, allocation);
 			}
 			if (video_decode_view != VK_NULL_HANDLE)
 			{
-				allocationhandler->destroyer_imageviews.push_back(std::make_pair(video_decode_view, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_imageviews, video_decode_view);
 			}
 			arrfree(mapped_subresources);
 			mapped_subresources = nullptr;
@@ -1123,9 +1120,8 @@ namespace vulkan_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			if (resource) allocationhandler->destroyer_samplers.push_back(std::make_pair(resource, framecount));
-			if (index >= 0) allocationhandler->destroyer_bindlessSamplers.push_back(std::make_pair(index, framecount));
+			if (resource) allocationhandler->Retire(allocationhandler->destroyer_samplers, resource);
+			if (index >= 0) allocationhandler->Retire(allocationhandler->destroyer_bindlessSamplers, index);
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1139,8 +1135,7 @@ namespace vulkan_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			if (pool) allocationhandler->destroyer_querypools.push_back(std::make_pair(pool, framecount));
+			if (pool) allocationhandler->Retire(allocationhandler->destroyer_querypools, pool);
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1158,9 +1153,8 @@ namespace vulkan_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			if (shaderModule) allocationhandler->destroyer_shadermodules.push_back(std::make_pair(shaderModule, framecount));
-			if (pipeline_cs) allocationhandler->destroyer_pipelines.push_back(std::make_pair(pipeline_cs, framecount));
+			if (shaderModule) allocationhandler->Retire(allocationhandler->destroyer_shadermodules, shaderModule);
+			if (pipeline_cs) allocationhandler->Retire(allocationhandler->destroyer_pipelines, pipeline_cs);
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1175,8 +1169,7 @@ namespace vulkan_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			if (pipeline) allocationhandler->destroyer_pipelines.push_back(std::make_pair(pipeline, framecount));
+			if (pipeline) allocationhandler->Retire(allocationhandler->destroyer_pipelines, pipeline);
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1201,10 +1194,9 @@ namespace vulkan_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			if (buffer) allocationhandler->destroyer_buffers.push_back(std::make_pair(std::make_pair(buffer, allocation), framecount));
-			if (resource) allocationhandler->destroyer_bvhs.push_back(std::make_pair(resource, framecount));
-			if (index >= 0) allocationhandler->destroyer_bindlessAccelerationStructures.push_back(std::make_pair(index, framecount));
+			if (buffer) allocationhandler->Retire(allocationhandler->destroyer_buffers, std::make_pair(buffer, allocation));
+			if (resource) allocationhandler->Retire(allocationhandler->destroyer_bvhs, resource);
+			if (index >= 0) allocationhandler->Retire(allocationhandler->destroyer_bindlessAccelerationStructures, index);
 			allocationhandler->destroylocker.unlock();
 			arrfree(geometries);
 			arrfree(primitiveCounts);
@@ -1220,8 +1212,7 @@ namespace vulkan_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			if (pipeline) allocationhandler->destroyer_pipelines.push_back(std::make_pair(pipeline, framecount));
+			if (pipeline) allocationhandler->Retire(allocationhandler->destroyer_pipelines, pipeline);
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1251,12 +1242,11 @@ namespace vulkan_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
 
 			for (size_t i = 0; i < swapchainAcquireSemaphores.size(); ++i)
 			{
-				allocationhandler->destroyer_semaphores.push_back(std::make_pair(swapchainAcquireSemaphores[i], framecount));
-				allocationhandler->destroyer_semaphores.push_back(std::make_pair(swapchainReleaseSemaphores[i], framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_semaphores, swapchainAcquireSemaphores[i]);
+				allocationhandler->Retire(allocationhandler->destroyer_semaphores, swapchainReleaseSemaphores[i]);
 			}
 
 #if defined(SDL3) || defined(SDL2)
@@ -1265,8 +1255,8 @@ namespace vulkan_internal
 			if (SDL_WasInit(SDL_INIT_VIDEO))
 #endif
 			{
-				allocationhandler->destroyer_swapchains.push_back(std::make_pair(swapChain, framecount));
-				allocationhandler->destroyer_surfaces.push_back(std::make_pair(surface, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_swapchains, swapChain);
+				allocationhandler->Retire(allocationhandler->destroyer_surfaces, surface);
 			}
 
 			allocationhandler->destroylocker.unlock();
@@ -1285,12 +1275,11 @@ namespace vulkan_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			allocationhandler->destroyer_video_sessions.push_back(std::make_pair(video_session, framecount));
-			allocationhandler->destroyer_video_session_parameters.push_back(std::make_pair(session_parameters, framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_video_sessions, video_session);
+			allocationhandler->Retire(allocationhandler->destroyer_video_session_parameters, session_parameters);
 			for (uint32_t i = 0; i < arrlenu(allocations); ++i)
 			{
-				allocationhandler->destroyer_allocations.push_back(std::make_pair(allocations[i], framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_allocations, allocations[i]);
 			}
 			allocationhandler->destroylocker.unlock();
 			arrfree(allocations);
@@ -1476,7 +1465,7 @@ namespace vulkan_internal
 		if (createInfo.oldSwapchain != VK_NULL_HANDLE)
 		{
 			std::scoped_lock lock(allocationhandler->destroylocker);
-			allocationhandler->destroyer_swapchains.emplace_back(createInfo.oldSwapchain, allocationhandler->framecount);
+			allocationhandler->Retire(allocationhandler->destroyer_swapchains, createInfo.oldSwapchain);
 		}
 
 		vulkan_check(vkGetSwapchainImagesKHR(device, internal_state->swapChain, &imageCount, nullptr));
@@ -1528,12 +1517,12 @@ namespace vulkan_internal
 		allocationhandler->destroylocker.lock();
 		for (auto& x : internal_state->swapchainAcquireSemaphores)
 		{
-			allocationhandler->destroyer_semaphores.push_back(std::make_pair(x, allocationhandler->framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_semaphores, x);
 		}
 		internal_state->swapchainAcquireSemaphores.clear();
 		for (auto& x : internal_state->swapchainReleaseSemaphores)
 		{
-			allocationhandler->destroyer_semaphores.push_back(std::make_pair(x, allocationhandler->framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_semaphores, x);
 		}
 		internal_state->swapchainReleaseSemaphores.clear();
 		allocationhandler->destroylocker.unlock();
@@ -1858,6 +1847,17 @@ using namespace vulkan_internal;
 		{
 			if (vkGetFenceStatus(device->device, inflight[i].fence) == VK_SUCCESS)
 			{
+				if (inflight[i].submitted_queue < QUEUE_COUNT && inflight[i].submitted_value > 0)
+				{
+					auto& completed_counter = device->queue_timeline_completed_fallback[inflight[i].submitted_queue];
+					uint64_t completed = completed_counter.load(std::memory_order_relaxed);
+					while (completed < inflight[i].submitted_value &&
+						!completed_counter.compare_exchange_weak(completed, inflight[i].submitted_value, std::memory_order_release, std::memory_order_relaxed))
+					{
+					}
+				}
+				inflight[i].submitted_queue = QUEUE_COUNT;
+				inflight[i].submitted_value = 0;
 				freelist.push_back(std::move(inflight[i]));
 				std::swap(inflight[i], inflight.back());
 				inflight.pop_back();
@@ -1865,6 +1865,59 @@ using namespace vulkan_internal;
 			}
 			++i;
 		}
+	}
+	bool GraphicsDevice_Vulkan::CopyAllocator::is_point_complete(QueueSyncPoint point)
+	{
+		if (!point.IsValid() || point.queue >= QUEUE_COUNT)
+			return true;
+
+		recycle_completed();
+		const uint64_t completed = device->queue_timeline_completed_fallback[point.queue].load(std::memory_order_acquire);
+		if (completed >= point.value)
+			return true;
+
+		std::scoped_lock lock(locker);
+		for (size_t i = 0; i < inflight.size(); ++i)
+		{
+			const CopyCMD& cmd = inflight[i];
+			if (cmd.submitted_queue != point.queue || cmd.submitted_value != point.value)
+				continue;
+			return vkGetFenceStatus(device->device, cmd.fence) == VK_SUCCESS;
+		}
+		return false;
+	}
+	bool GraphicsDevice_Vulkan::CopyAllocator::wait_point(QueueSyncPoint point)
+	{
+		if (!point.IsValid() || point.queue >= QUEUE_COUNT)
+			return true;
+
+		recycle_completed();
+		if (device->queue_timeline_completed_fallback[point.queue].load(std::memory_order_acquire) >= point.value)
+			return true;
+
+		VkFence fence = VK_NULL_HANDLE;
+		{
+			std::scoped_lock lock(locker);
+			for (size_t i = 0; i < inflight.size(); ++i)
+			{
+				const CopyCMD& cmd = inflight[i];
+				if (cmd.submitted_queue == point.queue && cmd.submitted_value == point.value)
+				{
+					fence = cmd.fence;
+					break;
+				}
+			}
+		}
+		if (fence == VK_NULL_HANDLE)
+			return false;
+
+		while (vulkan_check(vkWaitForFences(device->device, 1, &fence, VK_TRUE, timeout_value)) == VK_TIMEOUT)
+		{
+			VULKAN_LOG_ERROR("[CopyAllocator::wait_point] vkWaitForFences resulted in VK_TIMEOUT");
+			std::this_thread::yield();
+		}
+		recycle_completed();
+		return device->queue_timeline_completed_fallback[point.queue].load(std::memory_order_acquire) >= point.value;
 	}
 	GraphicsDevice_Vulkan::CopyAllocator::CopyCMD GraphicsDevice_Vulkan::CopyAllocator::allocate(uint64_t staging_size)
 	{
@@ -1928,7 +1981,7 @@ using namespace vulkan_internal;
 
 		return cmd;
 	}
-	SubmissionToken GraphicsDevice_Vulkan::CopyAllocator::submit(CopyCMD cmd, QUEUE_TYPE queue, bool wait_for_completion)
+	SubmissionToken GraphicsDevice_Vulkan::CopyAllocator::submit(CopyCMD cmd, QUEUE_TYPE queue)
 	{
 		SubmissionToken token = {};
 		VkSubmitInfo2 submitInfo = {};
@@ -1950,38 +2003,37 @@ using namespace vulkan_internal;
 			submitInfo.commandBufferInfoCount = 1;
 			submitInfo.pCommandBufferInfos = &cbSubmitInfo;
 
-				VkSemaphoreSubmitInfo signalSemaphoreInfo = {};
-				std::scoped_lock lock(*dst_queue.locker);
-				if (device->SupportsSubmissionTokens() && dst_queue.timeline_semaphore != VK_NULL_HANDLE)
-				{
-					signalSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-					signalSemaphoreInfo.semaphore = dst_queue.timeline_semaphore;
-					signalSemaphoreInfo.value = dst_queue.timeline_value.fetch_add(1, std::memory_order_relaxed) + 1;
-					signalSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-					submitInfo.signalSemaphoreInfoCount = 1;
-					submitInfo.pSignalSemaphoreInfos = &signalSemaphoreInfo;
-					token.queue = dst_queue_type;
-					token.value = signalSemaphoreInfo.value;
-				}
-
-				vulkan_check(vkQueueSubmit2(dst_queue.queue, 1, &submitInfo, cmd.fence));
-			}
-
-		if (wait_for_completion)
-		{
-			while (vulkan_check(vkWaitForFences(device->device, 1, &cmd.fence, VK_TRUE, timeout_value)) == VK_TIMEOUT)
+			uint64_t submitted_value = 0;
+			VkSemaphoreSubmitInfo signalSemaphoreInfo = {};
+			std::scoped_lock lock(*dst_queue.locker);
+			if (device->SupportsSubmissionTokens() && dst_queue.timeline_semaphore != VK_NULL_HANDLE)
 			{
-				VULKAN_LOG_ERROR("[CopyAllocator::submit] vkWaitForFences resulted in VK_TIMEOUT");
-				std::this_thread::yield();
+				signalSemaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+				signalSemaphoreInfo.semaphore = dst_queue.timeline_semaphore;
+				signalSemaphoreInfo.value = dst_queue.timeline_value.fetch_add(1, std::memory_order_relaxed) + 1;
+				signalSemaphoreInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+				submitInfo.signalSemaphoreInfoCount = 1;
+				submitInfo.pSignalSemaphoreInfos = &signalSemaphoreInfo;
+				submitted_value = signalSemaphoreInfo.value;
+			}
+			else
+			{
+				submitted_value = device->queue_timeline_submitted_fallback[dst_queue_type].fetch_add(1, std::memory_order_relaxed) + 1;
+			}
+			token.Merge(QueueSyncPoint{ dst_queue_type, submitted_value });
+			{
+				std::scoped_lock timeline_lock(device->allocationhandler->destroylocker);
+				device->allocationhandler->submitted_queue_values[dst_queue_type] = submitted_value;
 			}
 
-			std::scoped_lock lock(locker);
-			freelist.push_back(cmd);
+			vulkan_check(vkQueueSubmit2(dst_queue.queue, 1, &submitInfo, cmd.fence));
+			cmd.submitted_queue = dst_queue_type;
+			cmd.submitted_value = submitted_value;
 		}
-		else
+
 		{
 			std::scoped_lock lock(locker);
-			inflight.push_back(cmd);
+			inflight.push_back(std::move(cmd));
 		}
 		return token;
 	}
@@ -2913,7 +2965,8 @@ using namespace vulkan_internal;
 			timeline_semaphore_supported = features_1_2.timelineSemaphore == VK_TRUE;
 			if (!timeline_semaphore_supported)
 			{
-				SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Vulkan timeline semaphores are unavailable on selected adapter; tokenized submission will use safe fallback.");
+				ShowVulkanErrorMessage("Selected Vulkan 1.3 device is missing required feature: timelineSemaphore");
+				wi::platform::Exit();
 			}
 
 				if (properties2.properties.limits.timestampComputeAndGraphics != VK_TRUE)
@@ -3435,6 +3488,11 @@ using namespace vulkan_internal;
 		allocationhandler = wi::allocator::make_shared_single<AllocationHandler>();
 		allocationhandler->device = device;
 		allocationhandler->instance = instance;
+		allocationhandler->queue_timeline_supported = timeline_semaphore_supported;
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			allocationhandler->queue_timeline_completed[q] = &queue_timeline_completed_fallback[q];
+		}
 
 		// Initialize Vulkan Memory Allocator helper:
 		VmaAllocatorCreateInfo allocatorInfo = {};
@@ -3510,6 +3568,7 @@ using namespace vulkan_internal;
 				semaphoreInfo.pNext = &typeInfo;
 				vulkan_check(vkCreateSemaphore(device, &semaphoreInfo, nullptr, &queues[queue].timeline_semaphore));
 				set_semaphore_name(queues[queue].timeline_semaphore, "CommandQueue::timeline_semaphore");
+				allocationhandler->queue_timeline_semaphores[queue] = queues[queue].timeline_semaphore;
 			}
 		}
 
@@ -4668,13 +4727,11 @@ using namespace vulkan_internal;
 					&copyRegion
 				);
 
-				const bool wait_for_completion = !SupportsSubmissionTokens();
-				SubmissionToken token = copyAllocator.submit(std::move(cmd), QUEUE_COPY, wait_for_completion);
-				if (token.value != 0)
+				SubmissionToken token = copyAllocator.submit(std::move(cmd), QUEUE_COPY);
+				if (token.IsValid())
 				{
 					std::scoped_lock lock(upload_token_locker);
-					pending_implicit_uploads.validMask |= 1u << token.queue;
-					pending_implicit_uploads.perQueue[token.queue] = token;
+					pending_implicit_uploads.Merge(token);
 				}
 			}
 		}
@@ -5159,41 +5216,23 @@ using namespace vulkan_internal;
 					copyRegions
 				);
 
-				const bool async_upload = SupportsSubmissionTokens();
-				if (async_upload)
-				{
-					// Keep layout transition in the upload command stream when we don't block the CPU.
-					std::swap(barrier.srcStageMask, barrier.dstStageMask);
-					barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-					barrier.newLayout = _ConvertImageLayout(texture->desc.layout);
-					barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-					barrier.dstAccessMask = _ParseResourceState(texture->desc.layout);
-					VkDependencyInfo final_dependency = {};
-					final_dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-					final_dependency.imageMemoryBarrierCount = 1;
-					final_dependency.pImageMemoryBarriers = &barrier;
-					vkCmdPipelineBarrier2(cmd.transferCommandBuffer, &final_dependency);
+				// Keep layout transition in the upload command stream for both timeline and no-timeline paths.
+				std::swap(barrier.srcStageMask, barrier.dstStageMask);
+				barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				barrier.newLayout = _ConvertImageLayout(texture->desc.layout);
+				barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+				barrier.dstAccessMask = _ParseResourceState(texture->desc.layout);
+				VkDependencyInfo final_dependency = {};
+				final_dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+				final_dependency.imageMemoryBarrierCount = 1;
+				final_dependency.pImageMemoryBarriers = &barrier;
+				vkCmdPipelineBarrier2(cmd.transferCommandBuffer, &final_dependency);
 
-					SubmissionToken token = copyAllocator.submit(std::move(cmd), QUEUE_COPY, false);
-					if (token.value != 0)
-					{
-						std::scoped_lock lock(upload_token_locker);
-						pending_implicit_uploads.validMask |= 1u << token.queue;
-						pending_implicit_uploads.perQueue[token.queue] = token;
-					}
-				}
-				else
+				SubmissionToken token = copyAllocator.submit(std::move(cmd), QUEUE_COPY);
+				if (token.IsValid())
 				{
-					copyAllocator.submit(std::move(cmd), QUEUE_COPY, true);
-
-					// Blocking fallback keeps legacy transition helper behavior:
-					std::swap(barrier.srcStageMask, barrier.dstStageMask);
-					barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-					barrier.newLayout = _ConvertImageLayout(texture->desc.layout);
-					barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-					barrier.dstAccessMask = _ParseResourceState(texture->desc.layout);
-					std::scoped_lock lck(transitionLocker);
-					arrput(init_transitions, barrier);
+					std::scoped_lock lock(upload_token_locker);
+					pending_implicit_uploads.Merge(token);
 				}
 			}
 		}
@@ -7491,22 +7530,23 @@ using namespace vulkan_internal;
 		{
 			SDL_LogWarn(
 				SDL_LOG_CATEGORY_APPLICATION,
-				"[Wicked::Vulkan] timeline semaphores are unavailable in %s; falling back to legacy safe submission path",
+				"[Wicked::Vulkan] timeline semaphores are unavailable in %s; falling back to explicit CPU-synchronized submission dependencies",
 				caller != nullptr ? caller : "unknown caller");
 		}
 	}
 
-	SubmissionTokenSet GraphicsDevice_Vulkan::SubmitCommandListsInternal(bool token_mode)
+	SubmissionToken GraphicsDevice_Vulkan::SubmitCommandListsInternal()
 	{
-		if (token_mode && !SupportsSubmissionTokens())
+		const bool timeline_supported = SupportsSubmissionTokens();
+		const bool token_mode_requested = true;
+		if (!timeline_supported)
 		{
-			WarnMissingTimelineSemaphore("SubmitCommandListsExAll");
-			token_mode = false;
+			WarnMissingTimelineSemaphore("SubmitCommandListsEx");
 		}
 
 		copyAllocator.recycle_completed();
 
-		SubmissionTokenSet tokens = {};
+		SubmissionToken tokens = {};
 		bool queue_has_work[QUEUE_COUNT] = {};
 		const uint32_t submit_index = GetBufferIndex();
 		for (int q = 0; q < QUEUE_COUNT; ++q)
@@ -7514,7 +7554,7 @@ using namespace vulkan_internal;
 			frame_queue_active[submit_index][q] = false;
 		}
 
-		SubmissionTokenSet pending_upload_tokens = {};
+		SubmissionToken pending_upload_tokens = {};
 		{
 			std::scoped_lock lock(upload_token_locker);
 			pending_upload_tokens = pending_implicit_uploads;
@@ -7575,14 +7615,14 @@ using namespace vulkan_internal;
 					queue.signal(sema);
 					queues[q].wait(sema);
 				}
-				queue.submit(this, VK_NULL_HANDLE, !token_mode);
+				queue.submit(this, VK_NULL_HANDLE, !token_mode_requested);
 				arrfree(init_transitions);
 				init_transitions = nullptr;
 			}
 		}
 
 		// Queue waits for pending implicit uploads:
-		if (pending_upload_tokens.validMask != 0)
+		if (pending_upload_tokens.IsValid())
 		{
 			for (uint32_t dst = 0; dst < QUEUE_COUNT; ++dst)
 			{
@@ -7590,12 +7630,17 @@ using namespace vulkan_internal;
 					continue;
 				for (uint32_t src = 0; src < QUEUE_COUNT; ++src)
 				{
-					if ((pending_upload_tokens.validMask & (1u << src)) == 0)
+					if ((pending_upload_tokens.queue_mask & (1u << src)) == 0)
 						continue;
-					const SubmissionToken& token = pending_upload_tokens.perQueue[src];
-					if (token.value == 0)
+					QueueSyncPoint point = pending_upload_tokens.Get((QUEUE_TYPE)src);
+					if (!point.IsValid() || src == dst)
 						continue;
-					WaitForToken((QUEUE_TYPE)dst, token);
+					if (!timeline_supported || queues[src].timeline_semaphore == VK_NULL_HANDLE)
+					{
+						WaitQueuePoint(point);
+						continue;
+					}
+					queues[dst].wait(queues[src].timeline_semaphore, point.value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 				}
 			}
 		}
@@ -7616,7 +7661,7 @@ using namespace vulkan_internal;
 				{
 					// If the current commandlist must resolve a dependency, then previous ones will be submitted before doing that:
 					//	This improves GPU utilization because not the whole batch of command lists will need to synchronize, but only the one that handles it
-					queue.submit(this, VK_NULL_HANDLE, !token_mode);
+					queue.submit(this, VK_NULL_HANDLE, !token_mode_requested);
 				}
 
 				VkCommandBufferSubmitInfo cbSubmitInfo = {};
@@ -7668,7 +7713,7 @@ using namespace vulkan_internal;
 					}
 					commandlist.signals.clear();
 
-					queue.submit(this, VK_NULL_HANDLE, !token_mode);
+					queue.submit(this, VK_NULL_HANDLE, !token_mode_requested);
 				}
 
 				for (auto& x : commandlist.pipelines_worker)
@@ -7690,50 +7735,47 @@ using namespace vulkan_internal;
 				commandlist.pipelines_worker.clear();
 			}
 
-			// final submits with fences:
-			for (int q = 0; q < QUEUE_COUNT; ++q)
-			{
-				if (queues[q].queue == VK_NULL_HANDLE)
-					continue;
+				// final submits with fences:
+				for (int q = 0; q < QUEUE_COUNT; ++q)
+				{
+					if (queues[q].queue == VK_NULL_HANDLE)
+						continue;
 
 					uint64_t timeline_signal_value = 0;
 					uint64_t* out_timeline_signal_value = nullptr;
-					if (token_mode && queue_has_work[q] && queues[q].timeline_semaphore != VK_NULL_HANDLE)
+					if (queue_has_work[q] && queues[q].timeline_semaphore != VK_NULL_HANDLE)
 					{
 						out_timeline_signal_value = &timeline_signal_value;
 					}
 
-					const bool submitted = queues[q].submit(this, frame_fence[submit_index][q], !token_mode, 0, out_timeline_signal_value);
+					const bool submitted = queues[q].submit(this, frame_fence[submit_index][q], !token_mode_requested, 0, out_timeline_signal_value);
 					frame_queue_active[submit_index][q] = submitted;
-					if (token_mode && timeline_signal_value != 0 && submitted)
-					{
-						tokens.validMask |= 1u << q;
-					tokens.perQueue[q].queue = (QUEUE_TYPE)q;
-					tokens.perQueue[q].value = timeline_signal_value;
-				}
-			}
-		}
 
-		if (!token_mode)
-		{
-			// Sync up every queue to every other queue at the end of the frame:
-			//	Note: it disables overlapping queues into the next frame
-			//	Note: it's not submitted immediately here, but the waits are recorded before next frame submits
-			for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
-			{
-				if (queues[queue1].queue == nullptr)
-					continue;
-				for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
-				{
-					if (queue1 == queue2)
+					if (!submitted || !queue_has_work[q])
+					{
+						if (!timeline_supported)
+						{
+							queue_timeline_value_per_buffer[submit_index][q].store(0, std::memory_order_release);
+						}
 						continue;
-					VkSemaphore semaphore = queues[queue2].frame_semaphores[submit_index][queue1];
-					if (semaphore == VK_NULL_HANDLE)
-						continue;
-					queues[queue1].wait(semaphore);
+					}
+
+					uint64_t queue_point = timeline_signal_value;
+					if (queue_point == 0)
+					{
+						queue_point = queue_timeline_submitted_fallback[q].fetch_add(1, std::memory_order_relaxed) + 1;
+						queue_timeline_value_per_buffer[submit_index][q].store(queue_point, std::memory_order_release);
+					}
+					{
+						std::scoped_lock lock(allocationhandler->destroylocker);
+						allocationhandler->submitted_queue_values[q] = queue_point;
+					}
+					if (token_mode_requested)
+					{
+						tokens.Merge(QueueSyncPoint{ (QUEUE_TYPE)q, queue_point });
+					}
 				}
 			}
-		}
 
 		// From here, we begin a new frame, this affects GetBufferIndex()!
 		FRAMECOUNT++;
@@ -7746,18 +7788,28 @@ using namespace vulkan_internal;
 			uint32_t waitFenceCount = 0;
 			VkFence resetFences[QUEUE_COUNT] = {};
 			uint32_t resetFenceCount = 0;
-			for (int queue = 0; queue < QUEUE_COUNT; ++queue)
-			{
-				if (!frame_queue_active[bufferindex][queue])
-					continue;
-				VkFence fence = frame_fence[bufferindex][queue];
-				if (fence == VK_NULL_HANDLE)
-					continue;
-				resetFences[resetFenceCount++] = fence;
-				if (vkGetFenceStatus(device, fence) == VK_SUCCESS)
-					continue;
-				waitFences[waitFenceCount++] = fence;
-			}
+				for (int queue = 0; queue < QUEUE_COUNT; ++queue)
+				{
+					if (!frame_queue_active[bufferindex][queue])
+						continue;
+					VkFence fence = frame_fence[bufferindex][queue];
+					if (fence == VK_NULL_HANDLE)
+						continue;
+					resetFences[resetFenceCount++] = fence;
+					if (vkGetFenceStatus(device, fence) == VK_SUCCESS)
+					{
+						const uint64_t retired = queue_timeline_value_per_buffer[bufferindex][queue].load(std::memory_order_acquire);
+						if (retired > 0)
+						{
+							uint64_t completed = queue_timeline_completed_fallback[queue].load(std::memory_order_relaxed);
+							while (completed < retired && !queue_timeline_completed_fallback[queue].compare_exchange_weak(completed, retired, std::memory_order_release, std::memory_order_relaxed))
+							{
+							}
+						}
+						continue;
+					}
+					waitFences[waitFenceCount++] = fence;
+				}
 			if (waitFenceCount > 0)
 			{
 				while (vulkan_check(vkWaitForFences(device, waitFenceCount, waitFences, VK_TRUE, timeout_value)) == VK_TIMEOUT)
@@ -7769,14 +7821,29 @@ using namespace vulkan_internal;
 						frame_fence[bufferindex][QUEUE_COPY] == VK_NULL_HANDLE ? "OK" : string_VkResult(vkGetFenceStatus(device, frame_fence[bufferindex][QUEUE_COPY])),
 						frame_fence[bufferindex][QUEUE_VIDEO_DECODE] == VK_NULL_HANDLE ? "OK" : string_VkResult(vkGetFenceStatus(device, frame_fence[bufferindex][QUEUE_VIDEO_DECODE]))
 					);
-					std::this_thread::yield();
+						std::this_thread::yield();
+					}
+				}
+				for (int queue = 0; queue < QUEUE_COUNT; ++queue)
+				{
+					if (!frame_queue_active[bufferindex][queue])
+						continue;
+					VkFence fence = frame_fence[bufferindex][queue];
+					if (fence == VK_NULL_HANDLE || vkGetFenceStatus(device, fence) != VK_SUCCESS)
+						continue;
+					const uint64_t retired = queue_timeline_value_per_buffer[bufferindex][queue].load(std::memory_order_acquire);
+					if (retired == 0)
+						continue;
+					uint64_t completed = queue_timeline_completed_fallback[queue].load(std::memory_order_relaxed);
+					while (completed < retired && !queue_timeline_completed_fallback[queue].compare_exchange_weak(completed, retired, std::memory_order_release, std::memory_order_relaxed))
+					{
+					}
+				}
+				if (resetFenceCount > 0)
+				{
+					vulkan_check(vkResetFences(device, resetFenceCount, resetFences));
 				}
 			}
-			if (resetFenceCount > 0)
-			{
-				vulkan_check(vkResetFences(device, resetFenceCount, resetFences));
-			}
-		}
 
 		for (int q = 0; q < QUEUE_COUNT; ++q)
 		{
@@ -7786,68 +7853,395 @@ using namespace vulkan_internal;
 			}
 		}
 
-		allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
+		allocationhandler->Update();
 		copyAllocator.recycle_completed();
 		return tokens;
 	}
 
-	void GraphicsDevice_Vulkan::SubmitCommandLists()
+	SubmissionToken GraphicsDevice_Vulkan::SubmitCommandListsEx(const SubmitDesc& desc)
 	{
-		SubmitCommandListsInternal(false);
-	}
-
-	SubmissionTokenSet GraphicsDevice_Vulkan::SubmitCommandListsExAll()
-	{
-		return SubmitCommandListsInternal(true);
-	}
-
-	void GraphicsDevice_Vulkan::WaitForToken(QUEUE_TYPE queue, SubmissionToken token)
-	{
-		if (token.value == 0)
-			return;
-		if (queue >= QUEUE_COUNT || token.queue >= QUEUE_COUNT)
-			return;
-		if (queues[queue].queue == VK_NULL_HANDLE)
-			return;
-		if (!SupportsSubmissionTokens())
+		bool partial_submit = desc.command_lists != nullptr && desc.command_list_count > 0;
+		bool has_submit_batch = true;
+		std::vector<CommandList_Vulkan*> remaining_commandlists;
+		if (partial_submit)
 		{
-			WarnMissingTimelineSemaphore("WaitForToken");
-			WaitForGPU();
+			std::scoped_lock lock(cmd_locker);
+			std::vector<CommandList_Vulkan*> open_commandlists;
+			open_commandlists.reserve(cmd_count);
+			for (uint32_t i = 0; i < cmd_count; ++i)
+			{
+				open_commandlists.push_back(commandlists[i]);
+			}
+
+			std::vector<CommandList_Vulkan*> submit_commandlists;
+			submit_commandlists.reserve(desc.command_list_count);
+			auto is_in_open = [&](CommandList_Vulkan* candidate) -> bool
+			{
+				return candidate != nullptr && std::find(open_commandlists.begin(), open_commandlists.end(), candidate) != open_commandlists.end();
+			};
+			auto contains_submit = [&](CommandList_Vulkan* candidate) -> bool
+			{
+				return std::find(submit_commandlists.begin(), submit_commandlists.end(), candidate) != submit_commandlists.end();
+			};
+
+			for (uint32_t i = 0; i < desc.command_list_count; ++i)
+			{
+				const CommandList cmd = desc.command_lists[i];
+				if (!cmd.IsValid())
+					continue;
+				CommandList_Vulkan* commandlist = (CommandList_Vulkan*)cmd.internal_state;
+				if (!is_in_open(commandlist) || contains_submit(commandlist))
+					continue;
+				submit_commandlists.push_back(commandlist);
+			}
+
+			// Dependency closure: if a selected consumer waits on a producer, include that producer too.
+			bool changed = true;
+			while (changed)
+			{
+				changed = false;
+				for (size_t ci = 0; ci < submit_commandlists.size(); ++ci)
+				{
+					CommandList_Vulkan* consumer = submit_commandlists[ci];
+					if (consumer == nullptr)
+						continue;
+					for (VkSemaphore wait_sem : consumer->waits)
+					{
+						if (wait_sem == VK_NULL_HANDLE)
+							continue;
+						for (CommandList_Vulkan* producer : open_commandlists)
+						{
+							if (producer == nullptr || contains_submit(producer))
+								continue;
+							bool found = false;
+							for (VkSemaphore signal_sem : producer->signals)
+							{
+								if (signal_sem == wait_sem)
+								{
+									found = true;
+									break;
+								}
+							}
+							if (found)
+							{
+								submit_commandlists.push_back(producer);
+								changed = true;
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			if (submit_commandlists.empty())
+			{
+				has_submit_batch = false;
+			}
+			else
+			{
+				remaining_commandlists.reserve(open_commandlists.size());
+				auto in_submit = [&](CommandList_Vulkan* candidate) -> bool
+				{
+					return std::find(submit_commandlists.begin(), submit_commandlists.end(), candidate) != submit_commandlists.end();
+				};
+				for (CommandList_Vulkan* commandlist : open_commandlists)
+				{
+					if (!in_submit(commandlist))
+					{
+						remaining_commandlists.push_back(commandlist);
+					}
+				}
+
+				// Drop waits/signals in remaining-open commandlists that target submitted commandlists.
+				auto has_remaining_signal = [&](VkSemaphore sem) -> bool
+				{
+					for (CommandList_Vulkan* producer : remaining_commandlists)
+					{
+						if (producer == nullptr)
+							continue;
+						for (VkSemaphore signal_sem : producer->signals)
+						{
+							if (signal_sem == sem)
+								return true;
+						}
+					}
+					return false;
+				};
+				for (CommandList_Vulkan* consumer : remaining_commandlists)
+				{
+					std::deque<VkSemaphore> kept_waits;
+					for (VkSemaphore wait_sem : consumer->waits)
+					{
+						if (wait_sem != VK_NULL_HANDLE && has_remaining_signal(wait_sem))
+						{
+							kept_waits.push_back(wait_sem);
+						}
+					}
+					consumer->waits.swap(kept_waits);
+				}
+
+				auto has_remaining_wait = [&](VkSemaphore sem) -> bool
+				{
+					for (CommandList_Vulkan* consumer : remaining_commandlists)
+					{
+						if (consumer == nullptr)
+							continue;
+						for (VkSemaphore wait_sem : consumer->waits)
+						{
+							if (wait_sem == sem)
+								return true;
+						}
+					}
+					return false;
+				};
+				for (CommandList_Vulkan* producer : remaining_commandlists)
+				{
+					std::deque<VkSemaphore> kept_signals;
+					for (VkSemaphore signal_sem : producer->signals)
+					{
+						if (signal_sem != VK_NULL_HANDLE && has_remaining_wait(signal_sem))
+						{
+							kept_signals.push_back(signal_sem);
+						}
+						else if (signal_sem != VK_NULL_HANDLE)
+						{
+							free_semaphore(signal_sem);
+						}
+					}
+					producer->signals.swap(kept_signals);
+				}
+
+				cmd_count = (uint32_t)submit_commandlists.size();
+				for (uint32_t i = 0; i < cmd_count; ++i)
+				{
+					commandlists[i] = submit_commandlists[i];
+					commandlists[i]->id = i;
+				}
+			}
+		}
+
+		if (partial_submit && !has_submit_batch)
+		{
+			return {};
+		}
+
+		if ((desc.submission_dependencies != nullptr && desc.submission_dependency_count > 0) ||
+			(desc.queue_dependencies != nullptr && desc.queue_dependency_count > 0))
+		{
+			if (!SupportsSubmissionTokens())
+			{
+				// Explicit fallback for non-timeline Vulkan paths: honor SubmitDesc dependencies on CPU.
+				for (uint32_t i = 0; i < desc.queue_dependency_count; ++i)
+				{
+					WaitQueuePoint(desc.queue_dependencies[i].point);
+				}
+				for (uint32_t i = 0; i < desc.submission_dependency_count; ++i)
+				{
+					WaitSubmission(desc.submission_dependencies[i]);
+				}
+			}
+			else
+			{
+				std::scoped_lock lock(upload_token_locker);
+				for (uint32_t i = 0; i < desc.submission_dependency_count; ++i)
+				{
+					pending_implicit_uploads.Merge(desc.submission_dependencies[i]);
+				}
+				for (uint32_t i = 0; i < desc.queue_dependency_count; ++i)
+				{
+					SubmissionToken token = {};
+					token.Merge(desc.queue_dependencies[i].point);
+					pending_implicit_uploads.Merge(token);
+				}
+			}
+		}
+		SubmissionToken token = SubmitCommandListsInternal();
+		if (partial_submit)
+		{
+			cmd_locker.lock();
+			cmd_count = (uint32_t)remaining_commandlists.size();
+			for (uint32_t i = 0; i < cmd_count; ++i)
+			{
+				commandlists[i] = remaining_commandlists[i];
+				commandlists[i]->id = i;
+			}
+			cmd_locker.unlock();
+		}
+		if (desc.throttle_cpu && token.IsValid())
+		{
+			const uint64_t budget = desc.max_inflight_per_queue > 0 ? desc.max_inflight_per_queue : 2u;
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((token.queue_mask & (1u << q)) == 0)
+					continue;
+				const uint64_t submitted = token.values[q];
+				if (submitted <= budget)
+					continue;
+				WaitQueuePoint(QueueSyncPoint{ (QUEUE_TYPE)q, submitted - budget });
+			}
+		}
+		return token;
+	}
+
+	bool GraphicsDevice_Vulkan::IsQueuePointComplete(QueueSyncPoint point) const
+	{
+		if (!point.IsValid())
+			return true;
+		if (point.queue >= QUEUE_COUNT)
+			return true;
+		if (queues[point.queue].queue == VK_NULL_HANDLE)
+			return true;
+
+		if (SupportsSubmissionTokens() && queues[point.queue].timeline_semaphore != VK_NULL_HANDLE)
+		{
+			uint64_t completed = 0;
+			vulkan_check(vkGetSemaphoreCounterValue(device, queues[point.queue].timeline_semaphore, &completed));
+			uint64_t known_completed = queue_timeline_completed_fallback[point.queue].load(std::memory_order_relaxed);
+			while (known_completed < completed && !queue_timeline_completed_fallback[point.queue].compare_exchange_weak(known_completed, completed, std::memory_order_release, std::memory_order_relaxed))
+			{
+			}
+			return completed >= point.value;
+		}
+
+		const uint64_t completed = queue_timeline_completed_fallback[point.queue].load(std::memory_order_acquire);
+		if (completed >= point.value)
+			return true;
+		if (copyAllocator.is_point_complete(point))
+			return true;
+
+		for (uint32_t buffer = 0; buffer < BUFFERCOUNT; ++buffer)
+		{
+			const uint64_t mapped_value = queue_timeline_value_per_buffer[buffer][point.queue].load(std::memory_order_acquire);
+			if (mapped_value != point.value)
+				continue;
+			VkFence fence = frame_fence[buffer][point.queue];
+			if (fence == VK_NULL_HANDLE)
+				return true;
+			if (vkGetFenceStatus(device, fence) == VK_SUCCESS)
+			{
+				uint64_t known_completed = queue_timeline_completed_fallback[point.queue].load(std::memory_order_relaxed);
+				while (known_completed < mapped_value && !queue_timeline_completed_fallback[point.queue].compare_exchange_weak(known_completed, mapped_value, std::memory_order_release, std::memory_order_relaxed))
+				{
+				}
+				return true;
+			}
+			return false;
+		}
+
+		return queue_timeline_completed_fallback[point.queue].load(std::memory_order_acquire) >= point.value;
+	}
+
+	void GraphicsDevice_Vulkan::WaitQueuePoint(QueueSyncPoint point) const
+	{
+		if (!point.IsValid())
+			return;
+		if (point.queue >= QUEUE_COUNT)
+			return;
+		if (queues[point.queue].queue == VK_NULL_HANDLE)
+			return;
+		if (SupportsSubmissionTokens() && queues[point.queue].timeline_semaphore != VK_NULL_HANDLE)
+		{
+			VkSemaphore wait_semaphore = queues[point.queue].timeline_semaphore;
+			VkSemaphoreWaitInfo wait_info = {};
+			wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+			wait_info.semaphoreCount = 1;
+			wait_info.pSemaphores = &wait_semaphore;
+			wait_info.pValues = &point.value;
+			while (vulkan_check(vkWaitSemaphores(device, &wait_info, timeout_value)) == VK_TIMEOUT)
+			{
+				VULKAN_LOG_ERROR("[WaitQueuePoint] vkWaitSemaphores resulted in VK_TIMEOUT");
+				std::this_thread::yield();
+			}
+			uint64_t known_completed = queue_timeline_completed_fallback[point.queue].load(std::memory_order_relaxed);
+			while (known_completed < point.value && !queue_timeline_completed_fallback[point.queue].compare_exchange_weak(known_completed, point.value, std::memory_order_release, std::memory_order_relaxed))
+			{
+			}
 			return;
 		}
-		if (queues[token.queue].timeline_semaphore == VK_NULL_HANDLE)
+
+		if (queue_timeline_completed_fallback[point.queue].load(std::memory_order_acquire) >= point.value)
 			return;
-		if (queue == token.queue || IsTokenComplete(token))
+		if (copyAllocator.wait_point(point))
 			return;
-		queues[queue].wait(queues[token.queue].timeline_semaphore, token.value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+
+		for (uint32_t buffer = 0; buffer < BUFFERCOUNT; ++buffer)
+		{
+			const uint64_t mapped_value = queue_timeline_value_per_buffer[buffer][point.queue].load(std::memory_order_acquire);
+			if (mapped_value != point.value)
+				continue;
+			VkFence fence = frame_fence[buffer][point.queue];
+			if (fence == VK_NULL_HANDLE)
+				return;
+			while (vulkan_check(vkWaitForFences(device, 1, &fence, VK_TRUE, timeout_value)) == VK_TIMEOUT)
+			{
+				std::this_thread::yield();
+			}
+			uint64_t known_completed = queue_timeline_completed_fallback[point.queue].load(std::memory_order_relaxed);
+			while (known_completed < mapped_value && !queue_timeline_completed_fallback[point.queue].compare_exchange_weak(known_completed, mapped_value, std::memory_order_release, std::memory_order_relaxed))
+			{
+			}
+			return;
+		}
+
+		WaitForGPU();
+		uint64_t known_completed = queue_timeline_completed_fallback[point.queue].load(std::memory_order_relaxed);
+		while (known_completed < point.value && !queue_timeline_completed_fallback[point.queue].compare_exchange_weak(known_completed, point.value, std::memory_order_release, std::memory_order_relaxed))
+		{
+		}
 	}
 
-	bool GraphicsDevice_Vulkan::IsTokenComplete(SubmissionToken token) const
+	QueueSyncPoint GraphicsDevice_Vulkan::GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const
 	{
-		if (token.value == 0)
-			return true;
-		if (token.queue >= QUEUE_COUNT)
-			return false;
-		if (!SupportsSubmissionTokens() || queues[token.queue].timeline_semaphore == VK_NULL_HANDLE)
-			return false;
-
-		uint64_t completed = 0;
-		const VkResult res = vkGetSemaphoreCounterValue(device, queues[token.queue].timeline_semaphore, &completed);
-		return res == VK_SUCCESS && completed >= token.value;
+		if (queue >= QUEUE_COUNT)
+			return {};
+		uint64_t value = 0;
+		if (SupportsSubmissionTokens() && queues[queue].timeline_semaphore != VK_NULL_HANDLE)
+		{
+			value = queues[queue].timeline_value.load(std::memory_order_relaxed);
+		}
+		else
+		{
+			value = queue_timeline_submitted_fallback[queue].load(std::memory_order_relaxed);
+		}
+		if (value == 0)
+			return {};
+		return QueueSyncPoint{ queue, value };
 	}
 
-	UploadTicket GraphicsDevice_Vulkan::UploadAsync(const UploadDesc& upload)
+	QueueSyncPoint GraphicsDevice_Vulkan::GetLastCompletedQueuePoint(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT)
+			return {};
+		uint64_t completed = 0;
+		if (SupportsSubmissionTokens() && queues[queue].timeline_semaphore != VK_NULL_HANDLE)
+		{
+			if (vkGetSemaphoreCounterValue(device, queues[queue].timeline_semaphore, &completed) != VK_SUCCESS || completed == 0)
+				return {};
+			uint64_t known_completed = queue_timeline_completed_fallback[queue].load(std::memory_order_relaxed);
+			while (known_completed < completed && !queue_timeline_completed_fallback[queue].compare_exchange_weak(known_completed, completed, std::memory_order_release, std::memory_order_relaxed))
+			{
+			}
+		}
+		else
+		{
+			completed = queue_timeline_completed_fallback[queue].load(std::memory_order_acquire);
+		}
+		if (completed == 0)
+			return {};
+		return QueueSyncPoint{ queue, completed };
+	}
+
+	UploadTicket GraphicsDevice_Vulkan::UploadAsyncInternal(const UploadDescInternal& upload) const
 	{
 		UploadTicket ticket = {};
-		if (upload.src_data == nullptr || upload.src_size == 0)
+		if (upload.type == UploadDescInternal::Type::BUFFER && (upload.src_data == nullptr || upload.src_size == 0))
 			return ticket;
 
-		const bool wait_for_completion = !SupportsSubmissionTokens();
 		const QUEUE_TYPE upload_queue = upload.queue < QUEUE_COUNT ? upload.queue : QUEUE_COPY;
 
 		switch (upload.type)
 		{
-		case UploadDesc::Type::BUFFER:
+		case UploadDescInternal::Type::BUFFER:
 		{
 			if (upload.dst_buffer == nullptr || upload.src_size == 0)
 				return ticket;
@@ -7877,10 +8271,15 @@ using namespace vulkan_internal;
 				&copyRegion
 			);
 
-			ticket.done = copyAllocator.submit(std::move(cmd), upload_queue, wait_for_completion);
-			return ticket;
-		}
-		case UploadDesc::Type::TEXTURE:
+				ticket.token = copyAllocator.submit(std::move(cmd), upload_queue);
+				ticket.completion = ticket.token.Get(upload_queue);
+				if (!ticket.completion.IsValid())
+				{
+					ticket.completion = GetLastSubmittedQueuePoint(upload_queue);
+				}
+				return ticket;
+			}
+		case UploadDescInternal::Type::TEXTURE:
 		{
 			if (upload.dst_texture == nullptr || upload.subresources == nullptr)
 				return ticket;
@@ -8020,10 +8419,15 @@ using namespace vulkan_internal;
 			to_final_dependency.pImageMemoryBarriers = &to_final;
 			vkCmdPipelineBarrier2(cmd.transferCommandBuffer, &to_final_dependency);
 
-			ticket.done = copyAllocator.submit(std::move(cmd), upload_queue, wait_for_completion);
-			arrfree(copyRegions);
-			return ticket;
-		}
+				ticket.token = copyAllocator.submit(std::move(cmd), upload_queue);
+				ticket.completion = ticket.token.Get(upload_queue);
+				if (!ticket.completion.IsValid())
+				{
+					ticket.completion = GetLastSubmittedQueuePoint(upload_queue);
+				}
+				arrfree(copyRegions);
+				return ticket;
+			}
 		default:
 			break;
 		}
@@ -8031,50 +8435,72 @@ using namespace vulkan_internal;
 		return ticket;
 	}
 
-	bool GraphicsDevice_Vulkan::IsUploadComplete(UploadTicket ticket) const
+	UploadTicket GraphicsDevice_Vulkan::EnqueueBufferUpload(const BufferUploadDesc& upload) 
 	{
-		if (ticket.done.value == 0)
+		UploadDescInternal internal = {};
+		internal.type = UploadDescInternal::Type::BUFFER;
+		internal.queue = QUEUE_COPY;
+		internal.src_data = upload.data;
+		internal.src_size = upload.size;
+		internal.dst_buffer = upload.dst;
+		internal.dst_offset = upload.dst_offset;
+		UploadTicket ticket = UploadAsyncInternal(internal);
+		if (upload.block_until_complete && ticket.IsValid())
 		{
-			copyAllocator.recycle_completed();
+			WaitUpload(ticket);
+		}
+		return ticket;
+	}
+
+	UploadTicket GraphicsDevice_Vulkan::EnqueueTextureUpload(const TextureUploadDesc& upload)
+	{
+		UploadDescInternal internal = {};
+		internal.type = UploadDescInternal::Type::TEXTURE;
+		internal.queue = QUEUE_COPY;
+		internal.src_data = upload.subresources != nullptr && upload.subresource_count > 0 ? upload.subresources[0].data_ptr : nullptr;
+		internal.src_size = upload.subresources != nullptr && upload.subresource_count > 0 ? upload.subresources[0].slice_pitch : 0;
+		internal.dst_texture = upload.dst;
+		internal.subresources = upload.subresources;
+		internal.subresource_count = upload.subresource_count;
+		internal.texture_final_layout = ResourceState::SHADER_RESOURCE;
+		UploadTicket ticket = UploadAsyncInternal(internal);
+		if (upload.block_until_complete && ticket.IsValid())
+		{
+			WaitUpload(ticket);
+		}
+		return ticket;
+	}
+
+	bool GraphicsDevice_Vulkan::IsUploadComplete(const UploadTicket& ticket) const
+	{
+		copyAllocator.recycle_completed();
+		if (!ticket.completion.IsValid())
+		{
 			return true;
 		}
-		const bool complete = IsTokenComplete(ticket.done);
-		if (complete)
-		{
-			copyAllocator.recycle_completed();
-		}
+		const bool complete = IsQueuePointComplete(ticket.completion);
 		return complete;
 	}
 
-	void GraphicsDevice_Vulkan::WaitUpload(UploadTicket ticket)
+	void GraphicsDevice_Vulkan::WaitUpload(const UploadTicket& ticket) const
 	{
-		if (ticket.done.value == 0)
+		if (!ticket.completion.IsValid())
 			return;
-		if (!SupportsSubmissionTokens())
-		{
-			WaitForGPU();
-			return;
-		}
-		if (ticket.done.queue >= QUEUE_COUNT || queues[ticket.done.queue].timeline_semaphore == VK_NULL_HANDLE)
-			return;
-
-		VkSemaphore wait_semaphore = queues[ticket.done.queue].timeline_semaphore;
-		VkSemaphoreWaitInfo wait_info = {};
-		wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
-		wait_info.semaphoreCount = 1;
-		wait_info.pSemaphores = &wait_semaphore;
-		wait_info.pValues = &ticket.done.value;
-		while (vulkan_check(vkWaitSemaphores(device, &wait_info, timeout_value)) == VK_TIMEOUT)
-		{
-			VULKAN_LOG_ERROR("[WaitUpload] vkWaitSemaphores resulted in VK_TIMEOUT");
-			std::this_thread::yield();
-		}
+		WaitQueuePoint(ticket.completion);
 		copyAllocator.recycle_completed();
 	}
 
 	void GraphicsDevice_Vulkan::WaitForGPU() const
 	{
 		vulkan_check(vkDeviceWaitIdle(device));
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			uint64_t submitted = queue_timeline_submitted_fallback[q].load(std::memory_order_relaxed);
+			uint64_t completed = queue_timeline_completed_fallback[q].load(std::memory_order_relaxed);
+			while (completed < submitted && !queue_timeline_completed_fallback[q].compare_exchange_weak(completed, submitted, std::memory_order_release, std::memory_order_relaxed))
+			{
+			}
+		}
 		copyAllocator.recycle_completed();
 	}
 	void GraphicsDevice_Vulkan::ClearPipelineStateCache()
@@ -8405,7 +8831,7 @@ using namespace vulkan_internal;
 					std::scoped_lock lock(allocationhandler->destroylocker);
 					for (auto& x : internal_state->swapchainAcquireSemaphores)
 					{
-						allocationhandler->destroyer_semaphores.emplace_back(x, allocationhandler->framecount);
+						allocationhandler->Retire(allocationhandler->destroyer_semaphores, x);
 					}
 				}
 				internal_state->swapchainAcquireSemaphores.clear();

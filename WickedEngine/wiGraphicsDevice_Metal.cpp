@@ -879,47 +879,46 @@ namespace metal_internal
 		
 		void destroy_subresources()
 		{
-			uint64_t framecount = allocationhandler->framecount;
 			
 #ifndef USE_TEXTURE_VIEW_POOL
 			if (srv.view != nullptr)
-				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr(srv.view), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr(srv.view));
 			if (uav.view != nullptr)
-				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr(uav.view), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr(uav.view));
 			for (size_t i = 0; i < arrlenu(subresources_srv); ++i)
 			{
 				auto& x = subresources_srv[i];
 				if (x.view != nullptr)
-					allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr(x.view), framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr(x.view));
 			}
 			for (size_t i = 0; i < arrlenu(subresources_uav); ++i)
 			{
 				auto& x = subresources_uav[i];
 				if (x.view != nullptr)
-					allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr(x.view), framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr(x.view));
 			}
 #endif // USE_TEXTURE_VIEW_POOL
 			
 			if (srv.index >= 0)
-				allocationhandler->destroyer_bindless_res.push_back(std::make_pair(srv.index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_bindless_res, srv.index);
 			srv = {};
 			
 			if (uav.index >= 0)
-				allocationhandler->destroyer_bindless_res.push_back(std::make_pair(uav.index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_bindless_res, uav.index);
 			uav = {};
 			
 			for (size_t i = 0; i < arrlenu(subresources_srv); ++i)
 			{
 				auto& x = subresources_srv[i];
 				if (x.index >= 0)
-					allocationhandler->destroyer_bindless_res.push_back(std::make_pair(x.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bindless_res, x.index);
 			}
 			arrfree(subresources_srv);
 			for (size_t i = 0; i < arrlenu(subresources_uav); ++i)
 			{
 				auto& x = subresources_uav[i];
 				if (x.index >= 0)
-					allocationhandler->destroyer_bindless_res.push_back(std::make_pair(x.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bindless_res, x.index);
 			}
 			arrfree(subresources_uav);
 		}
@@ -929,8 +928,7 @@ namespace metal_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			allocationhandler->destroyer_resources.push_back(std::make_pair(std::move(buffer), framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_resources, std::move(buffer));
 			destroy_subresources();
 			allocationhandler->destroylocker.unlock();
 		}
@@ -972,53 +970,52 @@ namespace metal_internal
 		
 		void destroy_subresources()
 		{
-			uint64_t framecount = allocationhandler->framecount;
 			
 #ifndef USE_TEXTURE_VIEW_POOL
 			if (srv.view != nullptr)
-				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr(srv.view), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr(srv.view));
 			if (uav.view != nullptr)
-				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr(uav.view), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr(uav.view));
 			for (size_t i = 0; i < arrlenu(subresources_srv); ++i)
 			{
 				auto& x = subresources_srv[i];
 				if (x.view != nullptr)
-					allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr(x.view), framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr(x.view));
 			}
 			for (size_t i = 0; i < arrlenu(subresources_uav); ++i)
 			{
 				auto& x = subresources_uav[i];
 				if (x.view != nullptr)
-					allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr(x.view), framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr(x.view));
 			}
 #endif // USE_TEXTURE_VIEW_POOL
 			
 			if (srv.index >= 0)
-				allocationhandler->destroyer_bindless_res.push_back(std::make_pair(srv.index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_bindless_res, srv.index);
 			srv = {};
 			
 			if (uav.index >= 0)
-				allocationhandler->destroyer_bindless_res.push_back(std::make_pair(uav.index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_bindless_res, uav.index);
 			uav = {};
 			
 			if (rtv.index >= 0)
-				allocationhandler->destroyer_bindless_res.push_back(std::make_pair(rtv.index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_bindless_res, rtv.index);
 			
 			if (dsv.index >= 0)
-				allocationhandler->destroyer_bindless_res.push_back(std::make_pair(dsv.index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_bindless_res, dsv.index);
 			
 			for (size_t i = 0; i < arrlenu(subresources_srv); ++i)
 			{
 				auto& x = subresources_srv[i];
 				if (x.index >= 0)
-					allocationhandler->destroyer_bindless_res.push_back(std::make_pair(x.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bindless_res, x.index);
 			}
 			arrfree(subresources_srv);
 			for (size_t i = 0; i < arrlenu(subresources_uav); ++i)
 			{
 				auto& x = subresources_uav[i];
 				if (x.index >= 0)
-					allocationhandler->destroyer_bindless_res.push_back(std::make_pair(x.index, framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_bindless_res, x.index);
 			}
 			arrfree(subresources_uav);
 			
@@ -1032,11 +1029,10 @@ namespace metal_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
 				if (texture.get() != nullptr)
-					allocationhandler->destroyer_resources.push_back(std::make_pair(std::move(texture), framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_resources, std::move(texture));
 				if (buffer.get() != nullptr)
-					allocationhandler->destroyer_resources.push_back(std::make_pair(std::move(buffer), framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_resources, std::move(buffer));
 				arrfree(mapped_subresources);
 				mapped_subresources = nullptr;
 				destroy_subresources();
@@ -1055,10 +1051,9 @@ namespace metal_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			allocationhandler->destroyer_samplers.push_back(std::make_pair(std::move(sampler), framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_samplers, std::move(sampler));
 			if (index >= 0)
-				allocationhandler->destroyer_bindless_sam.push_back(std::make_pair(index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_bindless_sam, index);
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1073,9 +1068,8 @@ namespace metal_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			allocationhandler->destroyer_resources.push_back(std::make_pair(std::move(buffer), framecount));
-			allocationhandler->destroyer_counter_heaps.push_back(std::make_pair(std::move(counter_heap), framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_resources, std::move(buffer));
+			allocationhandler->Retire(allocationhandler->destroyer_counter_heaps, std::move(counter_heap));
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1092,10 +1086,9 @@ namespace metal_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			allocationhandler->destroyer_libraries.push_back(std::make_pair(std::move(library), framecount));
-			allocationhandler->destroyer_functions.push_back(std::make_pair(std::move(function), framecount));
-			allocationhandler->destroyer_compute_pipelines.push_back(std::make_pair(std::move(compute_pipeline), framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_libraries, std::move(library));
+			allocationhandler->Retire(allocationhandler->destroyer_functions, std::move(function));
+			allocationhandler->Retire(allocationhandler->destroyer_compute_pipelines, std::move(compute_pipeline));
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1116,9 +1109,8 @@ namespace metal_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			allocationhandler->destroyer_render_pipelines.push_back(std::make_pair(std::move(render_pipeline), framecount));
-			allocationhandler->destroyer_depth_stencil_states.push_back(std::make_pair(std::move(depth_stencil_state), framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_render_pipelines, std::move(render_pipeline));
+			allocationhandler->Retire(allocationhandler->destroyer_depth_stencil_states, std::move(depth_stencil_state));
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1137,13 +1129,12 @@ namespace metal_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			allocationhandler->destroyer_resources.push_back(std::make_pair(std::move(acceleration_structure), framecount));
-			allocationhandler->destroyer_resources.push_back(std::make_pair(std::move(scratch), framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_resources, std::move(acceleration_structure));
+			allocationhandler->Retire(allocationhandler->destroyer_resources, std::move(scratch));
 			if (tlas_header_instancecontributions.get() != nullptr)
-				allocationhandler->destroyer_resources.push_back(std::make_pair(std::move(tlas_header_instancecontributions), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_resources, std::move(tlas_header_instancecontributions));
 			if (tlas_descriptor_index >= 0)
-				allocationhandler->destroyer_bindless_res.push_back(std::make_pair(tlas_descriptor_index, framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_bindless_res, tlas_descriptor_index);
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1156,7 +1147,6 @@ namespace metal_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1173,9 +1163,8 @@ namespace metal_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
-			allocationhandler->destroyer_resources.push_back(std::make_pair(current_texture, framecount));
-			allocationhandler->destroyer_drawables.push_back(std::make_pair(current_drawable, framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_resources, current_texture);
+			allocationhandler->Retire(allocationhandler->destroyer_drawables, current_drawable);
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1188,7 +1177,6 @@ namespace metal_internal
 			if (allocationhandler == nullptr)
 				return;
 			allocationhandler->destroylocker.lock();
-			uint64_t framecount = allocationhandler->framecount;
 			allocationhandler->destroylocker.unlock();
 		}
 	};
@@ -1801,18 +1789,17 @@ using namespace metal_internal;
 		if (icb_state.icb.get() != nullptr || icb_state.icb_argument_buffer.get() != nullptr || icb_state.icb_execution_range_buffer.get() != nullptr)
 		{
 			std::scoped_lock lock(allocationhandler->destroylocker);
-			const uint64_t framecount = allocationhandler->framecount;
 			if (icb_state.icb.get() != nullptr)
 			{
-				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr((MTL::Resource*)icb_state.icb.get()->retain()), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr((MTL::Resource*)icb_state.icb.get()->retain()));
 			}
 			if (icb_state.icb_argument_buffer.get() != nullptr)
 			{
-				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr((MTL::Resource*)icb_state.icb_argument_buffer.get()->retain()), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr((MTL::Resource*)icb_state.icb_argument_buffer.get()->retain()));
 			}
 			if (icb_state.icb_execution_range_buffer.get() != nullptr)
 			{
-				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr((MTL::Resource*)icb_state.icb_execution_range_buffer.get()->retain()), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr((MTL::Resource*)icb_state.icb_execution_range_buffer.get()->retain()));
 			}
 			icb_state.icb.reset();
 			icb_state.icb_argument_buffer.reset();
@@ -1875,18 +1862,17 @@ using namespace metal_internal;
 		if (icb_state.icb.get() != nullptr || icb_state.icb_argument_buffer.get() != nullptr || icb_state.icb_execution_range_buffer.get() != nullptr)
 		{
 			std::scoped_lock lock(allocationhandler->destroylocker);
-			const uint64_t framecount = allocationhandler->framecount;
 			if (icb_state.icb.get() != nullptr)
 			{
-				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr((MTL::Resource*)icb_state.icb.get()->retain()), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr((MTL::Resource*)icb_state.icb.get()->retain()));
 			}
 			if (icb_state.icb_argument_buffer.get() != nullptr)
 			{
-				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr((MTL::Resource*)icb_state.icb_argument_buffer.get()->retain()), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr((MTL::Resource*)icb_state.icb_argument_buffer.get()->retain()));
 			}
 			if (icb_state.icb_execution_range_buffer.get() != nullptr)
 			{
-				allocationhandler->destroyer_resources.push_back(std::make_pair(NS::TransferPtr((MTL::Resource*)icb_state.icb_execution_range_buffer.get()->retain()), framecount));
+				allocationhandler->Retire(allocationhandler->destroyer_resources, NS::TransferPtr((MTL::Resource*)icb_state.icb_execution_range_buffer.get()->retain()));
 			}
 			icb_state.icb.reset();
 			icb_state.icb_argument_buffer.reset();
@@ -2257,13 +2243,7 @@ using namespace metal_internal;
 		{
 			submission_token_events[q] = NS::TransferPtr(device->newSharedEvent());
 			submission_token_events[q]->setSignaledValue(0);
-			for (uint32_t i = 0; i < BUFFERCOUNT; ++i)
-			{
-				if (queues[q].queue.get() == nullptr)
-					continue;
-				frame_fence[i][q] = NS::TransferPtr(device->newSharedEvent());
-				frame_fence[i][q]->setSignaledValue(0);
-			}
+			allocationhandler->queue_timeline_events[q] = submission_token_events[q];
 		}
 		
 		METAL_LOG("Created GraphicsDevice_Metal (%d ms)", (int)std::round(GetElapsedMilliseconds(timer_begin)));
@@ -2273,18 +2253,6 @@ using namespace metal_internal;
 		WaitForGPU();
 		retire_completed_uploads();
 		ClearPipelineStateCache();
-
-		{
-			std::scoped_lock lck(semaphore_pool_locker);
-			for (size_t i = 0; i < arrlenu(semaphore_pool); ++i)
-			{
-				if (semaphore_pool[i].event != nullptr)
-				{
-					semaphore_pool[i].event->release();
-				}
-			}
-			arrfree(semaphore_pool);
-		}
 
 		for (size_t i = 0; i < arrlenu(commandlists); ++i)
 		{
@@ -2320,11 +2288,15 @@ using namespace metal_internal;
 				}
 				arrfree(commandlist->pipelines_worker);
 			}
-			arrfree(commandlist->waits);
-			arrfree(commandlist->signals);
+			arrfree(commandlist->wait_for_cmd_ids);
 			arrfree(commandlist->barriers);
 		}
 		arrfree(commandlists);
+		arrfree(open_commandlists);
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			arrfree(retired_contexts[q]);
+		}
 		for (auto& queue : queues)
 		{
 			arrfree(queue.submit_cmds);
@@ -2448,9 +2420,8 @@ using namespace metal_internal;
 			{
 				std::vector<uint8_t> init_data(desc->size);
 				init_callback(init_data.data());
-				UploadDesc upload = {};
-				upload.type = UploadDesc::Type::BUFFER;
-				upload.queue = QUEUE_COPY;
+				UploadDescInternal upload = {};
+				upload.type = UploadDescInternal::Type::BUFFER;
 				upload.src_data = init_data.data();
 				upload.src_size = desc->size;
 				upload.dst_buffer = buffer;
@@ -2747,13 +2718,11 @@ using namespace metal_internal;
 			}
 			else if (descriptor->storageMode() == MTL::StorageModePrivate)
 			{
-				UploadDesc upload = {};
-				upload.type = UploadDesc::Type::TEXTURE;
-				upload.queue = QUEUE_COPY;
+				UploadDescInternal upload = {};
+				upload.type = UploadDescInternal::Type::TEXTURE;
 				upload.dst_texture = texture;
 				upload.subresources = initial_data;
 				upload.subresource_count = GetTextureSubresourceCount(texture->desc);
-				upload.texture_final_layout = texture->desc.layout;
 				UploadAsyncInternal(upload, true);
 			}
 			else
@@ -3932,17 +3901,29 @@ using namespace metal_internal;
 	CommandList GraphicsDevice_Metal::BeginCommandList(QUEUE_TYPE queue)
 	{
 		cmd_locker.lock();
-		uint32_t cmd_current = cmd_count++;
-		if (cmd_current >= arrlenu(commandlists))
+		CommandList_Metal* commandlist_ptr = nullptr;
+		for (size_t i = 0; i < arrlenu(retired_contexts[queue]); ++i)
 		{
-			auto& commandlist = arrput(commandlists, cmd_allocator.allocate());
-			commandlist->commandbuffer = NS::TransferPtr(device->newCommandBuffer());
-			for (auto& x : commandlist->commandallocators)
+			RetiredCommandContext retired = retired_contexts[queue][i];
+			if (retired.context != nullptr && IsQueuePointComplete(retired.retire_after))
+			{
+				commandlist_ptr = retired.context;
+				retired_contexts[queue][i] = arrlast(retired_contexts[queue]);
+				arrpop(retired_contexts[queue]);
+				break;
+			}
+		}
+		if (commandlist_ptr == nullptr)
+		{
+			commandlist_ptr = cmd_allocator.allocate();
+			arrput(commandlists, commandlist_ptr);
+			commandlist_ptr->commandbuffer = NS::TransferPtr(device->newCommandBuffer());
+			for (auto& x : commandlist_ptr->commandallocators)
 			{
 				x = NS::TransferPtr(device->newCommandAllocator());
 			}
 			NS::Error* error = nullptr;
-			commandlist->argument_table = NS::TransferPtr(device->newArgumentTable(argument_table_desc.get(), &error));
+			commandlist_ptr->argument_table = NS::TransferPtr(device->newArgumentTable(argument_table_desc.get(), &error));
 			if (error != nullptr)
 			{
 				NS::String* errDesc = error->localizedDescription();
@@ -3951,13 +3932,14 @@ using namespace metal_internal;
 			}
 		}
 		CommandList cmd;
-		cmd.internal_state = commandlists[cmd_current];
+		cmd.internal_state = commandlist_ptr;
 		cmd_locker.unlock();
 
 		CommandList_Metal& commandlist = GetCommandList(cmd);
 		commandlist.reset(GetBufferIndex());
 		commandlist.queue = queue;
-		commandlist.id = cmd_current;
+		commandlist.id = (uint32_t)arrlenu(open_commandlists);
+		arrput(open_commandlists, commandlist_ptr);
 		commandlist.commandallocators[GetBufferIndex()]->reset();
 		commandlist.commandbuffer->beginCommandBuffer(commandlist.commandallocators[GetBufferIndex()].get());
 		commandlist.argument_table->setAddress(descriptor_heap_res->gpuAddress(), kIRDescriptorHeapBindPoint);
@@ -3971,8 +3953,7 @@ using namespace metal_internal;
 			queue = QUEUE_COPY;
 		std::scoped_lock lock(submission_token_locker);
 		SubmissionToken token = {};
-		token.queue = queue;
-		token.value = ++submission_token_values[queue];
+		token.Merge(QueueSyncPoint{ queue, ++submission_token_values[queue] });
 		return token;
 	}
 
@@ -3982,7 +3963,7 @@ using namespace metal_internal;
 		bool residency_dirty = false;
 		for (size_t i = 0; i < inflight_uploads.size();)
 		{
-			if (!IsTokenComplete(inflight_uploads[i].ticket.done))
+			if (!IsUploadComplete(inflight_uploads[i].ticket))
 			{
 				++i;
 				continue;
@@ -4003,15 +3984,15 @@ using namespace metal_internal;
 		}
 	}
 
-	SubmissionTokenSet GraphicsDevice_Metal::consume_pending_implicit_uploads() const
+	SubmissionToken GraphicsDevice_Metal::consume_pending_implicit_uploads() const
 	{
 		std::scoped_lock lock(upload_locker);
-		SubmissionTokenSet result = pending_implicit_uploads;
+		SubmissionToken result = pending_implicit_uploads;
 		pending_implicit_uploads = {};
 		return result;
 	}
 
-	UploadTicket GraphicsDevice_Metal::UploadAsyncInternal(const UploadDesc& upload, bool implicit_dependency) const
+	UploadTicket GraphicsDevice_Metal::UploadAsyncInternal(const UploadDescInternal& upload, bool implicit_dependency) const
 	{
 		retire_completed_uploads();
 
@@ -4024,7 +4005,7 @@ using namespace metal_internal;
 
 		switch (upload.type)
 		{
-		case UploadDesc::Type::BUFFER:
+		case UploadDescInternal::Type::BUFFER:
 		{
 			if (upload.dst_buffer == nullptr)
 				return ticket;
@@ -4059,10 +4040,14 @@ using namespace metal_internal;
 			encoder->endEncoding();
 			commandbuffer->endCommandBuffer();
 
-			ticket.done = allocate_submission_token(token_queue);
+			ticket.token = allocate_submission_token(token_queue);
+			ticket.completion = ticket.token.Get(token_queue);
 			MTL4::CommandBuffer* cmds[] = { commandbuffer.get() };
 			uploadqueue->commit(cmds, SDL_arraysize(cmds));
-			uploadqueue->signalEvent(submission_token_events[ticket.done.queue].get(), ticket.done.value);
+			if (ticket.completion.IsValid() && submission_token_events[token_queue].get() != nullptr)
+			{
+				uploadqueue->signalEvent(submission_token_events[token_queue].get(), ticket.completion.value);
+			}
 
 			UploadJob job = {};
 			job.ticket = ticket;
@@ -4073,15 +4058,14 @@ using namespace metal_internal;
 			{
 				std::scoped_lock lock(upload_locker);
 				inflight_uploads.emplace_back(std::move(job));
-				if (implicit_dependency)
-				{
-					pending_implicit_uploads.validMask |= 1u << ticket.done.queue;
-					pending_implicit_uploads.perQueue[ticket.done.queue] = ticket.done;
+					if (implicit_dependency)
+					{
+						pending_implicit_uploads.Merge(ticket.token);
+					}
 				}
-			}
-			return ticket;
+				return ticket;
 		}
-		case UploadDesc::Type::TEXTURE:
+		case UploadDescInternal::Type::TEXTURE:
 		{
 			if (upload.dst_texture == nullptr || upload.subresources == nullptr)
 				return ticket;
@@ -4207,10 +4191,14 @@ using namespace metal_internal;
 			encoder->endEncoding();
 			commandbuffer->endCommandBuffer();
 
-			ticket.done = allocate_submission_token(token_queue);
+			ticket.token = allocate_submission_token(token_queue);
+			ticket.completion = ticket.token.Get(token_queue);
 			MTL4::CommandBuffer* cmds[] = { commandbuffer.get() };
 			uploadqueue->commit(cmds, SDL_arraysize(cmds));
-			uploadqueue->signalEvent(submission_token_events[ticket.done.queue].get(), ticket.done.value);
+			if (ticket.completion.IsValid() && submission_token_events[token_queue].get() != nullptr)
+			{
+				uploadqueue->signalEvent(submission_token_events[token_queue].get(), ticket.completion.value);
+			}
 
 			UploadJob job = {};
 			job.ticket = ticket;
@@ -4220,12 +4208,11 @@ using namespace metal_internal;
 			{
 				std::scoped_lock lock(upload_locker);
 				inflight_uploads.emplace_back(std::move(job));
-				if (implicit_dependency)
-				{
-					pending_implicit_uploads.validMask |= 1u << ticket.done.queue;
-					pending_implicit_uploads.perQueue[ticket.done.queue] = ticket.done;
+					if (implicit_dependency)
+					{
+						pending_implicit_uploads.Merge(ticket.token);
+					}
 				}
-			}
 			return ticket;
 		}
 		default:
@@ -4235,39 +4222,204 @@ using namespace metal_internal;
 		return ticket;
 	}
 
-	SubmissionTokenSet GraphicsDevice_Metal::SubmitCommandListsInternal(bool safe_mode)
+	SubmissionToken GraphicsDevice_Metal::SubmitCommandListsInternal(const SubmitDesc& desc)
 	{
+		QueueSubmissionStats stats = {};
+		stats.frameIndex = FRAMECOUNT;
+		const bool legacy_implicit_frame_sync = (std::getenv("FW_WICKED_LEGACY_IMPLICIT_FRAME_SYNC") != nullptr);
+		stats.frameSyncMode = legacy_implicit_frame_sync ? QueueFrameSyncMode::FullFrameSync : QueueFrameSyncMode::NoFrameSync;
+		stats.fullFrameSyncActive = legacy_implicit_frame_sync;
+
+		uint64_t dependency_max[QUEUE_COUNT] = {};
+		auto merge_dependency = [&](QueueSyncPoint point) {
+			if (!point.IsValid() || point.queue >= QUEUE_COUNT)
+				return;
+#ifndef NDEBUG
+			if (point.value > submission_token_values[point.queue])
+			{
+				METAL_LOG_ERROR(
+					"[Metal][Submit] Ignoring dependency on future queue point: queue=%s value=%llu submitted=%llu",
+					GetQueueTypeName(point.queue),
+					(unsigned long long)point.value,
+					(unsigned long long)submission_token_values[point.queue]
+				);
+				SDL_assert(false && "SubmitCommandListsEx received dependency on a future queue point");
+				return;
+			}
+#endif
+			dependency_max[point.queue] = std::max(dependency_max[point.queue], point.value);
+		};
+
 		allocationhandler->destroylocker.lock();
 		allocationhandler->residency_set->commit();
 		allocationhandler->destroylocker.unlock();
 		retire_completed_uploads();
 
-		const SubmissionTokenSet pending_upload_tokens = consume_pending_implicit_uploads();
-		for (uint32_t dst = 0; dst < QUEUE_COUNT; ++dst)
+		const SubmissionToken external_dependencies = consume_pending_implicit_uploads();
+		for (uint32_t i = 0; i < desc.queue_dependency_count; ++i)
 		{
-			if (queues[dst].queue.get() == nullptr)
-				continue;
-			for (uint32_t src = 0; src < QUEUE_COUNT; ++src)
+			merge_dependency(desc.queue_dependencies[i].point);
+		}
+		for (uint32_t i = 0; i < desc.submission_dependency_count; ++i)
+		{
+			const SubmissionToken& token = desc.submission_dependencies[i];
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
 			{
-				if ((pending_upload_tokens.validMask & (1u << src)) == 0)
+				if ((token.queue_mask & (1u << q)) == 0 || token.values[q] == 0)
 					continue;
-				const SubmissionToken& token = pending_upload_tokens.perQueue[src];
-				if (token.value == 0 || token.queue >= QUEUE_COUNT)
-					continue;
-				WaitForToken((QUEUE_TYPE)dst, token);
+				merge_dependency(QueueSyncPoint{ (QUEUE_TYPE)q, token.values[q] });
+			}
+		}
+		for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+		{
+			if ((external_dependencies.queue_mask & (1u << q)) == 0)
+				continue;
+			const uint64_t value = external_dependencies.values[q];
+			if (value > 0)
+			{
+				merge_dependency(QueueSyncPoint{ (QUEUE_TYPE)q, value });
 			}
 		}
 
-		SubmissionTokenSet tokens = {};
-		bool queue_has_work[QUEUE_COUNT] = {};
+		CommandList_Metal** submit_commandlists = nullptr;
+		cmd_locker.lock();
+		if (desc.command_lists != nullptr && desc.command_list_count > 0)
+		{
+			for (uint32_t i = 0; i < desc.command_list_count; ++i)
+			{
+				const CommandList cmd = desc.command_lists[i];
+				if (!wiGraphicsCommandListIsValid(cmd))
+					continue;
+				arrput(submit_commandlists, (CommandList_Metal*)cmd.internal_state);
+			}
+		}
+		else
+		{
+			for (size_t i = 0; i < arrlenu(open_commandlists); ++i)
+			{
+				arrput(submit_commandlists, open_commandlists[i]);
+			}
+		}
+		cmd_locker.unlock();
 
-		uint32_t cmd_last = cmd_count;
-		cmd_count = 0;
+		const uint32_t cmd_last = (uint32_t)arrlenu(submit_commandlists);
+		stats.commandListCount = cmd_last;
+		if (cmd_last == 0)
+		{
+			arrfree(submit_commandlists);
+			std::scoped_lock stats_lock(submission_stats_mutex);
+			last_submission_stats = stats;
+			return {};
+		}
+
+		auto find_submit_id = [&](uint32_t original_id) -> uint32_t {
+			for (uint32_t i = 0; i < cmd_last; ++i)
+			{
+				if (submit_commandlists[i]->id == original_id)
+					return i;
+			}
+			return std::numeric_limits<uint32_t>::max();
+		};
+		auto remap_wait_ids = [&](uint32_t* ids, const char* source_name, uint32_t consumer_id) {
+			const uint32_t total = (uint32_t)arrlenu(ids);
+			uint32_t valid = 0;
+			for (uint32_t i = 0; i < total; ++i)
+			{
+				const uint32_t mapped = find_submit_id(ids[i]);
+				if (mapped != std::numeric_limits<uint32_t>::max())
+				{
+					ids[valid++] = mapped;
+					continue;
+				}
+#ifndef NDEBUG
+				METAL_LOG_ERROR(
+					"[Metal][Submit] Invalid %s entry: consumer cmd=%u waits on cmd=%u that is not in this submit batch",
+					source_name,
+					consumer_id,
+					ids[i]
+				);
+				SDL_assert(false && "WaitCommandList dependency is not part of this SubmitCommandListsEx call");
+#endif
+			}
+			arrsetlen(ids, valid);
+		};
+
+		bool active_queue[QUEUE_COUNT] = {};
+		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
+		{
+			auto& commandlist = *submit_commandlists[cmd];
+			commandlist.id = cmd;
+			remap_wait_ids(commandlist.wait_for_cmd_ids, "wait_for_cmd_ids", commandlist.id);
+			active_queue[commandlist.queue] = true;
+			stats.queues[commandlist.queue].commandLists++;
+		}
+
+		for (uint32_t consumer = 0; consumer < QUEUE_COUNT; ++consumer)
+		{
+			if (!active_queue[consumer] || queues[consumer].queue.get() == nullptr)
+				continue;
+			for (uint32_t producer = 0; producer < QUEUE_COUNT; ++producer)
+			{
+				if (producer == consumer)
+					continue;
+				const uint64_t value = dependency_max[producer];
+				if (value == 0 || submission_token_events[producer].get() == nullptr)
+					continue;
+				queues[consumer].queue->wait(submission_token_events[producer].get(), value);
+				stats.queues[consumer].dependencyWaits++;
+				stats.dependencyEdges++;
+			}
+		}
+
+		SubmissionToken tokens = {};
+		bool queue_submitted[QUEUE_COUNT] = {};
+		uint64_t queue_last_signaled[QUEUE_COUNT] = {};
+		uint32_t* pending_commandlists[QUEUE_COUNT] = {};
+		QueueSyncPoint* command_signal_points = nullptr;
+		arrsetlen(command_signal_points, cmd_last);
+		for (uint32_t i = 0; i < cmd_last; ++i)
+		{
+			command_signal_points[i] = {};
+		}
+		auto flush_queue_packet = [&](QUEUE_TYPE queue_type) {
+			const uint32_t queue_index = (uint32_t)queue_type;
+			CommandQueue& queue = queues[queue_index];
+			if (queue.queue.get() == nullptr || queue.submit_cmds == nullptr || arrlenu(queue.submit_cmds) == 0)
+				return;
+
+			queue.submit();
+			stats.queues[queue_index].packetsSubmitted++;
+			queue_submitted[queue_index] = true;
+			if (submission_token_events[queue_index].get() == nullptr)
+			{
+				arrsetlen(pending_commandlists[queue_index], 0);
+				return;
+			}
+
+			const SubmissionToken token = allocate_submission_token((QUEUE_TYPE)queue_index);
+			const QueueSyncPoint point = token.Get((QUEUE_TYPE)queue_index);
+			queue.queue->signalEvent(submission_token_events[queue_index].get(), point.value);
+			queue_last_signaled[queue_index] = point.value;
+			{
+				std::scoped_lock lock(allocationhandler->destroylocker);
+				allocationhandler->submitted_queue_values[queue_index] = point.value;
+			}
+
+			for (uint32_t i = 0; i < arrlenu(pending_commandlists[queue_index]); ++i)
+			{
+				const uint32_t cmd_index = pending_commandlists[queue_index][i];
+				if (cmd_index < cmd_last)
+				{
+					command_signal_points[cmd_index] = point;
+				}
+			}
+			arrsetlen(pending_commandlists[queue_index], 0);
+		};
 
 		// Presents wait:
 		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 		{
-			auto& commandlist = *commandlists[cmd];
+			auto& commandlist = *submit_commandlists[cmd];
 			for (size_t i = 0; i < arrlenu(commandlist.presents); ++i)
 			{
 				auto* x = commandlist.presents[i];
@@ -4276,10 +4428,10 @@ using namespace metal_internal;
 			}
 		}
 
-		// Submit work and resolve dependencies:
+		// Submit work and resolve local command-list dependencies:
 		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 		{
-			auto& commandlist = *commandlists[cmd];
+			auto& commandlist = *submit_commandlists[cmd];
 			if (commandlist.barriers != nullptr && arrlenu(commandlist.barriers) > 0)
 			{
 				if (commandlist.compute_encoder.get() == nullptr)
@@ -4306,36 +4458,82 @@ using namespace metal_internal;
 			}
 			commandlist.commandbuffer->endCommandBuffer();
 
-			CommandQueue& queue = queues[commandlist.queue];
-			queue_has_work[commandlist.queue] = true;
-			const bool dependency = (commandlist.signals != nullptr && arrlenu(commandlist.signals) > 0) || (commandlist.waits != nullptr && arrlenu(commandlist.waits) > 0);
-			if (dependency)
+			uint64_t local_wait_value[QUEUE_COUNT] = {};
+			bool has_local_cross_queue_wait = false;
+			for (uint32_t i = 0; i < arrlenu(commandlist.wait_for_cmd_ids); ++i)
 			{
-				queue.submit();
+				const uint32_t wait_id = commandlist.wait_for_cmd_ids[i];
+				if (wait_id >= cmd_last)
+				{
+#ifndef NDEBUG
+					METAL_LOG_ERROR(
+						"[Metal][Submit] Invalid local dependency: consumer cmd=%u waits on cmd=%u (batch size=%u)",
+						cmd,
+						wait_id,
+						cmd_last
+					);
+					SDL_assert(false && "WaitCommandList dependency ID is out of range");
+#endif
+					continue;
+				}
+				if (wait_id >= cmd)
+				{
+#ifndef NDEBUG
+					METAL_LOG_ERROR(
+						"[Metal][Submit] Invalid local dependency order: consumer cmd=%u waits on future cmd=%u",
+						cmd,
+						wait_id
+					);
+					SDL_assert(false && "WaitCommandList dependency must reference an earlier command list in submit order");
+#endif
+					continue;
+				}
+				const auto& producer = *submit_commandlists[wait_id];
+				if (producer.queue == commandlist.queue)
+					continue;
+
+				QueueSyncPoint producer_point = command_signal_points[wait_id];
+				if (!producer_point.IsValid())
+				{
+					flush_queue_packet(producer.queue);
+					producer_point = command_signal_points[wait_id];
+				}
+				if (!producer_point.IsValid())
+				{
+#ifndef NDEBUG
+					METAL_LOG_ERROR(
+						"[Metal][Submit] Failed to resolve producer queue point: producer cmd=%u queue=%s",
+						wait_id,
+						GetQueueTypeName(producer.queue)
+					);
+					SDL_assert(false && "Unable to resolve producer queue timeline point");
+#endif
+					continue;
+				}
+
+				local_wait_value[producer_point.queue] = std::max(local_wait_value[producer_point.queue], producer_point.value);
+				has_local_cross_queue_wait = true;
 			}
 
-			arrput(queue.submit_cmds, commandlist.commandbuffer.get());
-
-			if (dependency)
+			if (has_local_cross_queue_wait)
 			{
-				for (size_t i = 0; i < arrlenu(commandlist.waits); ++i)
+				CommandQueue& queue = queues[commandlist.queue];
+				// waits apply to work recorded after this point, so flush queue packet first
+				flush_queue_packet(commandlist.queue);
+				for (uint32_t producer_queue = 0; producer_queue < QUEUE_COUNT; ++producer_queue)
 				{
-					const auto& semaphore = commandlist.waits[i];
-					queue.wait(semaphore);
-					// recycle semaphore only in signals
+					if (producer_queue == (uint32_t)commandlist.queue)
+						continue;
+					const uint64_t value = local_wait_value[producer_queue];
+					if (value == 0 || submission_token_events[producer_queue].get() == nullptr)
+						continue;
+					queue.queue->wait(submission_token_events[producer_queue].get(), value);
+					stats.dependencyEdges++;
+					stats.queues[commandlist.queue].dependencyWaits++;
 				}
-				arrsetlen(commandlist.waits, 0);
-
-				queue.submit();
-
-				for (size_t i = 0; i < arrlenu(commandlist.signals); ++i)
-				{
-					const auto& semaphore = commandlist.signals[i];
-					queue.signal(semaphore);
-					free_semaphore(semaphore);
-				}
-				arrsetlen(commandlist.signals, 0);
 			}
+			arrput(queues[commandlist.queue].submit_cmds, commandlist.commandbuffer.get());
+			arrput(pending_commandlists[commandlist.queue], cmd);
 
 			// Worker pipelines are merged in to global:
 			for (size_t i = 0; i < arrlenu(commandlist.pipelines_worker); ++i)
@@ -4357,39 +4555,48 @@ using namespace metal_internal;
 				else
 				{
 					allocationhandler->destroylocker.lock();
-					allocationhandler->destroyer_render_pipelines.push_back(std::make_pair(NS::TransferPtr(x.value.pipeline), allocationhandler->framecount));
-					allocationhandler->destroyer_depth_stencil_states.push_back(std::make_pair(NS::TransferPtr(x.value.depth_stencil_state), allocationhandler->framecount));
+					allocationhandler->Retire(allocationhandler->destroyer_render_pipelines, NS::TransferPtr(x.value.pipeline));
+					allocationhandler->Retire(allocationhandler->destroyer_depth_stencil_states, NS::TransferPtr(x.value.depth_stencil_state));
 					allocationhandler->destroylocker.unlock();
 				}
 			}
 			arrsetlen(commandlist.pipelines_worker, 0);
+			arrsetlen(commandlist.wait_for_cmd_ids, 0);
 		}
 
-		// Mark the completion of queues for this frame:
-		frame_fence_values[GetBufferIndex()]++;
-		const uint64_t frame_fence_value = frame_fence_values[GetBufferIndex()];
+		// Mark completion of queued packets:
 		for (int q = 0; q < QUEUE_COUNT; ++q)
 		{
-			CommandQueue& queue = queues[q];
-			if (queue.queue.get() == nullptr)
-				continue;
-
-			queue.submit();
-			queue.queue->signalEvent(frame_fence[GetBufferIndex()][q].get(), frame_fence_value);
-
-			if (!safe_mode && queue_has_work[q])
+			flush_queue_packet((QUEUE_TYPE)q);
+			if (queue_last_signaled[q] != 0)
 			{
-				SubmissionToken token = allocate_submission_token((QUEUE_TYPE)q);
-				queue.queue->signalEvent(submission_token_events[q].get(), token.value);
-				tokens.validMask |= 1u << q;
-				tokens.perQueue[q] = token;
+				tokens.Merge(QueueSyncPoint{ (QUEUE_TYPE)q, queue_last_signaled[q] });
+			}
+		}
+
+		if (legacy_implicit_frame_sync)
+		{
+			for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
+			{
+				if (!active_queue[queue1] || queues[queue1].queue.get() == nullptr)
+					continue;
+				for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+				{
+					if (queue1 == queue2 || !active_queue[queue2] || queues[queue2].queue.get() == nullptr)
+						continue;
+					const uint64_t value = queue_last_signaled[queue2];
+					if (value == 0 || submission_token_events[queue2].get() == nullptr)
+						continue;
+					queues[queue1].queue->wait(submission_token_events[queue2].get(), value);
+					stats.queues[queue1].fullSyncWaitsInjected++;
+				}
 			}
 		}
 
 		// Presents submit:
 		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 		{
-			auto& commandlist = *commandlists[cmd];
+			auto& commandlist = *submit_commandlists[cmd];
 			for (size_t i = 0; i < arrlenu(commandlist.presents); ++i)
 			{
 				auto* x = commandlist.presents[i];
@@ -4401,88 +4608,201 @@ using namespace metal_internal;
 			arrsetlen(commandlist.presents, 0);
 		}
 
-		if (safe_mode)
+		cmd_locker.lock();
+		for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 		{
-			// Sync up every queue to every other queue at the end of the frame:
-			//	Note: it disables overlapping queues into the next frame
-			for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
+			CommandList_Metal* submitted = submit_commandlists[cmd];
+			if (desc.command_lists != nullptr && desc.command_list_count > 0)
 			{
-				if (queues[queue1].queue.get() == nullptr)
-					continue;
-				for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
+				for (size_t i = 0; i < arrlenu(open_commandlists); ++i)
 				{
-					if (queue1 == queue2)
+					if (open_commandlists[i] != submitted)
 						continue;
-					if (queues[queue2].queue.get() == nullptr)
-						continue;
-					MTL::SharedEvent* fence = frame_fence[GetBufferIndex()][queue2].get();
-					queues[queue1].queue->wait(fence, frame_fence_value);
+					open_commandlists[i] = arrlast(open_commandlists);
+					arrpop(open_commandlists);
+					break;
 				}
 			}
+			RetiredCommandContext retired = {};
+			retired.context = submitted;
+			retired.retire_after = tokens.Get(submitted->queue);
+			arrput(retired_contexts[submitted->queue], retired);
 		}
+		if (desc.command_lists == nullptr || desc.command_list_count == 0)
+		{
+			arrsetlen(open_commandlists, 0);
+		}
+
+		if (arrlenu(open_commandlists) > 0)
+		{
+			for (size_t i = 0; i < arrlenu(open_commandlists); ++i)
+			{
+				for (uint32_t j = 0; j < arrlenu(open_commandlists[i]->wait_for_cmd_ids); ++j)
+				{
+					uint32_t old_id = open_commandlists[i]->wait_for_cmd_ids[j];
+					uint32_t new_id = std::numeric_limits<uint32_t>::max();
+					for (uint32_t k = 0; k < arrlenu(open_commandlists); ++k)
+					{
+						if (open_commandlists[k]->id == old_id)
+						{
+							new_id = k;
+							break;
+						}
+					}
+					if (new_id == std::numeric_limits<uint32_t>::max())
+					{
+#ifndef NDEBUG
+						METAL_LOG_ERROR(
+							"[Metal][Submit] Dropping stale dependency from open command list: cmd=%u waits on removed cmd=%u",
+							open_commandlists[i]->id,
+							old_id
+						);
+						SDL_assert(false && "Open command list contains dependency to command list outside current open set");
+#endif
+						open_commandlists[i]->wait_for_cmd_ids[j] = new_id;
+					}
+					else
+					{
+						open_commandlists[i]->wait_for_cmd_ids[j] = new_id;
+					}
+				}
+				uint32_t keep = 0;
+				for (uint32_t j = 0; j < arrlenu(open_commandlists[i]->wait_for_cmd_ids); ++j)
+				{
+					if (open_commandlists[i]->wait_for_cmd_ids[j] != std::numeric_limits<uint32_t>::max())
+					{
+						open_commandlists[i]->wait_for_cmd_ids[keep++] = open_commandlists[i]->wait_for_cmd_ids[j];
+					}
+				}
+				arrsetlen(open_commandlists[i]->wait_for_cmd_ids, keep);
+			}
+		}
+
+		for (size_t i = 0; i < arrlenu(open_commandlists); ++i)
+		{
+			open_commandlists[i]->id = (uint32_t)i;
+		}
+		cmd_locker.unlock();
 
 		// From here, we begin a new frame, this affects GetBufferIndex()!
 		FRAMECOUNT++;
 
-		// Initiate stalling CPU when GPU is not yet finished with next frame:
-		const uint32_t bufferindex = GetBufferIndex();
-		for (int queue = 0; queue < QUEUE_COUNT; ++queue)
+		if (desc.throttle_cpu || legacy_implicit_frame_sync)
 		{
-			if (queues[queue].queue.get() == nullptr)
-				continue;
-			MTL::SharedEvent* fence = frame_fence[bufferindex][queue].get();
-			if (fence->signaledValue() < frame_fence_values[GetBufferIndex()])
+			const uint64_t default_budget = legacy_implicit_frame_sync ? 1u : 2u;
+			const uint64_t budget = desc.max_inflight_per_queue > 0 ? desc.max_inflight_per_queue : default_budget;
+			for (int queue = 0; queue < QUEUE_COUNT; ++queue)
 			{
-				WaitForSharedEventWithAssert(fence, frame_fence_values[GetBufferIndex()], "SubmitCommandLists frame fence");
+				if (!queue_submitted[queue] || submission_token_events[queue].get() == nullptr)
+					continue;
+				if (submission_token_values[queue] <= budget)
+					continue;
+
+				const uint64_t wait_until = submission_token_values[queue] - budget;
+				if (submission_token_events[queue]->signaledValue() < wait_until)
+				{
+					submission_token_events[queue]->waitUntilSignaledValue(wait_until, ~0ull);
+					stats.queues[queue].cpuFenceWaits++;
+				}
 			}
 		}
 
-		allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
+		allocationhandler->Update();
 		retire_completed_uploads();
+		arrfree(submit_commandlists);
+		for (uint32_t i = 0; i < QUEUE_COUNT; ++i)
+		{
+			arrfree(pending_commandlists[i]);
+		}
+		arrfree(command_signal_points);
+		std::scoped_lock stats_lock(submission_stats_mutex);
+		last_submission_stats = stats;
 		return tokens;
 	}
 
-	void GraphicsDevice_Metal::SubmitCommandLists()
+	SubmissionToken GraphicsDevice_Metal::SubmitCommandListsEx(const SubmitDesc& desc)
 	{
-		SubmitCommandListsInternal(true);
+		return SubmitCommandListsInternal(desc);
 	}
 
-	SubmissionTokenSet GraphicsDevice_Metal::SubmitCommandListsExAll()
+	bool GraphicsDevice_Metal::IsQueuePointComplete(QueueSyncPoint point) const
 	{
-		return SubmitCommandListsInternal(false);
-	}
-
-	void GraphicsDevice_Metal::WaitForToken(QUEUE_TYPE queue, SubmissionToken token)
-	{
-		if (token.value == 0)
-			return;
-		if (queue >= QUEUE_COUNT || token.queue >= QUEUE_COUNT)
-			return;
-		if (queues[queue].queue.get() == nullptr || submission_token_events[token.queue].get() == nullptr)
-			return;
-		if (queue == token.queue || IsTokenComplete(token))
-			return;
-
-		queues[queue].queue->wait(submission_token_events[token.queue].get(), token.value);
-	}
-
-	bool GraphicsDevice_Metal::IsTokenComplete(SubmissionToken token) const
-	{
-		if (token.value == 0)
+		if (!point.IsValid())
 			return true;
-		if (token.queue >= QUEUE_COUNT || submission_token_events[token.queue].get() == nullptr)
+		if (point.queue >= QUEUE_COUNT || submission_token_events[point.queue].get() == nullptr)
 			return false;
-		return submission_token_events[token.queue]->signaledValue() >= token.value;
+		return submission_token_events[point.queue]->signaledValue() >= point.value;
 	}
 
-	UploadTicket GraphicsDevice_Metal::UploadAsync(const UploadDesc& upload)
+	void GraphicsDevice_Metal::WaitQueuePoint(QueueSyncPoint point) const
 	{
-		return UploadAsyncInternal(upload, false);
+		if (!point.IsValid() || point.queue >= QUEUE_COUNT || submission_token_events[point.queue].get() == nullptr)
+			return;
+		WaitForSharedEventWithAssert(submission_token_events[point.queue].get(), point.value, "WaitQueuePoint");
 	}
 
-	bool GraphicsDevice_Metal::IsUploadComplete(UploadTicket ticket) const
+	QueueSyncPoint GraphicsDevice_Metal::GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const
 	{
-		const bool complete = IsTokenComplete(ticket.done);
+		if (queue >= QUEUE_COUNT)
+			return {};
+		std::scoped_lock lock(submission_token_locker);
+		const uint64_t value = submission_token_values[queue];
+		if (value == 0)
+			return {};
+		return QueueSyncPoint{ queue, value };
+	}
+
+	QueueSyncPoint GraphicsDevice_Metal::GetLastCompletedQueuePoint(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT || submission_token_events[queue].get() == nullptr)
+			return {};
+		const uint64_t value = submission_token_events[queue]->signaledValue();
+		if (value == 0)
+			return {};
+		return QueueSyncPoint{ queue, value };
+	}
+
+	bool GraphicsDevice_Metal::GetQueueSubmissionStats(QueueSubmissionStats& out) const
+	{
+		std::scoped_lock lock(submission_stats_mutex);
+		out = last_submission_stats;
+		return out.commandListCount > 0 || out.dependencyEdges > 0;
+	}
+
+	UploadTicket GraphicsDevice_Metal::EnqueueBufferUpload(const BufferUploadDesc& upload)
+	{
+		UploadDescInternal internal = {};
+		internal.type = UploadDescInternal::Type::BUFFER;
+		internal.src_data = upload.data;
+		internal.src_size = upload.size;
+		internal.dst_buffer = upload.dst;
+		internal.dst_offset = upload.dst_offset;
+		UploadTicket ticket = UploadAsyncInternal(internal, false);
+		if (upload.block_until_complete && ticket.IsValid())
+		{
+			WaitUpload(ticket);
+		}
+		return ticket;
+	}
+
+	UploadTicket GraphicsDevice_Metal::EnqueueTextureUpload(const TextureUploadDesc& upload)
+	{
+		UploadDescInternal internal = {};
+		internal.type = UploadDescInternal::Type::TEXTURE;
+		internal.dst_texture = upload.dst;
+		internal.subresources = upload.subresources;
+		internal.subresource_count = upload.subresource_count;
+		UploadTicket ticket = UploadAsyncInternal(internal, false);
+		if (upload.block_until_complete && ticket.IsValid())
+		{
+			WaitUpload(ticket);
+		}
+		return ticket;
+	}
+
+	bool GraphicsDevice_Metal::IsUploadComplete(const UploadTicket& ticket) const
+	{
+		const bool complete = IsQueuePointComplete(ticket.completion);
 		if (complete)
 		{
 			retire_completed_uploads();
@@ -4490,11 +4810,11 @@ using namespace metal_internal;
 		return complete;
 	}
 
-	void GraphicsDevice_Metal::WaitUpload(UploadTicket ticket)
+	void GraphicsDevice_Metal::WaitUpload(const UploadTicket& ticket) const
 	{
-		if (ticket.done.value == 0 || ticket.done.queue >= QUEUE_COUNT || submission_token_events[ticket.done.queue].get() == nullptr)
+		if (!ticket.completion.IsValid() || ticket.completion.queue >= QUEUE_COUNT || submission_token_events[ticket.completion.queue].get() == nullptr)
 			return;
-		WaitForSharedEventWithAssert(submission_token_events[ticket.done.queue].get(), ticket.done.value, "WaitUpload");
+		WaitForSharedEventWithAssert(submission_token_events[ticket.completion.queue].get(), ticket.completion.value, "WaitUpload");
 		retire_completed_uploads();
 	}
 
@@ -4526,11 +4846,10 @@ using namespace metal_internal;
 	void GraphicsDevice_Metal::ClearPipelineStateCache()
 	{
 		std::scoped_lock locker(allocationhandler->destroylocker);
-		uint64_t framecount = allocationhandler->framecount;
 		for (size_t i = 0; i < arrlenu(pipelines_global); ++i)
 		{
-			allocationhandler->destroyer_render_pipelines.push_back(std::make_pair(NS::TransferPtr(pipelines_global[i].value.pipeline), framecount));
-			allocationhandler->destroyer_depth_stencil_states.push_back(std::make_pair(NS::TransferPtr(pipelines_global[i].value.depth_stencil_state), framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_render_pipelines, NS::TransferPtr(pipelines_global[i].value.pipeline));
+			allocationhandler->Retire(allocationhandler->destroyer_depth_stencil_states, NS::TransferPtr(pipelines_global[i].value.depth_stencil_state));
 		}
 		arrfree(pipelines_global);
 	}
@@ -4631,9 +4950,19 @@ using namespace metal_internal;
 		CommandList_Metal& commandlist = GetCommandList(cmd);
 		CommandList_Metal& commandlist_wait_for = GetCommandList(wait_for);
 		SDL_assert(commandlist_wait_for.id < commandlist.id); // can't wait for future command list!
-		Semaphore sema = new_semaphore();
-		arrput(commandlist.waits, sema);
-		arrput(commandlist_wait_for.signals, sema);
+		bool exists = false;
+		for (uint32_t i = 0; i < arrlenu(commandlist.wait_for_cmd_ids); ++i)
+		{
+			if (commandlist.wait_for_cmd_ids[i] == commandlist_wait_for.id)
+			{
+				exists = true;
+				break;
+			}
+		}
+		if (!exists)
+		{
+			arrput(commandlist.wait_for_cmd_ids, commandlist_wait_for.id);
+		}
 	}
 	void GraphicsDevice_Metal::RenderPassBegin(const SwapChain* swapchain, CommandList cmd)
 	{
@@ -5882,7 +6211,7 @@ using namespace metal_internal;
 					if (reinterpret_buffer[commandlist.queue].get() != nullptr)
 					{
 						std::scoped_lock lck2(allocationhandler->destroylocker);
-						allocationhandler->destroyer_resources.push_back(std::make_pair(reinterpret_buffer[commandlist.queue], allocationhandler->framecount));
+						allocationhandler->Retire(allocationhandler->destroyer_resources, reinterpret_buffer[commandlist.queue]);
 					}
 					reinterpret_buffer[commandlist.queue] = NS::TransferPtr(device->newBuffer(buffer_size, MTL::ResourceStorageModePrivate));
 					reinterpret_buffer[commandlist.queue]->setLabel(NS::TransferPtr(NS::String::alloc()->init("reinterpret_buffer", NS::UTF8StringEncoding)).get());

@@ -232,7 +232,7 @@ namespace wi
 		Microsoft::WRL::ComPtr<ID3D12Fence> token_fence[QUEUE_COUNT];
 		std::atomic<uint64_t> token_fence_values[QUEUE_COUNT] = {};
 		mutable std::mutex upload_token_locker;
-		mutable SubmissionTokenSet pending_implicit_uploads = {};
+		mutable SubmissionToken pending_implicit_uploads = {};
 
 		struct DescriptorBinder
 		{
@@ -432,7 +432,25 @@ namespace wi
 
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
-		SubmissionTokenSet SubmitCommandListsInternal(bool token_mode);
+		struct UploadDescInternal
+		{
+			enum class Type
+			{
+				BUFFER,
+				TEXTURE,
+			};
+			Type type = Type::BUFFER;
+			const void* src_data = nullptr;
+			uint64_t src_size = 0;
+			const GPUBuffer* dst_buffer = nullptr;
+			uint64_t dst_offset = 0;
+			const Texture* dst_texture = nullptr;
+			const SubresourceData* subresources = nullptr;
+			uint32_t subresource_count = 0;
+			ResourceState texture_final_layout = ResourceState::SHADER_RESOURCE;
+		};
+		SubmissionToken SubmitCommandListsInternal();
+		UploadTicket UploadAsyncInternal(const UploadDescInternal& upload);
 
 	public:
 		GraphicsDevice_DX12(ValidationMode validationMode = ValidationMode::Disabled, GPUPreference preference = GPUPreference::Discrete);
@@ -464,13 +482,15 @@ namespace wi
 		void SetName(GPUResource* pResource, const char* name) const override;
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
-		void SubmitCommandLists() override;
-		SubmissionTokenSet SubmitCommandListsExAll() override;
-		void WaitForToken(QUEUE_TYPE queue, SubmissionToken token) override;
-		bool IsTokenComplete(SubmissionToken token) const override;
-		UploadTicket UploadAsync(const UploadDesc& upload) override;
-		bool IsUploadComplete(UploadTicket ticket) const override;
-		void WaitUpload(UploadTicket ticket) override;
+		SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc) override;
+		bool IsQueuePointComplete(QueueSyncPoint point) const override;
+		void WaitQueuePoint(QueueSyncPoint point) const override;
+		QueueSyncPoint GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const override;
+		QueueSyncPoint GetLastCompletedQueuePoint(QUEUE_TYPE queue) const override;
+		UploadTicket EnqueueBufferUpload(const BufferUploadDesc& upload) override;
+		UploadTicket EnqueueTextureUpload(const TextureUploadDesc& upload) override;
+		bool IsUploadComplete(const UploadTicket& ticket) const override;
+		void WaitUpload(const UploadTicket& ticket) const override;
 		void OnDeviceRemoved();
 
 		void WaitForGPU() const override;
@@ -640,10 +660,20 @@ namespace wi
 		{
 			Microsoft::WRL::ComPtr<D3D12MA::Allocator> allocator;
 			Microsoft::WRL::ComPtr<ID3D12Device> device;
-			uint64_t framecount = 0;
 			std::mutex destroylocker;
+			Microsoft::WRL::ComPtr<ID3D12Fence> queue_timeline_fences[QUEUE_COUNT];
+			uint64_t submitted_queue_values[QUEUE_COUNT] = {};
 
 			Microsoft::WRL::ComPtr<D3D12MA::Pool> uma_pool;
+
+			template<typename T>
+			struct RetiredObject
+			{
+				T object = {};
+				SubmissionToken retire_after = {};
+			};
+			template<typename T>
+			using RetireList = std::deque<RetiredObject<T>>;
 
 			struct DescriptorAllocator
 			{
@@ -717,81 +747,94 @@ namespace wi
 			int* free_bindless_res = nullptr;
 			int* free_bindless_sam = nullptr;
 
-			std::deque<std::pair<Microsoft::WRL::ComPtr<D3D12MA::Allocation>, uint64_t>> destroyer_allocations;
-			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12Resource>, uint64_t>> destroyer_resources;
-			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12QueryHeap>, uint64_t>> destroyer_queryheaps;
-			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12PipelineState>, uint64_t>> destroyer_pipelines;
-			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12RootSignature>, uint64_t>> destroyer_rootSignatures;
-			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12StateObject>, uint64_t>> destroyer_stateobjects;
-			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12VideoDecoderHeap>, uint64_t>> destroyer_video_decoder_heaps;
-			std::deque<std::pair<Microsoft::WRL::ComPtr<ID3D12VideoDecoder>, uint64_t>> destroyer_video_decoders;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindless_res;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindless_sam;
+			RetireList<Microsoft::WRL::ComPtr<D3D12MA::Allocation>> destroyer_allocations;
+			RetireList<Microsoft::WRL::ComPtr<ID3D12Resource>> destroyer_resources;
+			RetireList<Microsoft::WRL::ComPtr<ID3D12QueryHeap>> destroyer_queryheaps;
+			RetireList<Microsoft::WRL::ComPtr<ID3D12PipelineState>> destroyer_pipelines;
+			RetireList<Microsoft::WRL::ComPtr<ID3D12RootSignature>> destroyer_rootSignatures;
+			RetireList<Microsoft::WRL::ComPtr<ID3D12StateObject>> destroyer_stateobjects;
+			RetireList<Microsoft::WRL::ComPtr<ID3D12VideoDecoderHeap>> destroyer_video_decoder_heaps;
+			RetireList<Microsoft::WRL::ComPtr<ID3D12VideoDecoder>> destroyer_video_decoders;
+			RetireList<int> destroyer_bindless_res;
+			RetireList<int> destroyer_bindless_sam;
+
+			SubmissionToken CaptureRetireToken() const
+			{
+				SubmissionToken token = {};
+				for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+				{
+					if (submitted_queue_values[q] == 0)
+						continue;
+					token.Merge(QueueSyncPoint{ (QUEUE_TYPE)q, submitted_queue_values[q] });
+				}
+				return token;
+			}
+
+			bool IsSubmissionComplete(const SubmissionToken& token) const
+			{
+				for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+				{
+					if ((token.queue_mask & (1u << q)) == 0)
+						continue;
+					ID3D12Fence* fence = queue_timeline_fences[q].Get();
+					if (fence == nullptr)
+						continue;
+					if (fence->GetCompletedValue() < token.values[q])
+						return false;
+				}
+				return true;
+			}
+
+			template<typename T, typename U>
+			void Retire(RetireList<T>& list, U&& object)
+			{
+				RetiredObject<T> retired = {};
+				retired.object = std::forward<U>(object);
+				retired.retire_after = CaptureRetireToken();
+				list.push_back(std::move(retired));
+			}
 
 			~AllocationHandler()
 			{
-				Update(~0ull, 0); // destroy all remaining
+				Update(true); // destroy all remaining
 				dx12_internal::destroy_stb_array(free_bindless_res);
 				dx12_internal::destroy_stb_array(free_bindless_sam);
 			}
 
 			// Deferred destroy of resources that the GPU is already finished with:
-			void Update(uint64_t FRAMECOUNT, uint32_t BUFFERCOUNT)
+			void Update(bool force_all = false)
 			{
 				std::scoped_lock lck(destroylocker);
-				framecount = FRAMECOUNT;
-				while (!destroyer_allocations.empty() && destroyer_allocations.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_allocations.pop_front();
-					// comptr auto delete
-				}
-				while (!destroyer_resources.empty() && destroyer_resources.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_resources.pop_front();
-					// comptr auto delete
-				}
-				while (!destroyer_queryheaps.empty() && destroyer_queryheaps.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_queryheaps.pop_front();
-					// comptr auto delete
-				}
-				while (!destroyer_pipelines.empty() && destroyer_pipelines.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_pipelines.pop_front();
-					// comptr auto delete
-				}
-				while (!destroyer_rootSignatures.empty() && destroyer_rootSignatures.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_rootSignatures.pop_front();
-					// comptr auto delete
-				}
-				while (!destroyer_stateobjects.empty() && destroyer_stateobjects.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_stateobjects.pop_front();
-					// comptr auto delete
-				}
-				while (!destroyer_video_decoder_heaps.empty() && destroyer_video_decoder_heaps.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_video_decoder_heaps.pop_front();
-					// comptr auto delete
-				}
-				while (!destroyer_video_decoders.empty() && destroyer_video_decoders.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_video_decoders.pop_front();
-					// comptr auto delete
-				}
-				while (!destroyer_bindless_res.empty() && destroyer_bindless_res.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					int index = destroyer_bindless_res.front().first;
-					destroyer_bindless_res.pop_front();
-					arrput(free_bindless_res, index);
-				}
-				while (!destroyer_bindless_sam.empty() && destroyer_bindless_sam.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					int index = destroyer_bindless_sam.front().first;
-					destroyer_bindless_sam.pop_front();
-					arrput(free_bindless_sam, index);
-				}
+
+				auto collect = [&](auto& list, auto&& on_collect) {
+					size_t write_index = 0;
+					for (size_t i = 0; i < list.size(); ++i)
+					{
+						auto& item = list[i];
+						if (!force_all && !IsSubmissionComplete(item.retire_after))
+						{
+							if (write_index != i)
+							{
+								list[write_index] = std::move(item);
+							}
+							++write_index;
+							continue;
+						}
+						on_collect(item.object);
+					}
+					list.resize(write_index);
+				};
+
+				collect(destroyer_allocations, [](Microsoft::WRL::ComPtr<D3D12MA::Allocation>&) {});
+				collect(destroyer_resources, [](Microsoft::WRL::ComPtr<ID3D12Resource>&) {});
+				collect(destroyer_queryheaps, [](Microsoft::WRL::ComPtr<ID3D12QueryHeap>&) {});
+				collect(destroyer_pipelines, [](Microsoft::WRL::ComPtr<ID3D12PipelineState>&) {});
+				collect(destroyer_rootSignatures, [](Microsoft::WRL::ComPtr<ID3D12RootSignature>&) {});
+				collect(destroyer_stateobjects, [](Microsoft::WRL::ComPtr<ID3D12StateObject>&) {});
+				collect(destroyer_video_decoder_heaps, [](Microsoft::WRL::ComPtr<ID3D12VideoDecoderHeap>&) {});
+				collect(destroyer_video_decoders, [](Microsoft::WRL::ComPtr<ID3D12VideoDecoder>&) {});
+				collect(destroyer_bindless_res, [&](int& index) { arrput(free_bindless_res, index); });
+				collect(destroyer_bindless_sam, [&](int& index) { arrput(free_bindless_sam, index); });
 			}
 		};
 		wi::allocator::shared_ptr<AllocationHandler> allocationhandler;

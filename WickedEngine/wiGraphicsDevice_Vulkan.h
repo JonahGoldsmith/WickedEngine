@@ -413,6 +413,8 @@ namespace wi
 				VkCommandBuffer transferCommandBuffer = VK_NULL_HANDLE;
 				VkFence fence = VK_NULL_HANDLE;
 				GPUBuffer uploadbuffer;
+				QUEUE_TYPE submitted_queue = QUEUE_COUNT;
+				uint64_t submitted_value = 0;
 				constexpr bool IsValid() const { return transferCommandBuffer != VK_NULL_HANDLE; }
 			};
 			std::deque<CopyCMD> inflight;
@@ -421,8 +423,10 @@ namespace wi
 			void init(GraphicsDevice_Vulkan* device);
 			void destroy();
 			void recycle_completed();
+			bool is_point_complete(QueueSyncPoint point);
+			bool wait_point(QueueSyncPoint point);
 			CopyCMD allocate(uint64_t staging_size);
-			SubmissionToken submit(CopyCMD cmd, QUEUE_TYPE queue, bool wait_for_completion);
+			SubmissionToken submit(CopyCMD cmd, QUEUE_TYPE queue);
 		};
 		mutable CopyAllocator copyAllocator;
 
@@ -440,8 +444,11 @@ namespace wi
 
 		VkFence frame_fence[BUFFERCOUNT][QUEUE_COUNT] = {};
 		bool frame_queue_active[BUFFERCOUNT][QUEUE_COUNT] = {};
+		std::atomic<uint64_t> queue_timeline_submitted_fallback[QUEUE_COUNT] = {};
+		mutable std::atomic<uint64_t> queue_timeline_completed_fallback[QUEUE_COUNT] = {};
+		std::atomic<uint64_t> queue_timeline_value_per_buffer[BUFFERCOUNT][QUEUE_COUNT] = {};
 		mutable std::mutex upload_token_locker;
-		mutable SubmissionTokenSet pending_implicit_uploads = {};
+		mutable SubmissionToken pending_implicit_uploads = {};
 
 		struct DescriptorBinder
 		{
@@ -564,7 +571,7 @@ namespace wi
 				device->allocationhandler->destroylocker.lock();
 				for (auto& x : pools)
 				{
-					device->allocationhandler->destroyer_descriptorPools.push_back(std::make_pair(x, device->allocationhandler->framecount));
+					device->allocationhandler->Retire(device->allocationhandler->destroyer_descriptorPools, x);
 				}
 				device->allocationhandler->destroylocker.unlock();
 				pools.clear();
@@ -693,9 +700,28 @@ namespace wi
 
 		void predraw(CommandList cmd);
 		void predispatch(CommandList cmd);
-		SubmissionTokenSet SubmitCommandListsInternal(bool token_mode);
+		struct UploadDescInternal
+		{
+			enum class Type
+			{
+				BUFFER,
+				TEXTURE,
+			};
+			Type type = Type::BUFFER;
+			QUEUE_TYPE queue = QUEUE_COPY;
+			const void* src_data = nullptr;
+			uint64_t src_size = 0;
+			const GPUBuffer* dst_buffer = nullptr;
+			uint64_t dst_offset = 0;
+			const Texture* dst_texture = nullptr;
+			const SubresourceData* subresources = nullptr;
+			uint32_t subresource_count = 0;
+			ResourceState texture_final_layout = ResourceState::SHADER_RESOURCE;
+		};
+		SubmissionToken SubmitCommandListsInternal();
 		bool SupportsSubmissionTokens() const;
 		void WarnMissingTimelineSemaphore(const char* caller) const;
+		UploadTicket UploadAsyncInternal(const UploadDescInternal& upload) const;
 
 		void set_fence_name(VkFence fence, const char* name);
 		void set_semaphore_name(VkSemaphore semaphore, const char* name);
@@ -731,13 +757,15 @@ namespace wi
 		void SetName(Shader* shader, const char* name) const override;
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
-		void SubmitCommandLists() override;
-		SubmissionTokenSet SubmitCommandListsExAll() override;
-		void WaitForToken(QUEUE_TYPE queue, SubmissionToken token) override;
-		bool IsTokenComplete(SubmissionToken token) const override;
-		UploadTicket UploadAsync(const UploadDesc& upload) override;
-		bool IsUploadComplete(UploadTicket ticket) const override;
-		void WaitUpload(UploadTicket ticket) override;
+		SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc) override;
+		bool IsQueuePointComplete(QueueSyncPoint point) const override;
+		void WaitQueuePoint(QueueSyncPoint point) const override;
+		QueueSyncPoint GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const override;
+		QueueSyncPoint GetLastCompletedQueuePoint(QUEUE_TYPE queue) const override;
+		UploadTicket EnqueueBufferUpload(const BufferUploadDesc& upload) override;
+		UploadTicket EnqueueTextureUpload(const TextureUploadDesc& upload) override;
+		bool IsUploadComplete(const UploadTicket& ticket) const override;
+		void WaitUpload(const UploadTicket& ticket) const override;
 
 		void WaitForGPU() const override;
 		void ClearPipelineStateCache() override;
@@ -877,8 +905,20 @@ namespace wi
 			VmaAllocator externalAllocator = VK_NULL_HANDLE;
 			VkDevice device = VK_NULL_HANDLE;
 			VkInstance instance;
-			uint64_t framecount = 0;
 			std::mutex destroylocker;
+			bool queue_timeline_supported = false;
+			VkSemaphore queue_timeline_semaphores[QUEUE_COUNT] = {};
+			std::atomic<uint64_t>* queue_timeline_completed[QUEUE_COUNT] = {};
+			uint64_t submitted_queue_values[QUEUE_COUNT] = {};
+
+			template<typename T>
+			struct RetiredObject
+			{
+				T object = {};
+				SubmissionToken retire_after = {};
+			};
+			template<typename T>
+			using RetireList = std::deque<RetiredObject<T>>;
 
 			struct BindlessDescriptorHeap
 			{
@@ -1127,32 +1167,80 @@ namespace wi
 			BindlessDescriptorHeap bindlessSamplers;
 			BindlessDescriptorHeap bindlessAccelerationStructures;
 
-			std::deque<std::pair<VmaAllocation, uint64_t>> destroyer_allocations;
-			std::deque<std::pair<std::pair<VkImage, VmaAllocation>, uint64_t>> destroyer_images;
-			std::deque<std::pair<VkImageView, uint64_t>> destroyer_imageviews;
-			std::deque<std::pair<std::pair<VkBuffer, VmaAllocation>, uint64_t>> destroyer_buffers;
-			std::deque<std::pair<VkBufferView, uint64_t>> destroyer_bufferviews;
-			std::deque<std::pair<VkAccelerationStructureKHR, uint64_t>> destroyer_bvhs;
-			std::deque<std::pair<VkSampler, uint64_t>> destroyer_samplers;
-			std::deque<std::pair<VkDescriptorPool, uint64_t>> destroyer_descriptorPools;
-			std::deque<std::pair<VkDescriptorSetLayout, uint64_t>> destroyer_descriptorSetLayouts;
-			std::deque<std::pair<VkDescriptorUpdateTemplate, uint64_t>> destroyer_descriptorUpdateTemplates;
-			std::deque<std::pair<VkShaderModule, uint64_t>> destroyer_shadermodules;
-			std::deque<std::pair<VkPipelineLayout, uint64_t>> destroyer_pipelineLayouts;
-			std::deque<std::pair<VkPipeline, uint64_t>> destroyer_pipelines;
-			std::deque<std::pair<VkQueryPool, uint64_t>> destroyer_querypools;
-			std::deque<std::pair<VkSwapchainKHR, uint64_t>> destroyer_swapchains;
-			std::deque<std::pair<VkSurfaceKHR, uint64_t>> destroyer_surfaces;
-			std::deque<std::pair<VkSemaphore, uint64_t>> destroyer_semaphores;
-			std::deque<std::pair<VkVideoSessionKHR, uint64_t>> destroyer_video_sessions;
-			std::deque<std::pair<VkVideoSessionParametersKHR, uint64_t>> destroyer_video_session_parameters;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindlessSampledImages;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindlessUniformTexelBuffers;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindlessStorageBuffers;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindlessStorageImages;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindlessStorageTexelBuffers;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindlessSamplers;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindlessAccelerationStructures;
+			RetireList<VmaAllocation> destroyer_allocations;
+			RetireList<std::pair<VkImage, VmaAllocation>> destroyer_images;
+			RetireList<VkImageView> destroyer_imageviews;
+			RetireList<std::pair<VkBuffer, VmaAllocation>> destroyer_buffers;
+			RetireList<VkBufferView> destroyer_bufferviews;
+			RetireList<VkAccelerationStructureKHR> destroyer_bvhs;
+			RetireList<VkSampler> destroyer_samplers;
+			RetireList<VkDescriptorPool> destroyer_descriptorPools;
+			RetireList<VkDescriptorSetLayout> destroyer_descriptorSetLayouts;
+			RetireList<VkDescriptorUpdateTemplate> destroyer_descriptorUpdateTemplates;
+			RetireList<VkShaderModule> destroyer_shadermodules;
+			RetireList<VkPipelineLayout> destroyer_pipelineLayouts;
+			RetireList<VkPipeline> destroyer_pipelines;
+			RetireList<VkQueryPool> destroyer_querypools;
+			RetireList<VkSwapchainKHR> destroyer_swapchains;
+			RetireList<VkSurfaceKHR> destroyer_surfaces;
+			RetireList<VkSemaphore> destroyer_semaphores;
+			RetireList<VkVideoSessionKHR> destroyer_video_sessions;
+			RetireList<VkVideoSessionParametersKHR> destroyer_video_session_parameters;
+			RetireList<int> destroyer_bindlessSampledImages;
+			RetireList<int> destroyer_bindlessUniformTexelBuffers;
+			RetireList<int> destroyer_bindlessStorageBuffers;
+			RetireList<int> destroyer_bindlessStorageImages;
+			RetireList<int> destroyer_bindlessStorageTexelBuffers;
+			RetireList<int> destroyer_bindlessSamplers;
+			RetireList<int> destroyer_bindlessAccelerationStructures;
+
+			SubmissionToken CaptureRetireToken() const
+			{
+				SubmissionToken token = {};
+				for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+				{
+					if (submitted_queue_values[q] == 0)
+						continue;
+					token.Merge(QueueSyncPoint{ (QUEUE_TYPE)q, submitted_queue_values[q] });
+				}
+				return token;
+			}
+
+			bool IsSubmissionComplete(const SubmissionToken& token) const
+			{
+				for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+				{
+					if ((token.queue_mask & (1u << q)) == 0)
+						continue;
+					if (queue_timeline_supported && queue_timeline_semaphores[q] != VK_NULL_HANDLE)
+					{
+						uint64_t completed = 0;
+						vulkan_check(vkGetSemaphoreCounterValue(device, queue_timeline_semaphores[q], &completed));
+						if (queue_timeline_completed[q] != nullptr)
+						{
+							uint64_t known_completed = queue_timeline_completed[q]->load(std::memory_order_relaxed);
+							while (known_completed < completed && !queue_timeline_completed[q]->compare_exchange_weak(known_completed, completed, std::memory_order_release, std::memory_order_relaxed))
+							{
+							}
+						}
+						if (completed < token.values[q])
+							return false;
+						continue;
+					}
+					if (queue_timeline_completed[q] != nullptr && queue_timeline_completed[q]->load(std::memory_order_acquire) < token.values[q])
+						return false;
+				}
+				return true;
+			}
+
+			template<typename T, typename U>
+			void Retire(RetireList<T>& list, U&& object)
+			{
+				RetiredObject<T> retired = {};
+				retired.object = std::forward<U>(object);
+				retired.retire_after = CaptureRetireToken();
+				list.push_back(std::move(retired));
+			}
 
 			~AllocationHandler()
 			{
@@ -1163,7 +1251,7 @@ namespace wi
 				bindlessStorageTexelBuffers.destroy(device);
 				bindlessSamplers.destroy(device);
 				bindlessAccelerationStructures.destroy(device);
-				Update(~0ull, 0); // destroy all remaining
+				Update(true); // destroy all remaining
 				vmaDestroyAllocator(allocator);
 				vmaDestroyAllocator(externalAllocator);
 				vkDestroyDevice(device, nullptr);
@@ -1171,103 +1259,105 @@ namespace wi
 			}
 
 			// Deferred destroy of resources that the GPU is already finished with:
-			void Update(uint64_t FRAMECOUNT, uint32_t BUFFERCOUNT)
+			void Update(bool force_all = false)
 			{
 				std::scoped_lock lck(destroylocker);
 
-				const auto destroy = [&](auto&& queue, auto&& handler) {
-					while (!queue.empty()) {
-						if (queue.front().second + BUFFERCOUNT < FRAMECOUNT)
+				const auto collect = [&](auto& list, auto&& handler) {
+					size_t write_index = 0;
+					for (size_t i = 0; i < list.size(); ++i)
+					{
+						auto& item = list[i];
+						if (!force_all && !IsSubmissionComplete(item.retire_after))
 						{
-							auto item = queue.front();
-							queue.pop_front();
-							handler(item.first);
+							if (write_index != i)
+							{
+								list[write_index] = std::move(item);
+							}
+							++write_index;
+							continue;
 						}
-						else
-						{
-							break;
-						}
+						handler(item.object);
 					}
+					list.resize(write_index);
 				};
 
-				framecount = FRAMECOUNT;
-
-				destroy(destroyer_allocations, [&](auto& item) {
+				collect(destroyer_allocations, [&](VmaAllocation& item) {
 					vmaFreeMemory(allocator, item);
 				});
-				destroy(destroyer_imageviews, [&](auto& item) {
+				collect(destroyer_imageviews, [&](VkImageView& item) {
 					vkDestroyImageView(device, item, nullptr);
 				});
-				destroy(destroyer_images, [&](auto& item) {
+				collect(destroyer_images, [&](std::pair<VkImage, VmaAllocation>& item) {
 					vmaDestroyImage(allocator, item.first, item.second);
 				});
-				destroy(destroyer_bufferviews, [&](auto& item) {
+				collect(destroyer_bufferviews, [&](VkBufferView& item) {
 					vkDestroyBufferView(device, item, nullptr);
 				});
-				destroy(destroyer_buffers, [&](auto& item) {
+				collect(destroyer_buffers, [&](std::pair<VkBuffer, VmaAllocation>& item) {
 					vmaDestroyBuffer(allocator, item.first, item.second);
 				});
-				destroy(destroyer_bvhs, [&](auto& item) {
+				collect(destroyer_bvhs, [&](VkAccelerationStructureKHR& item) {
 					vkDestroyAccelerationStructureKHR(device, item, nullptr);
 				});
-				destroy(destroyer_samplers, [&](auto& item) {
+				collect(destroyer_samplers, [&](VkSampler& item) {
 					vkDestroySampler(device, item, nullptr);
 				});
-				destroy(destroyer_descriptorPools, [&](auto& item) {
+				collect(destroyer_descriptorPools, [&](VkDescriptorPool& item) {
 					vkDestroyDescriptorPool(device, item, nullptr);
 				});
-				destroy(destroyer_descriptorSetLayouts, [&](auto& item) {
+				collect(destroyer_descriptorSetLayouts, [&](VkDescriptorSetLayout& item) {
 					vkDestroyDescriptorSetLayout(device, item, nullptr);
 				});
-				destroy(destroyer_descriptorUpdateTemplates, [&](auto& item) {
+				collect(destroyer_descriptorUpdateTemplates, [&](VkDescriptorUpdateTemplate& item) {
 					vkDestroyDescriptorUpdateTemplate(device, item, nullptr);
 				});
-				destroy(destroyer_shadermodules, [&](auto& item) {
+				collect(destroyer_shadermodules, [&](VkShaderModule& item) {
 					vkDestroyShaderModule(device, item, nullptr);
 				});
-				destroy(destroyer_pipelineLayouts, [&](auto& item) {
+				collect(destroyer_pipelineLayouts, [&](VkPipelineLayout& item) {
 					vkDestroyPipelineLayout(device, item, nullptr);
 				});
-				destroy(destroyer_pipelines, [&](auto& item) {
+				collect(destroyer_pipelines, [&](VkPipeline& item) {
 					vkDestroyPipeline(device, item, nullptr);
 				});
-				destroy(destroyer_querypools, [&](auto& item) {
+				collect(destroyer_querypools, [&](VkQueryPool& item) {
 					vkDestroyQueryPool(device, item, nullptr);
 				});
-				destroy(destroyer_swapchains, [&](auto& item) {
+				collect(destroyer_swapchains, [&](VkSwapchainKHR& item) {
 					vkDestroySwapchainKHR(device, item, nullptr);
 				});
-				destroy(destroyer_surfaces, [&](auto& item) {
+				collect(destroyer_surfaces, [&](VkSurfaceKHR& item) {
 					vkDestroySurfaceKHR(instance, item, nullptr);
 				});
-				destroy(destroyer_semaphores, [&](auto& item) {
+				collect(destroyer_semaphores, [&](VkSemaphore& item) {
 					vkDestroySemaphore(device, item, nullptr);
 				});
-				destroy(destroyer_video_sessions, [&](auto& item) {
+				collect(destroyer_video_sessions, [&](VkVideoSessionKHR& item) {
 					vkDestroyVideoSessionKHR(device, item, nullptr);
 				});
-				destroy(destroyer_video_session_parameters, [&](auto& item) {
+				collect(destroyer_video_session_parameters, [&](VkVideoSessionParametersKHR& item) {
 					vkDestroyVideoSessionParametersKHR(device, item, nullptr);
 				});
-				destroy(destroyer_bindlessSampledImages, [&](auto& item) {
+				collect(destroyer_bindlessSampledImages, [&](int& item) {
 					bindlessSampledImages.free(item);
 				});
-				destroy(destroyer_bindlessUniformTexelBuffers, [&](auto& item) {
+				collect(destroyer_bindlessUniformTexelBuffers, [&](int& item) {
 					bindlessUniformTexelBuffers.free(item);
 				});
-				destroy(destroyer_bindlessStorageBuffers, [&](auto& item) {
+				collect(destroyer_bindlessStorageBuffers, [&](int& item) {
 					bindlessStorageBuffers.free(item);
 				});
-				destroy(destroyer_bindlessStorageImages, [&](auto& item) {
+				collect(destroyer_bindlessStorageImages, [&](int& item) {
 					bindlessStorageImages.free(item);
 				});
-				destroy(destroyer_bindlessStorageTexelBuffers, [&](auto& item) {
+				collect(destroyer_bindlessStorageTexelBuffers, [&](int& item) {
 					bindlessStorageTexelBuffers.free(item);
 				});
-				destroy(destroyer_bindlessSamplers, [&](auto& item) {
+				collect(destroyer_bindlessSamplers, [&](int& item) {
 					bindlessSamplers.free(item);
 				});
-				destroy(destroyer_bindlessAccelerationStructures, [&](auto& item) {
+				collect(destroyer_bindlessAccelerationStructures, [&](int& item) {
 					bindlessAccelerationStructures.free(item);
 				});
 			}

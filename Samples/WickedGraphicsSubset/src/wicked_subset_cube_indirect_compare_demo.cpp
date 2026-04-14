@@ -497,18 +497,18 @@ public:
         device_ =
 #if WICKED_SUBSET_USE_METAL
 #if defined(__APPLE__)
-            std::make_unique<wi::GraphicsDevice_Metal>(ValidationMode::Disabled, wi::GPUPreference::Discrete);
+            std::make_unique<wi::GraphicsDevice_Metal>(ValidationMode::Verbose, wi::GPUPreference::Discrete);
 #else
 #error "WICKED_SUBSET_BACKEND=Metal requires an Apple build."
 #endif
 #elif WICKED_SUBSET_USE_DX12
 #if defined(_WIN32)
-            std::make_unique<wi::GraphicsDevice_DX12>(ValidationMode::Disabled, wi::GPUPreference::Discrete);
+            std::make_unique<wi::GraphicsDevice_DX12>(ValidationMode::Verbose, wi::GPUPreference::Discrete);
 #else
 #error "WICKED_SUBSET_BACKEND=DX12 requires a Windows build."
 #endif
 #else
-            std::make_unique<wi::GraphicsDevice_Vulkan>((wi::platform::window_type)nativeWindow_, ValidationMode::Disabled, wi::GPUPreference::Discrete);
+            std::make_unique<wi::GraphicsDevice_Vulkan>((wi::platform::window_type)nativeWindow_, ValidationMode::Verbose, wi::GPUPreference::Discrete);
 #endif
 
         if (device_ == nullptr)
@@ -1020,7 +1020,8 @@ private:
 
         device_->RenderPassEnd(cmd);
 
-        (void)device_->SubmitCommandListsExAll();
+        wi::SubmitDesc submitDesc = {};
+        (void)device_->SubmitCommandListsEx(submitDesc);
 
         const uint64_t cpuEnd = SDL_GetPerformanceCounter();
         if (cpuFrameMs != nullptr)

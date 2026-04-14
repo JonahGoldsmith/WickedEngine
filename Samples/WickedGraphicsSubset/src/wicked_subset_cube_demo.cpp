@@ -650,7 +650,8 @@ private:
 
         device_->RenderPassEnd(cmd);
 
-        device_->SubmitCommandLists();
+        wi::SubmitDesc submitDesc = {};
+        device_->SubmitCommandListsEx(submitDesc);
         if (framesRendered_ == 0)
         {
             std::fprintf(stderr, "[WickedBackendCubeDemo] first frame submitted\n");

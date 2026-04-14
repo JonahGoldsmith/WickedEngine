@@ -215,7 +215,7 @@ namespace wi
 				graphicsDevice->RenderPassEnd(cmd);
 			}
 
-			graphicsDevice->SubmitCommandLists();
+			graphicsDevice->SubmitCommandListsEx();
 			return;
 		}
 
@@ -385,7 +385,7 @@ namespace wi
 
 		wi::input::ClearForNextFrame();
 		wi::profiler::EndFrame(cmd);
-		graphicsDevice->SubmitCommandLists();
+		graphicsDevice->SubmitCommandListsEx();
 		wi::renderer::UpdateGPUSuballocator();
 	}
 

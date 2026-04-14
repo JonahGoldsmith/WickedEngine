@@ -36,6 +36,7 @@ DEFINE_GUID(D3D12_VIDEO_DECODE_PROFILE_HEVC_MAIN, 0x5b11d51b, 0x2f4c, 0x4452, 0x
 #include <sstream>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 #include <cstring>
 #include <cstdlib>
 #include <limits>
@@ -1497,7 +1498,7 @@ namespace dx12_internal
 					// bindless free:
 					if (index >= 0)
 					{
-						allocationhandler->destroyer_bindless_res.push_back(std::make_pair(index, allocationhandler->framecount));
+						allocationhandler->Retire(allocationhandler->destroyer_bindless_res, index);
 					}
 					break;
 				case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:
@@ -1506,7 +1507,7 @@ namespace dx12_internal
 					// bindless free:
 					if (index >= 0)
 					{
-						allocationhandler->destroyer_bindless_sam.push_back(std::make_pair(index, allocationhandler->framecount));
+						allocationhandler->Retire(allocationhandler->destroyer_bindless_sam, index);
 					}
 					break;
 				case D3D12_DESCRIPTOR_HEAP_TYPE_RTV:
@@ -1589,9 +1590,8 @@ namespace dx12_internal
 		~Resource_DX12()
 		{
 			std::scoped_lock lck(allocationhandler->destroylocker);
-			uint64_t framecount = allocationhandler->framecount;
-			if (allocation) allocationhandler->destroyer_allocations.push_back(std::make_pair(allocation, framecount));
-			if (resource) allocationhandler->destroyer_resources.push_back(std::make_pair(resource, framecount));
+			if (allocation) allocationhandler->Retire(allocationhandler->destroyer_allocations, allocation);
+			if (resource) allocationhandler->Retire(allocationhandler->destroyer_resources, resource);
 			destroy_subresources();
 			dx12_internal::destroy_stb_array(mapped_subresources);
 			dx12_internal::destroy_stb_array(footprints);
@@ -1607,7 +1607,6 @@ namespace dx12_internal
 		~Sampler_DX12()
 		{
 			std::scoped_lock lck(allocationhandler->destroylocker);
-			uint64_t framecount = allocationhandler->framecount;
 			descriptor.destroy();
 		}
 	};
@@ -1619,8 +1618,7 @@ namespace dx12_internal
 		~QueryHeap_DX12()
 		{
 			std::scoped_lock lck(allocationhandler->destroylocker);
-			uint64_t framecount = allocationhandler->framecount;
-			if (heap) allocationhandler->destroyer_queryheaps.push_back(std::make_pair(heap, framecount));
+			if (heap) allocationhandler->Retire(allocationhandler->destroyer_queryheaps, heap);
 		}
 	};
 	struct PipelineState_DX12
@@ -1675,9 +1673,8 @@ namespace dx12_internal
 		~PipelineState_DX12()
 		{
 			std::scoped_lock lck(allocationhandler->destroylocker);
-			uint64_t framecount = allocationhandler->framecount;
-			if (resource) allocationhandler->destroyer_pipelines.push_back(std::make_pair(resource, framecount));
-			if (rootSignature) allocationhandler->destroyer_rootSignatures.push_back(std::make_pair(rootSignature, framecount));
+			if (resource) allocationhandler->Retire(allocationhandler->destroyer_pipelines, resource);
+			if (rootSignature) allocationhandler->Retire(allocationhandler->destroyer_rootSignatures, rootSignature);
 			dx12_internal::destroy_stb_array(shadercode);
 		}
 	};
@@ -1709,8 +1706,7 @@ namespace dx12_internal
 		~RTPipelineState_DX12()
 		{
 			std::scoped_lock lck(allocationhandler->destroylocker);
-			uint64_t framecount = allocationhandler->framecount;
-			if (resource) allocationhandler->destroyer_stateobjects.push_back(std::make_pair(resource, framecount));
+			if (resource) allocationhandler->Retire(allocationhandler->destroyer_stateobjects, resource);
 			if (export_strings != nullptr)
 			{
 				for (size_t i = 0; i < arrlenu(export_strings); ++i)
@@ -1775,9 +1771,8 @@ namespace dx12_internal
 		~VideoDecoder_DX12()
 		{
 			std::scoped_lock lck(allocationhandler->destroylocker);
-			uint64_t framecount = allocationhandler->framecount;
-			allocationhandler->destroyer_video_decoder_heaps.push_back(std::make_pair(decoder_heap, framecount));
-			allocationhandler->destroyer_video_decoders.push_back(std::make_pair(decoder, framecount));
+			allocationhandler->Retire(allocationhandler->destroyer_video_decoder_heaps, decoder_heap);
+			allocationhandler->Retire(allocationhandler->destroyer_video_decoders, decoder);
 		}
 	};
 
@@ -1959,8 +1954,12 @@ std::mutex queue_locker;
 		}
 
 		UploadTicket ticket;
-		ticket.done.queue = QUEUE_COPY;
-		ticket.done.value = token_value;
+		ticket.token.Merge(QueueSyncPoint{ QUEUE_COPY, token_value });
+		ticket.completion = QueueSyncPoint{ QUEUE_COPY, token_value };
+		{
+			std::scoped_lock guard(device->allocationhandler->destroylocker);
+			device->allocationhandler->submitted_queue_values[QUEUE_COPY] = token_value;
+		}
 
 		std::scoped_lock lock(locker);
 		recycle_completed_unlocked();
@@ -2914,6 +2913,7 @@ std::mutex queue_locker;
 				dx12_check(token_fence[queue]->SetName(L"token_fence[QUEUE_VIDEO_DECODE]"));
 				break;
 			};
+			allocationhandler->queue_timeline_fences[queue] = token_fence[queue];
 		}
 
 		copyAllocator.init(this);
@@ -3900,11 +3900,10 @@ std::mutex queue_locker;
 					desc->size
 				);
 				UploadTicket ticket = copyAllocator.submit(std::move(cmd));
-				if (ticket.done.value != 0)
+				if (ticket.token.IsValid())
 				{
 					std::scoped_lock lock(upload_token_locker);
-					pending_implicit_uploads.validMask |= 1u << ticket.done.queue;
-					pending_implicit_uploads.perQueue[ticket.done.queue] = ticket.done;
+					pending_implicit_uploads.Merge(ticket.token);
 				}
 			}
 		}
@@ -4334,11 +4333,10 @@ std::mutex queue_locker;
 				if (cmd.IsValid())
 				{
 					UploadTicket ticket = copyAllocator.submit(std::move(cmd));
-					if (ticket.done.value != 0)
+					if (ticket.token.IsValid())
 					{
 						std::scoped_lock lock(upload_token_locker);
-						pending_implicit_uploads.validMask |= 1u << ticket.done.queue;
-						pending_implicit_uploads.perQueue[ticket.done.queue] = ticket.done;
+						pending_implicit_uploads.Merge(ticket.token);
 					}
 				}
 			}
@@ -5920,20 +5918,20 @@ std::mutex queue_locker;
 
 		return cmd;
 	}
-	SubmissionTokenSet GraphicsDevice_DX12::SubmitCommandListsInternal(bool token_mode)
+	SubmissionToken GraphicsDevice_DX12::SubmitCommandListsInternal()
 	{
 #ifdef PLATFORM_XBOX
 		std::scoped_lock lock(queue_locker); // queue operations are not thread-safe on XBOX
 #endif // PLATFORM_XBOX
-		SubmissionTokenSet tokens = {};
+		SubmissionToken tokens = {};
 		bool queue_has_work[QUEUE_COUNT] = {};
-		SubmissionTokenSet pending_upload_tokens = {};
+		SubmissionToken pending_upload_tokens = {};
 		{
 			std::scoped_lock lock(upload_token_locker);
 			pending_upload_tokens = pending_implicit_uploads;
 			pending_implicit_uploads = {};
 		}
-		if (pending_upload_tokens.validMask != 0)
+		if (pending_upload_tokens.IsValid())
 		{
 			for (uint32_t dst = 0; dst < QUEUE_COUNT; ++dst)
 			{
@@ -5942,12 +5940,12 @@ std::mutex queue_locker;
 					continue;
 				for (uint32_t src = 0; src < QUEUE_COUNT; ++src)
 				{
-					if ((pending_upload_tokens.validMask & (1u << src)) == 0)
+					if ((pending_upload_tokens.queue_mask & (1u << src)) == 0)
 						continue;
-					const SubmissionToken& token = pending_upload_tokens.perQueue[src];
-					if (token.value == 0 || token.queue >= QUEUE_COUNT || token_fence[token.queue] == nullptr)
+					QueueSyncPoint point = pending_upload_tokens.Get((QUEUE_TYPE)src);
+					if (!point.IsValid() || point.queue >= QUEUE_COUNT || token_fence[point.queue] == nullptr)
 						continue;
-					dx12_check(dst_queue.queue->Wait(token_fence[token.queue].Get(), token.value));
+					dx12_check(dst_queue.queue->Wait(token_fence[point.queue].Get(), point.value));
 				}
 			}
 		}
@@ -6039,13 +6037,15 @@ std::mutex queue_locker;
 
 				dx12_check(queue.queue->Signal(frame_fence[GetBufferIndex()][q].Get(), frame_fence_value));
 
-				if (token_mode && queue_has_work[q] && token_fence[q] != nullptr)
+				if (queue_has_work[q] && token_fence[q] != nullptr)
 				{
 					const uint64_t token_value = token_fence_values[q].fetch_add(1, std::memory_order_relaxed) + 1;
 					dx12_check(queue.queue->Signal(token_fence[q].Get(), token_value));
-					tokens.validMask |= 1u << q;
-					tokens.perQueue[q].queue = (QUEUE_TYPE)q;
-					tokens.perQueue[q].value = token_value;
+					{
+						std::scoped_lock lock(allocationhandler->destroylocker);
+						allocationhandler->submitted_queue_values[q] = token_value;
+					}
+					tokens.Merge(QueueSyncPoint{ (QUEUE_TYPE)q, token_value });
 				}
 			}
 
@@ -6093,26 +6093,6 @@ std::mutex queue_locker;
 			}
 		}
 
-		if (!token_mode)
-		{
-			// Sync up every queue to every other queue at the end of the frame:
-			//	Note: it disables overlapping queues into the next frame
-			for (int queue1 = 0; queue1 < QUEUE_COUNT; ++queue1)
-			{
-				if (queues[queue1].queue == nullptr)
-					continue;
-				for (int queue2 = 0; queue2 < QUEUE_COUNT; ++queue2)
-				{
-					if (queue1 == queue2)
-						continue;
-					if (queues[queue2].queue == nullptr)
-						continue;
-					ID3D12Fence* fence = frame_fence[GetBufferIndex()][queue2].Get();
-					queues[queue1].queue->Wait(fence, frame_fence_values[GetBufferIndex()]);
-				}
-			}
-		}
-
 		descriptorheap_res.SignalGPU(queues[QUEUE_GRAPHICS].queue.Get());
 		descriptorheap_sam.SignalGPU(queues[QUEUE_GRAPHICS].queue.Get());
 
@@ -6134,56 +6114,285 @@ std::mutex queue_locker;
 			}
 		}
 
-		allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
+		allocationhandler->Update();
 		return tokens;
 	}
-	void GraphicsDevice_DX12::SubmitCommandLists()
+	SubmissionToken GraphicsDevice_DX12::SubmitCommandListsEx(const SubmitDesc& desc)
 	{
-		SubmitCommandListsInternal(false);
-	}
-	SubmissionTokenSet GraphicsDevice_DX12::SubmitCommandListsExAll()
-	{
-		return SubmitCommandListsInternal(true);
-	}
-	void GraphicsDevice_DX12::WaitForToken(QUEUE_TYPE queue, SubmissionToken token)
-	{
-		if (token.value == 0)
-			return;
-		if (queue >= QUEUE_COUNT || token.queue >= QUEUE_COUNT)
-			return;
-		if (queues[queue].queue == nullptr || token_fence[token.queue] == nullptr)
-			return;
-		if (IsTokenComplete(token))
-			return;
+		bool partial_submit = desc.command_lists != nullptr && desc.command_list_count > 0;
+		bool has_submit_batch = true;
+		std::vector<CommandList_DX12*> remaining_commandlists;
+		if (partial_submit)
+		{
+			std::scoped_lock lock(cmd_locker);
+			std::vector<CommandList_DX12*> open_commandlists;
+			open_commandlists.reserve(cmd_count);
+			for (uint32_t i = 0; i < cmd_count; ++i)
+			{
+				open_commandlists.push_back(commandlists[i]);
+			}
 
-#ifdef PLATFORM_XBOX
-		std::scoped_lock lock(queue_locker); // queue operations are not thread-safe on XBOX
-#endif // PLATFORM_XBOX
+			std::vector<CommandList_DX12*> submit_commandlists;
+			submit_commandlists.reserve(desc.command_list_count);
+			auto is_in_open = [&](CommandList_DX12* candidate) -> bool
+			{
+				return candidate != nullptr && std::find(open_commandlists.begin(), open_commandlists.end(), candidate) != open_commandlists.end();
+			};
+			auto contains_submit = [&](CommandList_DX12* candidate) -> bool
+			{
+				return std::find(submit_commandlists.begin(), submit_commandlists.end(), candidate) != submit_commandlists.end();
+			};
+			auto semaphore_equal = [](const Semaphore& a, const Semaphore& b) -> bool
+			{
+				return a.fence.Get() == b.fence.Get() && a.fenceValue == b.fenceValue;
+			};
 
-		dx12_check(queues[queue].queue->Wait(token_fence[token.queue].Get(), token.value));
+			for (uint32_t i = 0; i < desc.command_list_count; ++i)
+			{
+				const CommandList cmd = desc.command_lists[i];
+				if (!cmd.IsValid())
+					continue;
+				CommandList_DX12* commandlist = (CommandList_DX12*)cmd.internal_state;
+				if (!is_in_open(commandlist) || contains_submit(commandlist))
+					continue;
+				submit_commandlists.push_back(commandlist);
+			}
+
+			// Dependency closure: if a selected consumer waits on a producer, include that producer too.
+			bool changed = true;
+			while (changed)
+			{
+				changed = false;
+				for (size_t ci = 0; ci < submit_commandlists.size(); ++ci)
+				{
+					CommandList_DX12* consumer = submit_commandlists[ci];
+					if (consumer == nullptr || consumer->waits == nullptr)
+						continue;
+					for (size_t wi = 0; wi < arrlenu(consumer->waits); ++wi)
+					{
+						Semaphore* wait_sem = consumer->waits[wi];
+						if (wait_sem == nullptr)
+							continue;
+						for (CommandList_DX12* producer : open_commandlists)
+						{
+							if (producer == nullptr || contains_submit(producer) || producer->signals == nullptr)
+								continue;
+							bool found = false;
+							for (size_t si = 0; si < arrlenu(producer->signals); ++si)
+							{
+								Semaphore* signal_sem = producer->signals[si];
+								if (signal_sem != nullptr && semaphore_equal(*signal_sem, *wait_sem))
+								{
+									found = true;
+									break;
+								}
+							}
+							if (found)
+							{
+								submit_commandlists.push_back(producer);
+								changed = true;
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			if (submit_commandlists.empty())
+			{
+				has_submit_batch = false;
+			}
+			else
+			{
+				remaining_commandlists.reserve(open_commandlists.size());
+				auto in_submit = [&](CommandList_DX12* candidate) -> bool
+				{
+					return std::find(submit_commandlists.begin(), submit_commandlists.end(), candidate) != submit_commandlists.end();
+				};
+				for (CommandList_DX12* commandlist : open_commandlists)
+				{
+					if (!in_submit(commandlist))
+					{
+						remaining_commandlists.push_back(commandlist);
+					}
+				}
+
+				// Drop waits/signals in remaining-open commandlists that target submitted commandlists.
+				auto has_remaining_signal = [&](const Semaphore& sem) -> bool
+				{
+					for (CommandList_DX12* producer : remaining_commandlists)
+					{
+						if (producer == nullptr || producer->signals == nullptr)
+							continue;
+						for (size_t si = 0; si < arrlenu(producer->signals); ++si)
+						{
+							Semaphore* signal_sem = producer->signals[si];
+							if (signal_sem != nullptr && semaphore_equal(*signal_sem, sem))
+								return true;
+						}
+					}
+					return false;
+				};
+				for (CommandList_DX12* consumer : remaining_commandlists)
+				{
+					Semaphore** old_waits = consumer->waits;
+					Semaphore** kept_waits = nullptr;
+					for (size_t wi = 0; wi < arrlenu(old_waits); ++wi)
+					{
+						Semaphore* wait_sem = old_waits[wi];
+						if (wait_sem != nullptr && has_remaining_signal(*wait_sem))
+						{
+							arrput(kept_waits, wait_sem);
+						}
+						else
+						{
+							delete wait_sem;
+						}
+					}
+					dx12_internal::destroy_stb_array(old_waits);
+					consumer->waits = kept_waits;
+				}
+
+				auto has_remaining_wait = [&](const Semaphore& sem) -> bool
+				{
+					for (CommandList_DX12* consumer : remaining_commandlists)
+					{
+						if (consumer == nullptr || consumer->waits == nullptr)
+							continue;
+						for (size_t wi = 0; wi < arrlenu(consumer->waits); ++wi)
+						{
+							Semaphore* wait_sem = consumer->waits[wi];
+							if (wait_sem != nullptr && semaphore_equal(*wait_sem, sem))
+								return true;
+						}
+					}
+					return false;
+				};
+				for (CommandList_DX12* producer : remaining_commandlists)
+				{
+					Semaphore** old_signals = producer->signals;
+					Semaphore** kept_signals = nullptr;
+					for (size_t si = 0; si < arrlenu(old_signals); ++si)
+					{
+						Semaphore* signal_sem = old_signals[si];
+						if (signal_sem != nullptr && has_remaining_wait(*signal_sem))
+						{
+							arrput(kept_signals, signal_sem);
+						}
+						else if (signal_sem != nullptr)
+						{
+							free_semaphore(*signal_sem);
+							delete signal_sem;
+						}
+					}
+					dx12_internal::destroy_stb_array(old_signals);
+					producer->signals = kept_signals;
+				}
+
+				cmd_count = (uint32_t)submit_commandlists.size();
+				for (uint32_t i = 0; i < cmd_count; ++i)
+				{
+					commandlists[i] = submit_commandlists[i];
+					commandlists[i]->id = i;
+				}
+			}
+		}
+
+		if (partial_submit && !has_submit_batch)
+		{
+			return {};
+		}
+
+		if ((desc.submission_dependencies != nullptr && desc.submission_dependency_count > 0) ||
+			(desc.queue_dependencies != nullptr && desc.queue_dependency_count > 0))
+		{
+			std::scoped_lock lock(upload_token_locker);
+			for (uint32_t i = 0; i < desc.submission_dependency_count; ++i)
+			{
+				pending_implicit_uploads.Merge(desc.submission_dependencies[i]);
+			}
+			for (uint32_t i = 0; i < desc.queue_dependency_count; ++i)
+			{
+				SubmissionToken token = {};
+				token.Merge(desc.queue_dependencies[i].point);
+				pending_implicit_uploads.Merge(token);
+			}
+		}
+		SubmissionToken token = SubmitCommandListsInternal();
+		if (partial_submit)
+		{
+			std::scoped_lock lock(cmd_locker);
+			cmd_count = (uint32_t)remaining_commandlists.size();
+			for (uint32_t i = 0; i < cmd_count; ++i)
+			{
+				commandlists[i] = remaining_commandlists[i];
+				commandlists[i]->id = i;
+			}
+		}
+		if (desc.throttle_cpu && token.IsValid())
+		{
+			const uint64_t budget = desc.max_inflight_per_queue > 0 ? desc.max_inflight_per_queue : 2u;
+			for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+			{
+				if ((token.queue_mask & (1u << q)) == 0)
+					continue;
+				const uint64_t submitted = token.values[q];
+				if (submitted <= budget)
+					continue;
+				WaitQueuePoint(QueueSyncPoint{ (QUEUE_TYPE)q, submitted - budget });
+			}
+		}
+		return token;
 	}
-	bool GraphicsDevice_DX12::IsTokenComplete(SubmissionToken token) const
+
+	bool GraphicsDevice_DX12::IsQueuePointComplete(QueueSyncPoint point) const
 	{
-		if (token.value == 0)
+		if (!point.IsValid())
 			return true;
-		if (token.queue >= QUEUE_COUNT || token_fence[token.queue] == nullptr)
+		if (point.queue >= QUEUE_COUNT || token_fence[point.queue] == nullptr)
 			return false;
-		return token_fence[token.queue]->GetCompletedValue() >= token.value;
+		return token_fence[point.queue]->GetCompletedValue() >= point.value;
 	}
-	UploadTicket GraphicsDevice_DX12::UploadAsync(const UploadDesc& upload)
+
+	void GraphicsDevice_DX12::WaitQueuePoint(QueueSyncPoint point) const
+	{
+		if (!point.IsValid() || point.queue >= QUEUE_COUNT || token_fence[point.queue] == nullptr)
+			return;
+		if (!IsQueuePointComplete(point))
+		{
+			dx12_check(token_fence[point.queue]->SetEventOnCompletion(point.value, nullptr));
+		}
+	}
+
+	QueueSyncPoint GraphicsDevice_DX12::GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT || token_fence[queue] == nullptr)
+			return {};
+		const uint64_t value = token_fence_values[queue].load(std::memory_order_relaxed);
+		if (value == 0)
+			return {};
+		return QueueSyncPoint{ queue, value };
+	}
+
+	QueueSyncPoint GraphicsDevice_DX12::GetLastCompletedQueuePoint(QUEUE_TYPE queue) const
+	{
+		if (queue >= QUEUE_COUNT || token_fence[queue] == nullptr)
+			return {};
+		const uint64_t value = token_fence[queue]->GetCompletedValue();
+		if (value == 0)
+			return {};
+		return QueueSyncPoint{ queue, value };
+	}
+
+	UploadTicket GraphicsDevice_DX12::UploadAsyncInternal(const UploadDescInternal& upload)
 	{
 		UploadTicket ticket;
-		if (upload.src_data == nullptr)
+		if (upload.type == UploadDescInternal::Type::BUFFER && upload.src_data == nullptr)
 			return ticket;
-
-		if (upload.queue != QUEUE_COPY)
-		{
-			WI_DX12_LOG_WARN("DX12 UploadAsync currently routes uploads through QUEUE_COPY");
-		}
 
 		switch (upload.type)
 		{
-		case UploadDesc::Type::BUFFER:
+		case UploadDescInternal::Type::BUFFER:
 		{
 			if (upload.dst_buffer == nullptr || upload.src_size == 0)
 				return ticket;
@@ -6208,10 +6417,10 @@ std::mutex queue_locker;
 				to_internal(&cmd.uploadbuffer)->resource.Get(),
 				0,
 				upload.src_size
-			);
-			return copyAllocator.submit(std::move(cmd));
-		}
-		case UploadDesc::Type::TEXTURE:
+				);
+				return copyAllocator.submit(std::move(cmd));
+			}
+		case UploadDescInternal::Type::TEXTURE:
 		{
 			if (upload.dst_texture == nullptr || upload.subresources == nullptr)
 				return ticket;
@@ -6273,26 +6482,58 @@ std::mutex queue_locker;
 			break;
 		}
 
+			return ticket;
+		}
+	UploadTicket GraphicsDevice_DX12::EnqueueBufferUpload(const BufferUploadDesc& upload)
+	{
+		UploadDescInternal internal = {};
+		internal.type = UploadDescInternal::Type::BUFFER;
+		internal.src_data = upload.data;
+		internal.src_size = upload.size;
+		internal.dst_buffer = upload.dst;
+		internal.dst_offset = upload.dst_offset;
+		UploadTicket ticket = UploadAsyncInternal(internal);
+		if (upload.block_until_complete && ticket.IsValid())
+		{
+			WaitUpload(ticket);
+		}
 		return ticket;
 	}
-	bool GraphicsDevice_DX12::IsUploadComplete(UploadTicket ticket) const
+
+	UploadTicket GraphicsDevice_DX12::EnqueueTextureUpload(const TextureUploadDesc& upload)
 	{
-		const bool complete = IsTokenComplete(ticket.done);
+		UploadDescInternal internal = {};
+		internal.type = UploadDescInternal::Type::TEXTURE;
+		internal.dst_texture = upload.dst;
+		internal.subresources = upload.subresources;
+		internal.subresource_count = upload.subresource_count;
+		internal.texture_final_layout = ResourceState::SHADER_RESOURCE;
+		UploadTicket ticket = UploadAsyncInternal(internal);
+		if (upload.block_until_complete && ticket.IsValid())
+		{
+			WaitUpload(ticket);
+		}
+		return ticket;
+	}
+
+	bool GraphicsDevice_DX12::IsUploadComplete(const UploadTicket& ticket) const
+	{
+		const bool complete = IsQueuePointComplete(ticket.completion);
 		if (complete)
 		{
 			copyAllocator.recycle_completed();
 		}
 		return complete;
 	}
-	void GraphicsDevice_DX12::WaitUpload(UploadTicket ticket)
+	void GraphicsDevice_DX12::WaitUpload(const UploadTicket& ticket) const
 	{
-		if (ticket.done.value == 0)
+		if (!ticket.completion.IsValid())
 			return;
-		if (ticket.done.queue >= QUEUE_COUNT || token_fence[ticket.done.queue] == nullptr)
+		if (ticket.completion.queue >= QUEUE_COUNT || token_fence[ticket.completion.queue] == nullptr)
 			return;
-		if (!IsTokenComplete(ticket.done))
+		if (!IsQueuePointComplete(ticket.completion))
 		{
-			dx12_check(token_fence[ticket.done.queue]->SetEventOnCompletion(ticket.done.value, nullptr));
+			dx12_check(token_fence[ticket.completion.queue]->SetEventOnCompletion(ticket.completion.value, nullptr));
 		}
 		copyAllocator.recycle_completed();
 	}

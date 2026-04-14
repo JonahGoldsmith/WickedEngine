@@ -109,8 +109,8 @@ using wi::PipelineStateDesc;
 using wi::PrimitiveTopology;
 using wi::QUEUE_COMPUTE;
 using wi::QUEUE_GRAPHICS;
+using wi::QueueSyncPoint;
 using wi::SubmissionToken;
-using wi::SubmissionTokenSet;
 using wi::RasterizerState;
 using wi::RenderPassImage;
 using wi::ResourceMiscFlag;
@@ -121,6 +121,7 @@ using wi::ShaderStage;
 using wi::SubresourceType;
 using wi::SwapChain;
 using wi::SwapChainDesc;
+using wi::SubmitDesc;
 using wi::Texture;
 using wi::TextureDesc;
 using wi::Usage;
@@ -976,18 +977,18 @@ public:
         device_ =
 #if WICKED_SUBSET_USE_METAL
 #if defined(__APPLE__)
-            std::make_unique<wi::GraphicsDevice_Metal>(ValidationMode::Disabled, wi::GPUPreference::Discrete);
+            std::make_unique<wi::GraphicsDevice_Metal>(ValidationMode::Verbose, wi::GPUPreference::Discrete);
 #else
 #error "WICKED_SUBSET_BACKEND=Metal requires an Apple build."
 #endif
 #elif WICKED_SUBSET_USE_DX12
 #if defined(_WIN32)
-            std::make_unique<wi::GraphicsDevice_DX12>(ValidationMode::Disabled, wi::GPUPreference::Discrete);
+            std::make_unique<wi::GraphicsDevice_DX12>(ValidationMode::Verbose, wi::GPUPreference::Discrete);
 #else
 #error "WICKED_SUBSET_BACKEND=DX12 requires a Windows build."
 #endif
 #else
-            std::make_unique<wi::GraphicsDevice_Vulkan>((wi::platform::window_type)nativeWindow_, ValidationMode::Disabled, wi::GPUPreference::Discrete);
+            std::make_unique<wi::GraphicsDevice_Vulkan>((wi::platform::window_type)nativeWindow_, ValidationMode::Verbose, wi::GPUPreference::Discrete);
 #endif
 
         if (device_ == nullptr)
@@ -1292,7 +1293,7 @@ private:
         bool submitted = false;
         uint64_t frameId = 0;
         uint64_t submitTag = 0;
-        SubmissionTokenSet submitTokens = {};
+        SubmissionToken submitToken = {};
     };
 
     static constexpr uint32_t kFrameSlotCount = 16;
@@ -3269,11 +3270,11 @@ private:
             if (!slot.submitted)
                 continue;
 
-            if (wait_for_all || wicked_subset::IsTokenSetComplete(*device_, slot.submitTokens))
+            if (wait_for_all || device_->IsSubmissionComplete(slot.submitToken))
             {
                 if (wait_for_all)
                 {
-                    wicked_subset::WaitTokenSet(*device_, slot.submitTokens);
+                    device_->WaitSubmission(slot.submitToken);
                 }
                 RetireFrameSlot(slot);
             }
@@ -3293,7 +3294,7 @@ private:
                 slot.submitTag = wicked_subset::MakeFrameTag(slot.frameId, wicked_subset::FrameAllocTag::GPUUntilFence);
                 return slot;
             }
-            wicked_subset::WaitTokenSet(*device_, slot.submitTokens);
+            device_->WaitSubmission(slot.submitToken);
             RetireFrameSlot(slot);
         }
     }
@@ -3385,22 +3386,22 @@ private:
                 cullSlot = cullWriteSlot_;
             }
         }
+        SubmissionToken explicitSubmitDependencies[2] = {};
+        uint32_t explicitSubmitDependencyCount = 0;
         if (useAsyncComputeForCull && tokenSubmissionEnabled_ && cullHistoryValid_)
         {
             const SubmissionToken drawDependency = cullCompletionTokens_[drawSlot];
-            if (drawDependency.value != 0)
+            if (drawDependency.IsValid())
             {
-                device_->WaitForToken(QUEUE_GRAPHICS, drawDependency);
+                explicitSubmitDependencies[explicitSubmitDependencyCount++] = drawDependency;
             }
         }
         if (useAsyncComputeForCull && tokenSubmissionEnabled_ && hiZOcclusionEnabled_ && hiZOcclusionValid_)
         {
-            // Hi-Z is produced on graphics and consumed by async cull. In token mode we
-            // must explicitly serialize this cross-queue handoff frame-to-frame.
             const SubmissionToken hiZReady = lastGraphicsCompletionToken_;
-            if (hiZReady.value != 0)
+            if (hiZReady.IsValid() && explicitSubmitDependencyCount < arraysize(explicitSubmitDependencies))
             {
-                device_->WaitForToken(QUEUE_COMPUTE, hiZReady);
+                explicitSubmitDependencies[explicitSubmitDependencyCount++] = hiZReady;
             }
         }
 
@@ -3511,22 +3512,30 @@ private:
 
         device_->QueryResolve(&timestampQueryHeap_, 0, kTimestampCount, &timestampReadback_[frameIndex], 0, cmdGraphics);
 
-        SubmissionTokenSet submitTokens = {};
+        SubmissionToken submitToken = {};
         if (tokenSubmissionEnabled_)
         {
-            submitTokens = device_->SubmitCommandListsExAll();
-            if (submitTokens.validMask & (1u << QUEUE_GRAPHICS))
+            SubmitDesc submitDesc = {};
+            submitDesc.submission_dependencies = explicitSubmitDependencies;
+            submitDesc.submission_dependency_count = explicitSubmitDependencyCount;
+            submitToken = device_->SubmitCommandListsEx(submitDesc);
+            const QueueSyncPoint graphicsPoint = submitToken.Get(QUEUE_GRAPHICS);
+            if (graphicsPoint.IsValid())
             {
-                lastGraphicsCompletionToken_ = submitTokens.perQueue[QUEUE_GRAPHICS];
+                lastGraphicsCompletionToken_ = {};
+                lastGraphicsCompletionToken_.Merge(graphicsPoint);
             }
         }
         else
         {
-            device_->SubmitCommandLists();
+            SubmitDesc submitDesc = {};
+            submitDesc.submission_dependencies = explicitSubmitDependencies;
+            submitDesc.submission_dependency_count = explicitSubmitDependencyCount;
+            submitToken = device_->SubmitCommandListsEx(submitDesc);
         }
 
-        frameSlot.submitTokens = submitTokens;
-        frameSlot.submitted = submitTokens.validMask != 0;
+        frameSlot.submitToken = submitToken;
+        frameSlot.submitted = submitToken.IsValid();
         if (frameSlot.submitted)
         {
             (void)taggedAllocator_.Allocate<uint8_t>(frameSlot.submitTag, 1, 0);
@@ -3541,14 +3550,12 @@ private:
             if (tokenSubmissionEnabled_)
             {
                 SubmissionToken cullToken = {};
-                if (submitTokens.validMask & (1u << QUEUE_COMPUTE))
+                QueueSyncPoint cullPoint = submitToken.Get(QUEUE_COMPUTE);
+                if (!cullPoint.IsValid())
                 {
-                    cullToken = submitTokens.perQueue[QUEUE_COMPUTE];
+                    cullPoint = submitToken.Get(QUEUE_GRAPHICS);
                 }
-                else if (submitTokens.validMask & (1u << QUEUE_GRAPHICS))
-                {
-                    cullToken = submitTokens.perQueue[QUEUE_GRAPHICS];
-                }
+                cullToken.Merge(cullPoint);
                 cullCompletionTokens_[cullSlot] = cullToken;
             }
             cullHistoryValid_ = true;

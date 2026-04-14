@@ -70,28 +70,26 @@ namespace wi
 		NS::SharedPtr<MTL::Device> device;
 		NS::SharedPtr<MTL4::CommandQueue> uploadqueue;
 		
-		struct Semaphore
-		{
-			MTL::Event* event = nullptr;
-			uint64_t fenceValue = 0;
-		};
-		
 		struct CommandQueue
 		{
 			NS::SharedPtr<MTL4::CommandQueue> queue;
 			MTL4::CommandBuffer** submit_cmds = nullptr;
 			
-			void signal(const Semaphore& sema)
+			void signal(MTL::SharedEvent* event, uint64_t value)
 			{
 				if (queue.get() == nullptr)
 					return;
-				queue->signalEvent(sema.event, sema.fenceValue);
+				if (event == nullptr)
+					return;
+				queue->signalEvent(event, value);
 			}
-			void wait(const Semaphore& sema)
+			void wait(MTL::SharedEvent* event, uint64_t value)
 			{
 				if (queue.get() == nullptr)
 					return;
-				queue->wait(sema.event, sema.fenceValue);
+				if (event == nullptr)
+					return;
+				queue->wait(event, value);
 			}
 			void submit()
 			{
@@ -103,12 +101,11 @@ namespace wi
 				arrsetlen(submit_cmds, 0);
 			}
 		} queues[QUEUE_COUNT];
-		
-		uint64_t frame_fence_values[BUFFERCOUNT] = {};
-		NS::SharedPtr<MTL::SharedEvent> frame_fence[BUFFERCOUNT][QUEUE_COUNT];
 		mutable std::mutex submission_token_locker;
 		mutable uint64_t submission_token_values[QUEUE_COUNT] = {};
 		NS::SharedPtr<MTL::SharedEvent> submission_token_events[QUEUE_COUNT];
+		mutable std::mutex submission_stats_mutex;
+		QueueSubmissionStats last_submission_stats = {};
 		struct UploadJob
 		{
 			UploadTicket ticket = {};
@@ -118,7 +115,7 @@ namespace wi
 		};
 		mutable std::mutex upload_locker;
 		mutable std::deque<UploadJob> inflight_uploads;
-		mutable SubmissionTokenSet pending_implicit_uploads = {};
+		mutable SubmissionToken pending_implicit_uploads = {};
 		
 		NS::SharedPtr<MTL4::ArgumentTableDescriptor> argument_table_desc;
 
@@ -137,27 +134,6 @@ namespace wi
 			uint32_t draw_indexed_icb_argument_buffer_size = 0;
 			uint32_t draw_mesh_icb_argument_buffer_size = 0;
 		} drawcount_icb_encoder;
-		
-		Semaphore* semaphore_pool = nullptr;
-		std::mutex semaphore_pool_locker;
-		Semaphore new_semaphore()
-		{
-			std::scoped_lock lck(semaphore_pool_locker);
-			if (semaphore_pool == nullptr || arrlenu(semaphore_pool) == 0)
-			{
-				Semaphore sema = {};
-				sema.event = device->newEvent();
-				arrput(semaphore_pool, sema);
-			}
-			Semaphore sema = arrpop(semaphore_pool);
-			sema.fenceValue++;
-			return sema;
-		}
-		void free_semaphore(const Semaphore& sema)
-		{
-			std::scoped_lock lck(semaphore_pool_locker);
-			arrput(semaphore_pool, sema);
-		}
 		
 		struct JustInTimePSO
 		{
@@ -206,8 +182,7 @@ namespace wi
 			bool dirty_viewport = false;
 			uint32_t viewport_count = 0;
 			MTL::Viewport viewports[16] = {};
-			Semaphore* waits = nullptr;
-			Semaphore* signals = nullptr;
+			uint32_t* wait_for_cmd_ids = nullptr;
 			bool drawargs_required = false;
 			bool dirty_drawargs = false;
 			MTL::Size numthreads_as = {};
@@ -296,8 +271,7 @@ namespace wi
 					x = {};
 				}
 				SDL_assert(barriers == nullptr || arrlenu(barriers) == 0);
-				SDL_assert(waits == nullptr || arrlenu(waits) == 0);
-				SDL_assert(signals == nullptr || arrlenu(signals) == 0);
+				SDL_assert(wait_for_cmd_ids == nullptr || arrlenu(wait_for_cmd_ids) == 0);
 				drawargs_required = false;
 				dirty_drawargs = false;
 				numthreads_as = {};
@@ -306,7 +280,13 @@ namespace wi
 		};
 		wi::allocator::BlockAllocator<CommandList_Metal, 64> cmd_allocator;
 		CommandList_Metal** commandlists = nullptr;
-		uint32_t cmd_count = 0;
+		CommandList_Metal** open_commandlists = nullptr;
+		struct RetiredCommandContext
+		{
+			CommandList_Metal* context = nullptr;
+			QueueSyncPoint retire_after = {};
+		};
+		RetiredCommandContext* retired_contexts[QUEUE_COUNT] = {};
 		wi::SpinLock cmd_locker;
 		
 		PipelineGlobalEntry* pipelines_global = nullptr;
@@ -341,9 +321,25 @@ namespace wi
 		void precopy(CommandList cmd);
 		SubmissionToken allocate_submission_token(QUEUE_TYPE queue) const;
 		void retire_completed_uploads() const;
-		SubmissionTokenSet consume_pending_implicit_uploads() const;
-		SubmissionTokenSet SubmitCommandListsInternal(bool safe_mode);
-		UploadTicket UploadAsyncInternal(const UploadDesc& upload, bool implicit_dependency) const;
+		struct UploadDescInternal
+		{
+			enum class Type
+			{
+				BUFFER,
+				TEXTURE,
+			};
+			Type type = Type::BUFFER;
+			const void* src_data = nullptr;
+			uint64_t src_size = 0;
+			const GPUBuffer* dst_buffer = nullptr;
+			uint64_t dst_offset = 0;
+			const Texture* dst_texture = nullptr;
+			const SubresourceData* subresources = nullptr;
+			uint32_t subresource_count = 0;
+		};
+		SubmissionToken consume_pending_implicit_uploads() const;
+		SubmissionToken SubmitCommandListsInternal(const SubmitDesc& desc);
+		UploadTicket UploadAsyncInternal(const UploadDescInternal& upload, bool implicit_dependency) const;
 
 	public:
 		GraphicsDevice_Metal(ValidationMode validationMode = ValidationMode::Disabled, GPUPreference preference = GPUPreference::Discrete);
@@ -376,13 +372,16 @@ namespace wi
 		void SetName(Shader* shader, const char* name) const override;
 
 		CommandList BeginCommandList(QUEUE_TYPE queue = QUEUE_GRAPHICS) override;
-		void SubmitCommandLists() override;
-		SubmissionTokenSet SubmitCommandListsExAll() override;
-		void WaitForToken(QUEUE_TYPE queue, SubmissionToken token) override;
-		bool IsTokenComplete(SubmissionToken token) const override;
-		UploadTicket UploadAsync(const UploadDesc& upload) override;
-		bool IsUploadComplete(UploadTicket ticket) const override;
-		void WaitUpload(UploadTicket ticket) override;
+		SubmissionToken SubmitCommandListsEx(const SubmitDesc& desc) override;
+		bool IsQueuePointComplete(QueueSyncPoint point) const override;
+		void WaitQueuePoint(QueueSyncPoint point) const override;
+		QueueSyncPoint GetLastSubmittedQueuePoint(QUEUE_TYPE queue) const override;
+		QueueSyncPoint GetLastCompletedQueuePoint(QUEUE_TYPE queue) const override;
+		UploadTicket EnqueueBufferUpload(const BufferUploadDesc& upload) override;
+		UploadTicket EnqueueTextureUpload(const TextureUploadDesc& upload) override;
+		bool IsUploadComplete(const UploadTicket& ticket) const override;
+		void WaitUpload(const UploadTicket& ticket) const override;
+		bool GetQueueSubmissionStats(QueueSubmissionStats& out) const override;
 
 		void WaitForGPU() const override;
 		void ClearPipelineStateCache() override;
@@ -488,82 +487,97 @@ namespace wi
 
 		struct AllocationHandler
 		{
+			template<typename T>
+			struct RetiredObject
+			{
+				T object = {};
+				SubmissionToken retire_after = {};
+			};
+			template<typename T>
+			using RetireList = std::deque<RetiredObject<T>>;
+
 			std::mutex destroylocker;
-			uint64_t framecount = 0;
-			std::deque<std::pair<NS::SharedPtr<MTL::Resource>, uint64_t>> destroyer_resources;
-			std::deque<std::pair<NS::SharedPtr<MTL::SamplerState>, uint64_t>> destroyer_samplers;
-			std::deque<std::pair<NS::SharedPtr<MTL::Library>, uint64_t>> destroyer_libraries;
-			std::deque<std::pair<NS::SharedPtr<MTL::Function>, uint64_t>> destroyer_functions;
-			std::deque<std::pair<NS::SharedPtr<MTL::RenderPipelineState>, uint64_t>> destroyer_render_pipelines;
-			std::deque<std::pair<NS::SharedPtr<MTL::ComputePipelineState>, uint64_t>> destroyer_compute_pipelines;
-			std::deque<std::pair<NS::SharedPtr<MTL::DepthStencilState>, uint64_t>> destroyer_depth_stencil_states;
-			std::deque<std::pair<NS::SharedPtr<MTL4::CounterHeap>, uint64_t>> destroyer_counter_heaps;
-			std::deque<std::pair<NS::SharedPtr<CA::MetalDrawable>, uint64_t>> destroyer_drawables;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindless_res;
-			std::deque<std::pair<int, uint64_t>> destroyer_bindless_sam;
+			RetireList<NS::SharedPtr<MTL::Resource>> destroyer_resources;
+			RetireList<NS::SharedPtr<MTL::SamplerState>> destroyer_samplers;
+			RetireList<NS::SharedPtr<MTL::Library>> destroyer_libraries;
+			RetireList<NS::SharedPtr<MTL::Function>> destroyer_functions;
+			RetireList<NS::SharedPtr<MTL::RenderPipelineState>> destroyer_render_pipelines;
+			RetireList<NS::SharedPtr<MTL::ComputePipelineState>> destroyer_compute_pipelines;
+			RetireList<NS::SharedPtr<MTL::DepthStencilState>> destroyer_depth_stencil_states;
+			RetireList<NS::SharedPtr<MTL4::CounterHeap>> destroyer_counter_heaps;
+			RetireList<NS::SharedPtr<CA::MetalDrawable>> destroyer_drawables;
+			RetireList<int> destroyer_bindless_res;
+			RetireList<int> destroyer_bindless_sam;
 			int* free_bindless_res = nullptr;
 			int* free_bindless_sam = nullptr;
+			NS::SharedPtr<MTL::SharedEvent> queue_timeline_events[QUEUE_COUNT];
+			uint64_t submitted_queue_values[QUEUE_COUNT] = {};
 
-			void Update(uint64_t FRAMECOUNT, uint32_t BUFFERCOUNT)
+			SubmissionToken CaptureRetireToken() const
+			{
+				SubmissionToken token = {};
+				for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+				{
+					if (submitted_queue_values[q] == 0)
+						continue;
+					token.Merge(QueueSyncPoint{ (QUEUE_TYPE)q, submitted_queue_values[q] });
+				}
+				return token;
+			}
+
+			bool IsSubmissionComplete(const SubmissionToken& token) const
+			{
+				for (uint32_t q = 0; q < QUEUE_COUNT; ++q)
+				{
+					if ((token.queue_mask & (1u << q)) == 0)
+						continue;
+					if (queue_timeline_events[q].get() == nullptr)
+						continue;
+					if (queue_timeline_events[q]->signaledValue() < token.values[q])
+						return false;
+				}
+				return true;
+			}
+
+			template<typename T, typename U>
+			void Retire(RetireList<T>& list, U&& object)
+			{
+				RetiredObject<T> retired = {};
+				retired.object = std::forward<U>(object);
+				retired.retire_after = CaptureRetireToken();
+				list.push_back(std::move(retired));
+			}
+
+			void Update()
 			{
 				std::scoped_lock lck(destroylocker);
-				framecount = FRAMECOUNT;
-				while (!destroyer_resources.empty() && destroyer_resources.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					remove_resident(destroyer_resources.front().first.get());
-					destroyer_resources.pop_front();
-					// SharedPtr auto delete
-				}
-				while (!destroyer_samplers.empty() && destroyer_samplers.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_samplers.pop_front();
-					// SharedPtr auto delete
-				}
-				while (!destroyer_libraries.empty() && destroyer_libraries.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_libraries.pop_front();
-					// SharedPtr auto delete
-				}
-				while (!destroyer_functions.empty() && destroyer_functions.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_functions.pop_front();
-					// SharedPtr auto delete
-				}
-				while (!destroyer_render_pipelines.empty() && destroyer_render_pipelines.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_render_pipelines.pop_front();
-					// SharedPtr auto delete
-				}
-				while (!destroyer_compute_pipelines.empty() && destroyer_compute_pipelines.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_compute_pipelines.pop_front();
-					// SharedPtr auto delete
-				}
-				while (!destroyer_depth_stencil_states.empty() && destroyer_depth_stencil_states.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_depth_stencil_states.pop_front();
-					// SharedPtr auto delete
-				}
-				while (!destroyer_counter_heaps.empty() && destroyer_counter_heaps.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_counter_heaps.pop_front();
-					// SharedPtr auto delete
-				}
-				while (!destroyer_drawables.empty() && destroyer_drawables.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					destroyer_drawables.pop_front();
-					// SharedPtr auto delete
-				}
-				while (!destroyer_bindless_res.empty() && destroyer_bindless_res.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					arrput(free_bindless_res, destroyer_bindless_res.front().first);
-					destroyer_bindless_res.pop_front();
-				}
-				while (!destroyer_bindless_sam.empty() && destroyer_bindless_sam.front().second + BUFFERCOUNT < FRAMECOUNT)
-				{
-					arrput(free_bindless_sam, destroyer_bindless_sam.front().first);
-					destroyer_bindless_sam.pop_front();
-				}
+
+				auto collect = [this](auto& list, auto&& on_collect) {
+					for (auto it = list.begin(); it != list.end();)
+					{
+						if (!IsSubmissionComplete(it->retire_after))
+						{
+							++it;
+							continue;
+						}
+						on_collect(it->object);
+						it = list.erase(it);
+					}
+				};
+
+				collect(destroyer_resources, [this](NS::SharedPtr<MTL::Resource>& resource) {
+					remove_resident(resource.get());
+				});
+				collect(destroyer_samplers, [](NS::SharedPtr<MTL::SamplerState>&) {});
+				collect(destroyer_libraries, [](NS::SharedPtr<MTL::Library>&) {});
+				collect(destroyer_functions, [](NS::SharedPtr<MTL::Function>&) {});
+				collect(destroyer_render_pipelines, [](NS::SharedPtr<MTL::RenderPipelineState>&) {});
+				collect(destroyer_compute_pipelines, [](NS::SharedPtr<MTL::ComputePipelineState>&) {});
+				collect(destroyer_depth_stencil_states, [](NS::SharedPtr<MTL::DepthStencilState>&) {});
+				collect(destroyer_counter_heaps, [](NS::SharedPtr<MTL4::CounterHeap>&) {});
+				collect(destroyer_drawables, [](NS::SharedPtr<CA::MetalDrawable>&) {});
+				collect(destroyer_bindless_res, [this](int& index) { arrput(free_bindless_res, index); });
+				collect(destroyer_bindless_sam, [this](int& index) { arrput(free_bindless_sam, index); });
 			}
 			
 			int allocate_resource_index()

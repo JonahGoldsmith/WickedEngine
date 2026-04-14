@@ -121,26 +121,4 @@ private:
     std::unordered_map<uint64_t, std::vector<Allocation>> allocations_;
 };
 
-inline bool IsTokenSetComplete(const wi::GraphicsDevice& device, const wi::SubmissionTokenSet& tokens)
-{
-    for (uint32_t queue = 0; queue < wi::QUEUE_COUNT; ++queue)
-    {
-        if ((tokens.validMask & (1u << queue)) == 0)
-            continue;
-        if (!device.IsTokenComplete(tokens.perQueue[queue]))
-            return false;
-    }
-    return true;
-}
-
-inline void WaitTokenSet(wi::GraphicsDevice& device, const wi::SubmissionTokenSet& tokens)
-{
-    for (uint32_t queue = 0; queue < wi::QUEUE_COUNT; ++queue)
-    {
-        if ((tokens.validMask & (1u << queue)) == 0)
-            continue;
-        device.WaitForToken(static_cast<wi::QUEUE_TYPE>(queue), tokens.perQueue[queue]);
-    }
-}
-
 } // namespace wicked_subset

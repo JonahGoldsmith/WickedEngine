@@ -109,10 +109,10 @@ using wi::PipelineStateDesc;
 using wi::PrimitiveTopology;
 using wi::QUEUE_GRAPHICS;
 using wi::ResourceMiscFlag;
+using wi::SubmissionToken;
 using wi::Shader;
 using wi::ShaderModel;
 using wi::ShaderStage;
-using wi::SubmissionTokenSet;
 using wi::SwapChain;
 using wi::SwapChainDesc;
 using wi::Usage;
@@ -611,18 +611,18 @@ public:
         device_ =
 #if WICKED_SUBSET_USE_METAL
 #if defined(__APPLE__)
-            std::make_unique<wi::GraphicsDevice_Metal>(ValidationMode::Disabled, wi::GPUPreference::Discrete);
+            std::make_unique<wi::GraphicsDevice_Metal>(ValidationMode::Verbose, wi::GPUPreference::Discrete);
 #else
 #error "WICKED_SUBSET_BACKEND=Metal requires an Apple build."
 #endif
 #elif WICKED_SUBSET_USE_DX12
 #if defined(_WIN32)
-            std::make_unique<wi::GraphicsDevice_DX12>(ValidationMode::Disabled, wi::GPUPreference::Discrete);
+            std::make_unique<wi::GraphicsDevice_DX12>(ValidationMode::Verbose, wi::GPUPreference::Discrete);
 #else
 #error "WICKED_SUBSET_BACKEND=DX12 requires a Windows build."
 #endif
 #else
-            std::make_unique<wi::GraphicsDevice_Vulkan>((wi::platform::window_type)nativeWindow_, ValidationMode::Disabled, wi::GPUPreference::Discrete);
+            std::make_unique<wi::GraphicsDevice_Vulkan>((wi::platform::window_type)nativeWindow_, ValidationMode::Verbose, wi::GPUPreference::Discrete);
 #endif
 
         if (device_ == nullptr)
@@ -922,7 +922,7 @@ private:
         uint64_t cpuFrameBeginTick = 0;
         SceneCB sceneCB = {};
         bool sceneCBValid = false;
-        SubmissionTokenSet submitTokens = {};
+        SubmissionToken submitToken = {};
     };
 
     static constexpr uint32_t kFrameSlotCount = 16;
@@ -1079,11 +1079,11 @@ private:
             if (!slot.inUse || !slot.submitted)
                 continue;
 
-            if (wait_for_all || wicked_subset::IsTokenSetComplete(*device_, slot.submitTokens))
+            if (wait_for_all || device_->IsSubmissionComplete(slot.submitToken))
             {
                 if (wait_for_all)
                 {
-                    wicked_subset::WaitTokenSet(*device_, slot.submitTokens);
+                    device_->WaitSubmission(slot.submitToken);
                 }
                 RetireFrameSlot(slot);
             }
@@ -1296,7 +1296,8 @@ private:
             slot.failed = !RecordFrameCommands(slot);
             if (!slot.failed)
             {
-                slot.submitTokens = device_->SubmitCommandListsExAll();
+                wi::SubmitDesc submitDesc = {};
+                slot.submitToken = device_->SubmitCommandListsEx(submitDesc);
             }
         }
         if (slot.failed)
@@ -1305,7 +1306,7 @@ private:
             return false;
         }
 
-        slot.submitted = slot.submitTokens.validMask != 0;
+        slot.submitted = slot.submitToken.IsValid();
 
         taggedAllocator_.ReleaseTag(slot.updateTag);
         slot.updateTag = 0;
